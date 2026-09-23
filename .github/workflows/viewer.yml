@@ -1,0 +1,57 @@
+name: Viewer setup
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS (Apple Silicon)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Go2 simulator
+      - name: Install from a fresh checkout
+        run: bash "$GITHUB_WORKSPACE/Go2 simulator/macos/setup.sh"
+      - name: Verify repeat setup
+        run: bash "$GITHUB_WORKSPACE/Go2 simulator/macos/setup.sh"
+      - name: Validate both launchers from outside the repository
+        working-directory: ${{ runner.temp }}
+        run: |
+          bash "$GITHUB_WORKSPACE/Go2 simulator/macos/Launch Go2 Viewer.command" --validate
+          bash "$GITHUB_WORKSPACE/Go2 simulator/macos/Launch Go2 Viewer - Terrain.command" --validate
+          "$GITHUB_WORKSPACE/Go2 simulator/_deps/tools/uv" pip check --python "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/python"
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Go2 simulator
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and verify repeat setup
+        shell: powershell
+        run: |
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'Go2 simulator\windows\setup.ps1'
+          $python = (Get-Command python).Source
+          & $setup -Python $python
+          & $setup -Python $python
+      - name: Validate both launchers from outside the repository
+        working-directory: ${{ runner.temp }}
+        shell: cmd
+        run: |
+          call "%GITHUB_WORKSPACE%\Go2 simulator\windows\Launch Go2 Viewer.cmd" --validate
+          if errorlevel 1 exit /b 1
+          call "%GITHUB_WORKSPACE%\Go2 simulator\windows\Launch Go2 Viewer - Terrain.cmd" --validate
+          if errorlevel 1 exit /b 1
+          "%GITHUB_WORKSPACE%\Go2 simulator\.venv\Scripts\python.exe" -m pip check

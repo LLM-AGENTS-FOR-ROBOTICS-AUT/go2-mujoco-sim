@@ -1,4 +1,6 @@
 .venv/
+.venv-old/
+.DS_Store
 _deps/
 policies/
 __pycache__/
