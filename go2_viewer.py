@@ -1,4 +1,4 @@
-"""Friendly Windows launcher for the official Unitree Go2 MuJoCo model."""
+"""Shared Windows and macOS viewer for the official Unitree Go2 MuJoCo model."""
 
 from __future__ import annotations
 
@@ -50,8 +50,9 @@ def set_standing_pose(model: mujoco.MjModel, data: mujoco.MjData) -> None:
 def load_scene(terrain: bool) -> tuple[mujoco.MjModel, mujoco.MjData, Path]:
     scene = GO2_DIR / ("scene_terrain.xml" if terrain else "scene.xml")
     if not scene.exists():
+        setup = "bash macos/setup.sh" if sys.platform == "darwin" else "windows/setup.ps1"
         raise FileNotFoundError(
-            f"Go2 scene not found: {scene}\nRun setup-windows.ps1 first."
+            f"Go2 scene not found: {scene}\nRun {setup} first."
         )
     model = mujoco.MjModel.from_xml_path(str(scene))
     data = mujoco.MjData(model)
