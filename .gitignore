@@ -1,0 +1,10 @@
+.venv/
+_deps/
+policies/
+__pycache__/
+*.py[cod]
+*.log
+MUJOCO_LOG.TXT
+build/
+.idea/
+.vscode/
