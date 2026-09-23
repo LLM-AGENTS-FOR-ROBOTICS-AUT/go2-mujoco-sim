@@ -1,7 +1,13 @@
+param(
+    [string]$Python = ""
+)
+
 $ErrorActionPreference = "Stop"
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$python = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
+$root = Split-Path -Parent $PSScriptRoot
+if (-not $Python) {
+    $Python = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
+}
 $venvPython = Join-Path $root ".venv\Scripts\python.exe"
 $deps = Join-Path $root "_deps"
 $unitreeMujoco = Join-Path $deps "unitree_mujoco"
@@ -28,6 +34,9 @@ New-Item -ItemType Directory -Force -Path $deps | Out-Null
 if (-not (Test-Path -LiteralPath (Join-Path $unitreeMujoco ".git"))) {
     Write-Host "Downloading Unitree's official MuJoCo robot assets..."
     git clone https://github.com/unitreerobotics/unitree_mujoco.git $unitreeMujoco
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not download Unitree's robot assets."
+    }
 }
 
 Write-Host "Selecting the tested Unitree MuJoCo revision..."
@@ -43,17 +52,30 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path -LiteralPath $venvPython)) {
     Write-Host "Creating an isolated Python environment..."
     & $python -m venv (Join-Path $root ".venv")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not create the Python environment."
+    }
 }
 
 Write-Host "Installing MuJoCo..."
 & $venvPython -m pip install --upgrade pip
-& $venvPython -m pip install --requirement (Join-Path $root "requirements-windows.txt")
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not update pip."
+}
+& $venvPython -m pip install --requirement (Join-Path $PSScriptRoot "requirements.txt")
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not install MuJoCo."
+}
 
 Write-Host "Validating the robot model and simulator..."
 & $venvPython (Join-Path $root "go2_viewer.py") --validate
 if ($LASTEXITCODE -ne 0) {
     throw "The Go2 simulator validation failed."
 }
+& $venvPython (Join-Path $root "go2_viewer.py") --terrain --validate
+if ($LASTEXITCODE -ne 0) {
+    throw "The Go2 terrain validation failed."
+}
 
 Write-Host ""
-Write-Host "Setup complete. Double-click 'Launch Go2 Viewer.cmd'."
+Write-Host "Setup complete. Double-click 'windows\Launch Go2 Viewer.cmd'."

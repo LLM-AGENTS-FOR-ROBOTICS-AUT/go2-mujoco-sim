@@ -22,12 +22,15 @@ Requirements: Windows 10/11, Git, current graphics drivers, and internet access.
 ```powershell
 git clone https://github.com/LLM-AGENTS-FOR-ROBOTICS-AUT/go2-mujoco-sim.git
 cd go2-mujoco-sim
-powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
+powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1
 ```
 
-Then double-click **Launch Go2 Viewer.cmd**. For Unitree's terrain scene, use
-**Launch Go2 Viewer - Terrain.cmd**. Use the mouse to rotate, pan, and zoom;
+Then open the **windows** folder and double-click **Launch Go2 Viewer.cmd**.
+For Unitree's terrain scene, use **Launch Go2 Viewer - Terrain.cmd** in the same
+folder. Use the mouse to rotate, pan, and zoom;
 close the MuJoCo window or press Escape to exit.
+
+See the [Windows guide](windows/README.md) for launch commands and troubleshooting.
 
 ## Native Unitree simulator on Ubuntu
 
@@ -53,8 +56,9 @@ loopback (`lo`) interface. A controller such as the lecturer-provided
 
 ```text
 go2_viewer.py              Native Windows/Python MuJoCo model viewer
-setup-windows.ps1          Reproducible Windows setup
-Launch Go2 Viewer*.cmd     One-click Windows launchers
+windows/setup.ps1          Windows setup
+windows/requirements.txt   Pinned Windows dependencies
+windows/*.cmd             One-click Windows launchers
 scripts/setup-ubuntu.sh    Full Unitree SDK2/DDS installer
 scripts/run-simulator.sh   Ubuntu simulator launcher
 ```

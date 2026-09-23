@@ -51,7 +51,7 @@ def load_scene(terrain: bool) -> tuple[mujoco.MjModel, mujoco.MjData, Path]:
     scene = GO2_DIR / ("scene_terrain.xml" if terrain else "scene.xml")
     if not scene.exists():
         raise FileNotFoundError(
-            f"Go2 scene not found: {scene}\nRun setup-windows.ps1 first."
+            f"Go2 scene not found: {scene}\nRun windows/setup.ps1 first."
         )
     model = mujoco.MjModel.from_xml_path(str(scene))
     data = mujoco.MjData(model)
