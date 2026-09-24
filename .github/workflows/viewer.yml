@@ -10,8 +10,20 @@ permissions:
 
 jobs:
   macos:
-    name: macOS (Apple Silicon)
-    runs-on: macos-15
+    name: macOS (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+            architecture: arm64
+            mujoco: '3.13.0'
+          - name: Intel
+            runner: macos-15-intel
+            architecture: x86_64
+            mujoco: '3.10.0'
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -21,12 +33,34 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/Go2 simulator/macos/setup.sh"
       - name: Verify repeat setup
         run: bash "$GITHUB_WORKSPACE/Go2 simulator/macos/setup.sh"
+      - name: Check native architecture and MuJoCo package
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+          EXPECTED_MUJOCO: ${{ matrix.mujoco }}
+        run: |
+          "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/python" - <<'PY'
+          import os
+          import platform
+          import mujoco
+          assert platform.machine() == os.environ['EXPECTED_ARCHITECTURE'], platform.machine()
+          assert mujoco.__version__ == os.environ['EXPECTED_MUJOCO'], mujoco.__version__
+          print(f'Native {platform.machine()} with MuJoCo {mujoco.__version__}')
+          PY
       - name: Validate both launchers from outside the repository
         working-directory: ${{ runner.temp }}
         run: |
           bash "$GITHUB_WORKSPACE/Go2 simulator/macos/Launch Go2 Viewer.command" --validate
           bash "$GITHUB_WORKSPACE/Go2 simulator/macos/Launch Go2 Viewer - Terrain.command" --validate
           "$GITHUB_WORKSPACE/Go2 simulator/_deps/tools/uv" pip check --python "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/python"
+      - name: Validate the native mjpython entry point
+        timeout-minutes: 2
+        working-directory: ${{ runner.temp }}
+        run: |
+          # Hosted Mac runners cannot create the viewer's OpenGL window. Exercise
+          # the actual native launcher and both scenes without creating a window.
+          source "$GITHUB_WORKSPACE/Go2 simulator/macos/developer-tools.sh"
+          "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/mjpython" "$GITHUB_WORKSPACE/Go2 simulator/go2_viewer.py" --validate
+          "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/mjpython" "$GITHUB_WORKSPACE/Go2 simulator/go2_viewer.py" --terrain --validate
 
   windows:
     name: Windows

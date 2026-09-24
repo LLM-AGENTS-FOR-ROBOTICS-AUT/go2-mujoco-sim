@@ -1,1 +1,3 @@
-mujoco==3.13.0
+# MuJoCo 3.11+ has no Intel Mac wheels. Use the last Intel release on x86_64.
+mujoco==3.13.0 ; platform_machine == "arm64"
+mujoco==3.10.0 ; platform_machine == "x86_64"

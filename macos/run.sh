@@ -2,19 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "This launcher is for macOS. See windows/ or scripts/run-simulator.sh." >&2
-  exit 1
-fi
-
-if [[ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
-  echo "Open Terminal without 'Open using Rosetta', then retry." >&2
-  exit 1
-fi
-if [[ "$(uname -m)" != "arm64" ]]; then
-  echo "This launcher requires an Apple Silicon (M-series) Mac." >&2
-  exit 1
-fi
+source "$ROOT/macos/platform.sh"
 
 if [[ ! -x "$ROOT/.venv/bin/mjpython" ]] || \
    [[ ! -f "$ROOT/_deps/unitree_mujoco/unitree_robots/go2/scene.xml" ]] || \

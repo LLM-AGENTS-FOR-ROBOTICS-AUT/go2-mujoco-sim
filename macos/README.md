@@ -1,8 +1,10 @@
 # macOS setup
 
-Requires **macOS 11 (Big Sur) or newer**, an **Apple Silicon (M-series) Mac**, Git,
-Apple's **Command Line Tools**, and internet access for setup. Use a normal
-desktop Terminal to open the viewer. Intel Macs are not supported.
+Requires **macOS 11 (Big Sur) or newer**, an **Apple Silicon (M-series) or Intel
+Mac**, Git, Apple's **Command Line Tools**, and internet access for setup. This
+includes **quad-core Intel Core i5 Macs running macOS 15 (Sequoia)**. Intel CPUs
+must support AVX; setup checks this before installing MuJoCo. Use a normal
+desktop Terminal to open the viewer.
 
 ## Install and run
 
@@ -21,6 +23,8 @@ and retry. You can also start that installation with `xcode-select --install`.
 Setup downloads Python 3.12, installs MuJoCo, fetches the pinned official Unitree
 Go2 assets, and checks both scenes. No Homebrew, `sudo`, manual Python install,
 or environment activation is needed. Rerunning setup reuses the installation.
+The same commands work on Intel and Apple Silicon; setup selects the native
+packages automatically.
 
 After setup, launch from the repository root:
 
@@ -52,9 +56,22 @@ These folders are ignored by Git. Setup leaves your system Python and shell
 configuration alone. Windows files live in `windows/`; only the viewer code and
 robot assets are shared.
 
-The installer uses MuJoCo 3.13.0's prebuilt Apple Silicon package, so it does not
-compile MuJoCo. See [MuJoCo's package release](https://pypi.org/project/mujoco/3.13.0/)
-and [uv's installer options](https://docs.astral.sh/uv/reference/installer/).
+| Mac processor | Native architecture | MuJoCo version |
+| --- | --- | --- |
+| Apple Silicon (M-series) | `arm64` | 3.13.0 |
+| Intel, including quad-core Core i5 with AVX | `x86_64` | 3.10.0 |
+
+Both use prebuilt packages, so setup does not compile MuJoCo. Intel uses
+[MuJoCo 3.10.0](https://pypi.org/project/mujoco/3.10.0/), the last release with
+Intel Mac wheels; Apple Silicon uses [3.13.0](https://pypi.org/project/mujoco/3.13.0/).
+MuJoCo's Intel binaries [require AVX CPU instructions](https://mujoco.readthedocs.io/en/3.10.0/programming/index.html#introduction).
+See also [uv's installer options](https://docs.astral.sh/uv/reference/installer/).
+
+GitHub Actions checks clean and repeated installs, both headless scenes, and
+the native `mjpython` entry point on Apple Silicon and Intel macOS 15 runners.
+The hosted runners cannot create the viewer's OpenGL window, so graphical checks
+require a Mac desktop session. These checks do not measure performance on every
+Core i5 model.
 
 ## Troubleshooting
 
@@ -71,6 +88,9 @@ and [uv's installer options](https://docs.astral.sh/uv/reference/installer/).
 - **Apple Silicon Terminal running under Rosetta:** quit Terminal, turn off
   **Open using Rosetta** in Terminal's Finder **Get Info** window, reopen it,
   and run setup again.
+- **Intel Core i5 Mac:** use the regular commands above. The Rosetta instruction
+  applies only to Apple Silicon Macs. If setup reports missing AVX support, the
+  processor cannot run the prebuilt MuJoCo package.
 - **A download fails or setup is incomplete:** check your internet connection
   and rerun `bash macos/setup.sh`. It reuses completed downloads.
 - **The repository moved or an incompatible `.venv` exists:** close the viewer,
