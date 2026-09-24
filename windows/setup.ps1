@@ -1,5 +1,6 @@
 param(
-    [string]$Python = ""
+    [string]$Python = "",
+    [switch]$Locomotion
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,6 +76,17 @@ if ($LASTEXITCODE -ne 0) {
 & $venvPython (Join-Path $root "go2_viewer.py") --terrain --validate
 if ($LASTEXITCODE -ne 0) {
     throw "The Go2 terrain validation failed."
+}
+
+if ($Locomotion) {
+    Write-Host "Installing the optional CPU walking policy..."
+    & $venvPython -m pip install --only-binary :all: --requirement (Join-Path $root "requirements-locomotion.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Could not install walking dependencies." }
+    & $venvPython (Join-Path $root "policy_assets.py")
+    if ($LASTEXITCODE -ne 0) { throw "Could not download and verify the Go2 policy." }
+    & $venvPython (Join-Path $root "go2_viewer.py") --walk --validate
+    if ($LASTEXITCODE -ne 0) { throw "The Go2 locomotion validation failed." }
+    Write-Host "Walking demo ready: windows\Launch Go2 Viewer.cmd --demo"
 }
 
 Write-Host ""

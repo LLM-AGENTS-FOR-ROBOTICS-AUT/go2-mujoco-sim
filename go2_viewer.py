@@ -133,8 +133,32 @@ def main() -> int:
         "--validate", action="store_true", help="check the installation headlessly"
     )
     parser.add_argument("--auto-close-seconds", type=float, default=None)
+    parser.add_argument("--walk", action="store_true", help="use the optional Go2 locomotion policy")
+    parser.add_argument("--demo", action="store_true", help="run the walking demonstration (implies --walk)")
+    parser.add_argument("--report", type=Path, default=ROOT / "_deps" / "locomotion-results.json",
+                        help="JSON report path for --walk --validate")
     args = parser.parse_args()
+    if (args.walk or args.demo) and args.terrain and args.validate:
+        parser.error("The locomotion tracking suite uses level ground; omit --terrain")
+    if args.auto_close_seconds is not None and (
+        not 0 < args.auto_close_seconds < float("inf")
+    ):
+        parser.error("--auto-close-seconds must be a finite positive number")
     try:
+        if args.walk or args.demo:
+            try:
+                from go2_locomotion import SimSportClient, run_viewer as run_walking_viewer
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Walking dependencies are missing. Run bash macos/setup.sh --locomotion "
+                    "or Windows setup.ps1 -Locomotion."
+                ) from exc
+            scene = GO2_DIR / ("scene_terrain.xml" if args.terrain else "scene.xml")
+            client = SimSportClient(scene)
+            if args.validate:
+                from validate_locomotion import validate as validate_walking
+                return validate_walking(client, args.report)
+            return run_walking_viewer(client, args.demo, args.auto_close_seconds)
         model, data, scene = load_scene(args.terrain)
         if args.validate:
             return validate(model, data, scene)

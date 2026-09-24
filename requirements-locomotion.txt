@@ -1,0 +1,3 @@
+# Optional CPU-only locomotion runtime. Apple Silicon macOS 14+ and Windows x64.
+torch==2.8.0
+PyYAML==6.0.3
