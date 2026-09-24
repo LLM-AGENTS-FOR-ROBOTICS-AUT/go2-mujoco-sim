@@ -11,7 +11,7 @@ SDKs, and MuJoCo are downloaded locally into ignored folders.
 
 | Platform | Setup and launch files | What runs |
 | --- | --- | --- |
-| [macOS 11+ — Apple Silicon (M-series)](macos/README.md) | `macos/` | Go2 standing-pose viewer, flat or terrain scene |
+| [macOS 11+ — Apple Silicon or Intel](macos/README.md) | `macos/` | Go2 standing-pose viewer, flat or terrain scene |
 | [Windows 10/11 — x64](windows/README.md) | `windows/` | The same Go2 standing-pose viewer |
 | Ubuntu 22.04/24.04 — x86-64 | `scripts/` | Native Unitree simulator and SDK2/DDS bridge for a separate controller |
 
@@ -20,9 +20,11 @@ They do not include a learned walking policy or the Ubuntu DDS bridge.
 
 ## macOS simulator quick start
 
-Requires an Apple Silicon (M-series) Mac running macOS 11 (Big Sur) or newer,
-Git, Apple's Command Line Tools, and internet access. Python and MuJoCo are
-installed automatically; Homebrew and `sudo` are not needed.
+Supports Apple Silicon (M-series) and Intel Macs, including quad-core Intel Core
+i5 models with AVX support, running macOS 11 (Big Sur) or newer. macOS 15
+(Sequoia) is supported. Requires Git, Apple's Command Line Tools, and internet
+access. Setup detects your processor and installs the matching Python and
+MuJoCo packages automatically; Homebrew and `sudo` are not needed.
 
 ```bash
 git clone https://github.com/LLM-AGENTS-FOR-ROBOTICS-AUT/go2-mujoco-sim.git
@@ -82,7 +84,7 @@ loopback (`lo`) interface. A controller such as the lecturer-provided
 go2_viewer.py              Shared macOS/Windows MuJoCo model viewer
 macos/setup.sh             Automatic macOS Python and MuJoCo setup
 macos/run.sh               macOS launcher (uses mjpython for the window)
-macos/requirements.txt     Pinned Apple Silicon dependencies
+macos/requirements.txt     Pinned Apple Silicon and Intel dependencies
 macos/*.command            One-click macOS launchers
 windows/setup.ps1          Windows setup
 windows/requirements.txt   Pinned Windows dependencies
