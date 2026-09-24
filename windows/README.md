@@ -21,8 +21,29 @@ first launch if the environment is missing. Use **Launch Go2 Viewer - Terrain.cm
 for rough terrain, or pass `--terrain` to the regular launcher.
 
 Use the mouse to rotate, pan, and zoom. Close the window or press Escape to exit.
-The robot holds a standing pose; no walking policy or DDS bridge is included in
-this viewer.
+The default viewer holds a standing pose. The optional walking demo below
+adds locomotion; the Ubuntu DDS bridge is a separate setup.
+
+## Optional walking demo
+
+From the repository root in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1 -Locomotion
+& '.\windows\Launch Go2 Viewer.cmd' --demo
+```
+
+Setup also works from a fresh clone. It installs CPU PyTorch and
+downloads the pinned Go2 Walk These Ways policy. It uses simulated position
+and heading feedback for tracking, and a standing hold for stopping. Use `--walk` for manual keyboard
+control: W/S forward/back, A/D sideways, Q/E turn, Space stop, R reset. Commands
+persist after releasing a key; press Space to stop. Launching works offline once
+setup finishes.
+
+Run `& '.\windows\Launch Go2 Viewer.cmd' --walk --validate` to repeat the
+motion checks without a window. The JSON report is saved to
+`_deps/locomotion-results.json`. See
+[the policy comparison and test results](../docs/locomotion.md).
 
 ## Troubleshooting
 

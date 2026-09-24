@@ -1,0 +1,401 @@
+{
+  "passed": true,
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "architecture": "arm64",
+  "python": "3.12.14",
+  "packages": {
+    "mujoco": "3.13.0",
+    "torch": "2.8.0",
+    "numpy": "2.5.3"
+  },
+  "policy": "go2_deploy Walk These Ways",
+  "policy_revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+  "policy_sha256": "946a1631a05e8c0d7d94b79a8c1bbed73bf68adffa504e2ddba8188fbd10bf19",
+  "gait": [
+    0.5,
+    0.3,
+    0.08,
+    0.0
+  ],
+  "feedback": "Simulated planar position and yaw; not an unassisted policy result",
+  "scope": "Level ground only, original Go2 dynamics; no physical robot validation",
+  "cases": [
+    {
+      "name": "forward",
+      "command": [
+        0.4,
+        0,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 3.912148758781739,
+      "expected_distance": 4.0,
+      "cross_track_m": 0.04210798884485941,
+      "heading_error_deg": 0.7227984843810157,
+      "final_yaw_deg": -0.09269092835677628,
+      "max_tilt_deg": 3.565258827765942,
+      "stop_speed_m_s": 0.0004812546812565241,
+      "stop_yaw_rate_rad_s": 0.00015151409876434455,
+      "stop_drift_m": 0.030734127674306895,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "slow_forward",
+      "command": [
+        0.2,
+        0,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 1.9291579631858098,
+      "expected_distance": 2.0,
+      "cross_track_m": 0.038224751414903065,
+      "heading_error_deg": 0.6686621539710071,
+      "final_yaw_deg": -0.08053967586588573,
+      "max_tilt_deg": 2.2805110427257813,
+      "stop_speed_m_s": 0.0005195925688389032,
+      "stop_yaw_rate_rad_s": 0.00020453671259634633,
+      "stop_drift_m": 0.03223550651048007,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "fast_forward",
+      "command": [
+        0.6,
+        0,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 5.915136448805951,
+      "expected_distance": 6.0,
+      "cross_track_m": 0.03037963663397818,
+      "heading_error_deg": 0.8408647216942078,
+      "final_yaw_deg": -0.07818573620594856,
+      "max_tilt_deg": 5.273069288590101,
+      "stop_speed_m_s": 0.0009086980452659274,
+      "stop_yaw_rate_rad_s": 9.158902459077106e-05,
+      "stop_drift_m": 0.021187114237899925,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "backward",
+      "command": [
+        -0.3,
+        0,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 2.875618085296179,
+      "expected_distance": 3.0,
+      "cross_track_m": 0.04275227308650793,
+      "heading_error_deg": 0.23427193749784544,
+      "final_yaw_deg": -0.12114506918083189,
+      "max_tilt_deg": 5.255520579998048,
+      "stop_speed_m_s": 0.00034761725579046947,
+      "stop_yaw_rate_rad_s": 0.0002700210282676753,
+      "stop_drift_m": 0.06614021903886344,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "left",
+      "command": [
+        0,
+        0.3,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 2.893958427137274,
+      "expected_distance": 3.0,
+      "cross_track_m": 0.021737277129008747,
+      "heading_error_deg": 0.8246184607502639,
+      "final_yaw_deg": -0.071898395526055,
+      "max_tilt_deg": 4.210096230373583,
+      "stop_speed_m_s": 0.0007878057029289007,
+      "stop_yaw_rate_rad_s": 0.0005029236658410383,
+      "stop_drift_m": 0.05881164998194326,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "right",
+      "command": [
+        0,
+        -0.3,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 2.818153903033695,
+      "expected_distance": 3.0,
+      "cross_track_m": 0.023462693215626107,
+      "heading_error_deg": 0.5620658619162662,
+      "final_yaw_deg": -0.028864932028258176,
+      "max_tilt_deg": 5.270859166308082,
+      "stop_speed_m_s": 0.0002737685492138953,
+      "stop_yaw_rate_rad_s": 0.0001798118168844914,
+      "stop_drift_m": 0.029993850284191326,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "slow_left",
+      "command": [
+        0,
+        0.2,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 1.912111323980231,
+      "expected_distance": 2.0,
+      "cross_track_m": 0.024166539624155492,
+      "heading_error_deg": 0.7556690716013423,
+      "final_yaw_deg": -0.06919447613220482,
+      "max_tilt_deg": 4.069824311195038,
+      "stop_speed_m_s": 0.0008363908929002406,
+      "stop_yaw_rate_rad_s": 0.0004919775218378313,
+      "stop_drift_m": 0.05499370856359269,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "slow_right",
+      "command": [
+        0,
+        -0.2,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 1.8362508639178627,
+      "expected_distance": 2.0,
+      "cross_track_m": 0.0254450524392551,
+      "heading_error_deg": 0.47306309423687276,
+      "final_yaw_deg": -0.029989558215790104,
+      "max_tilt_deg": 3.9184521584320713,
+      "stop_speed_m_s": 0.0003538805422698162,
+      "stop_yaw_rate_rad_s": 0.00011141354516900903,
+      "stop_drift_m": 0.03183200389863132,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "turn_left",
+      "command": [
+        0,
+        0,
+        0.5
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 4.916649883273738,
+      "expected_distance": 5.0,
+      "cross_track_m": 0.05909627584016734,
+      "heading_error_deg": 4.775609910337571,
+      "final_yaw_deg": 281.70328765507406,
+      "max_tilt_deg": 2.253499984181758,
+      "stop_speed_m_s": 0.0005210691787939909,
+      "stop_yaw_rate_rad_s": 0.0002716549603695139,
+      "stop_drift_m": 0.04937673595261807,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "turn_right",
+      "command": [
+        0,
+        0,
+        -0.5
+      ],
+      "seconds": 10,
+      "start_yaw": 0,
+      "distance": 4.947330154351265,
+      "expected_distance": 5.0,
+      "cross_track_m": 0.03965380928647065,
+      "heading_error_deg": 3.017759863277993,
+      "final_yaw_deg": -283.4611377021336,
+      "max_tilt_deg": 3.3948857139688124,
+      "stop_speed_m_s": 0.0006076908013665092,
+      "stop_yaw_rate_rad_s": 0.00028725373876390374,
+      "stop_drift_m": 0.03972953253790342,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "rotated_start_left",
+      "command": [
+        0.4,
+        0,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": 0.7,
+      "distance": 3.912148748301685,
+      "expected_distance": 4.0,
+      "cross_track_m": 0.04210799736969669,
+      "heading_error_deg": 0.7227980123130288,
+      "final_yaw_deg": -0.09269110933693481,
+      "max_tilt_deg": 3.5652584917462025,
+      "stop_speed_m_s": 0.00048144735316731405,
+      "stop_yaw_rate_rad_s": 0.00015124435432559632,
+      "stop_drift_m": 0.030733714718549902,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "rotated_start_right",
+      "command": [
+        0.4,
+        0,
+        0
+      ],
+      "seconds": 10,
+      "start_yaw": -1.2,
+      "distance": 3.91214876201486,
+      "expected_distance": 4.0,
+      "cross_track_m": 0.042107983221445905,
+      "heading_error_deg": 0.7227981472362358,
+      "final_yaw_deg": -0.0926912260270333,
+      "max_tilt_deg": 3.565258809299344,
+      "stop_speed_m_s": 0.00048110208918316835,
+      "stop_yaw_rate_rad_s": 0.00015179969524268738,
+      "stop_drift_m": 0.030733876430110062,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "long_straight",
+      "command": [
+        0.4,
+        0,
+        0
+      ],
+      "seconds": 60,
+      "start_yaw": 0,
+      "distance": 23.911999514812806,
+      "expected_distance": 24.0,
+      "cross_track_m": 0.042670108613022534,
+      "heading_error_deg": 0.7227984843810157,
+      "final_yaw_deg": -0.03183352225487017,
+      "max_tilt_deg": 3.5621477451824464,
+      "stop_speed_m_s": 0.0004788190273639187,
+      "stop_yaw_rate_rad_s": 0.0001518389330642133,
+      "stop_drift_m": 0.030676537270442877,
+      "checks": {
+        "distance_within_20_percent": true,
+        "cross_track_under_10cm": true,
+        "heading_error_under_5deg": true,
+        "stopped_speed_under_5mm_s": true,
+        "stopped_rotation_under_0_01rad_s": true,
+        "stop_drift_under_25cm": true
+      },
+      "passed": true
+    },
+    {
+      "name": "continuous_demo",
+      "passed": true
+    },
+    {
+      "name": "idle_20s",
+      "drift_m": 0.0027032753763883977,
+      "yaw_rad": -4.402325724227003e-07,
+      "passed": true
+    }
+  ],
+  "step_p95_ms": 0.7016785017185609,
+  "inference_p95_ms": 0.16362920177925838,
+  "wall_seconds": 7.706903625003179
+}

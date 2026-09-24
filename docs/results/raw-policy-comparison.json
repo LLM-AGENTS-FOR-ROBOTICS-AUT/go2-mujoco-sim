@@ -1,0 +1,159 @@
+{
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "mujoco": "3.13.0",
+  "torch": "2.8.0",
+  "gate": "10s at vx=0.4: forward 3.2-4.8m, lateral <=0.10m, heading <=5 degrees",
+  "feedback": false,
+  "gait": [
+    0.6,
+    0.34,
+    0.12,
+    0.3
+  ],
+  "results": {
+    "himloco": [
+      {
+        "command": [
+          0.4,
+          0,
+          0
+        ],
+        "duration": 10,
+        "start_yaw": 0,
+        "seed": 0,
+        "forward_m": 3.437729355665831,
+        "lateral_m": -0.1707720625492738,
+        "max_lateral_m": 0.1789884436410775,
+        "final_heading_deg": 1.815266619538421,
+        "max_heading_deg": 3.8719515261235538,
+        "max_tilt_deg": 4.714558244553167,
+        "stop_speed_m_s": 0.006183261702386782,
+        "stop_yaw_rate_rad_s": 0.02360476694313957,
+        "step_p95_ms": 0.9390152052219483,
+        "straight_pass": false,
+        "speed_pass": true,
+        "tracking_pass": false
+      }
+    ],
+    "simple": [
+      {
+        "command": [
+          0.4,
+          0,
+          0
+        ],
+        "duration": 10,
+        "start_yaw": 0,
+        "seed": 0,
+        "forward_m": 2.574479127329994,
+        "lateral_m": 0.0921660224939455,
+        "max_lateral_m": 0.10696847308709395,
+        "final_heading_deg": -0.10617659976031238,
+        "max_heading_deg": 0.8180155202914179,
+        "max_tilt_deg": 3.7788872331523873,
+        "stop_speed_m_s": 0.0006311856481103327,
+        "stop_yaw_rate_rad_s": 2.0686038494959263e-05,
+        "step_p95_ms": 0.8856330015987623,
+        "straight_pass": false,
+        "speed_pass": false,
+        "tracking_pass": false
+      }
+    ],
+    "ts": [
+      {
+        "command": [
+          0.4,
+          0,
+          0
+        ],
+        "duration": 10,
+        "start_yaw": 0,
+        "seed": 0,
+        "forward_m": 2.647243738982111,
+        "lateral_m": -0.40768512027934345,
+        "max_lateral_m": 0.40768512027934345,
+        "final_heading_deg": -15.514669189635057,
+        "max_heading_deg": 15.58489522976827,
+        "max_tilt_deg": 9.292397119801196,
+        "stop_speed_m_s": 0.00036455345860749567,
+        "stop_yaw_rate_rad_s": 4.208400067673638e-05,
+        "step_p95_ms": 0.9406752986251375,
+        "straight_pass": false,
+        "speed_pass": false,
+        "tracking_pass": false
+      }
+    ],
+    "wtw": [
+      {
+        "command": [
+          0.4,
+          0,
+          0
+        ],
+        "duration": 10,
+        "start_yaw": 0,
+        "seed": 0,
+        "forward_m": 2.833490215470785,
+        "lateral_m": 0.055358790709855214,
+        "max_lateral_m": 0.056045991965505526,
+        "final_heading_deg": -1.6849748940941178,
+        "max_heading_deg": 1.9380002350667642,
+        "max_tilt_deg": 13.172812537590628,
+        "stop_speed_m_s": 0.028701156474505364,
+        "stop_yaw_rate_rad_s": 0.02381028227552909,
+        "step_p95_ms": 0.734031250976841,
+        "straight_pass": true,
+        "speed_pass": false,
+        "tracking_pass": false
+      }
+    ],
+    "ee": [
+      {
+        "command": [
+          0.4,
+          0,
+          0
+        ],
+        "duration": 10,
+        "start_yaw": 0,
+        "seed": 0,
+        "forward_m": 2.753030720624704,
+        "lateral_m": 0.379304877080458,
+        "max_lateral_m": 0.379304877080458,
+        "final_heading_deg": 7.056555577446486,
+        "max_heading_deg": 7.056555577446486,
+        "max_tilt_deg": 7.967212864858444,
+        "stop_speed_m_s": 0.00072249156238015,
+        "stop_yaw_rate_rad_s": 1.5800757517283463e-05,
+        "step_p95_ms": 0.930905600398546,
+        "straight_pass": false,
+        "speed_pass": false,
+        "tracking_pass": false
+      }
+    ],
+    "waq": [
+      {
+        "command": [
+          0.4,
+          0,
+          0
+        ],
+        "duration": 10,
+        "start_yaw": 0,
+        "seed": 0,
+        "forward_m": 3.1743640779602216,
+        "lateral_m": 0.2177437450869943,
+        "max_lateral_m": 0.2177437450869943,
+        "final_heading_deg": 3.1191994872214743,
+        "max_heading_deg": 3.1191994872214743,
+        "max_tilt_deg": 4.916730361376224,
+        "stop_speed_m_s": 0.0009222542423880729,
+        "stop_yaw_rate_rad_s": 0.00039963806673646093,
+        "step_p95_ms": 0.9143875005975126,
+        "straight_pass": false,
+        "speed_pass": false,
+        "tracking_pass": false
+      }
+    ]
+  }
+}

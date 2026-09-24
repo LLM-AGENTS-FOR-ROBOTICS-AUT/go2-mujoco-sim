@@ -61,6 +61,21 @@ jobs:
           source "$GITHUB_WORKSPACE/Go2 simulator/macos/developer-tools.sh"
           "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/mjpython" "$GITHUB_WORKSPACE/Go2 simulator/go2_viewer.py" --validate
           "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/mjpython" "$GITHUB_WORKSPACE/Go2 simulator/go2_viewer.py" --terrain --validate
+      - name: Install and test optional walking policy on Apple Silicon
+        if: matrix.architecture == 'arm64'
+        run: bash "$GITHUB_WORKSPACE/Go2 simulator/macos/setup.sh" --locomotion
+      - name: Recheck walking through the Mac launcher
+        if: matrix.architecture == 'arm64'
+        working-directory: ${{ runner.temp }}
+        run: |
+          bash "$GITHUB_WORKSPACE/Go2 simulator/macos/run.sh" --walk --validate
+          "$GITHUB_WORKSPACE/Go2 simulator/_deps/tools/uv" pip check --python "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/python"
+      - name: Save Apple Silicon motion results
+        if: always() && matrix.architecture == 'arm64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: locomotion-macos-arm64
+          path: Go2 simulator/_deps/locomotion-results.json
 
   windows:
     name: Windows
@@ -89,3 +104,20 @@ jobs:
           call "%GITHUB_WORKSPACE%\Go2 simulator\windows\Launch Go2 Viewer - Terrain.cmd" --validate
           if errorlevel 1 exit /b 1
           "%GITHUB_WORKSPACE%\Go2 simulator\.venv\Scripts\python.exe" -m pip check
+      - name: Install and test optional walking policy
+        shell: powershell
+        run: |
+          & "$env:GITHUB_WORKSPACE\Go2 simulator\windows\setup.ps1" -Python (Get-Command python).Source -Locomotion
+      - name: Recheck walking through the Windows launcher
+        working-directory: ${{ runner.temp }}
+        shell: cmd
+        run: |
+          call "%GITHUB_WORKSPACE%\Go2 simulator\windows\Launch Go2 Viewer.cmd" --walk --validate
+          if errorlevel 1 exit /b 1
+          "%GITHUB_WORKSPACE%\Go2 simulator\.venv\Scripts\python.exe" -m pip check
+      - name: Save Windows motion results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: locomotion-windows-x64
+          path: Go2 simulator/_deps/locomotion-results.json

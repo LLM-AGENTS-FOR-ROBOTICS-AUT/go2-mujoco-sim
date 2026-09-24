@@ -39,8 +39,28 @@ setup automatically on first use, so you can skip the explicit setup command.
 After installation, launching works offline.
 
 Use the mouse to rotate, pan, and zoom. Close the window or press Escape to exit.
-The robot holds a standing pose; this viewer includes no walking policy or DDS
-bridge. The Ubuntu native simulator is a separate setup.
+The default viewer holds a standing pose. The optional walking demo below
+adds locomotion. The Ubuntu native simulator and DDS bridge are a separate setup.
+
+## Optional walking demo (M-series only)
+
+Requires an **Apple Silicon Mac with macOS 14 or newer**. From the repository root:
+
+```bash
+bash macos/setup.sh --locomotion
+bash macos/run.sh --demo
+```
+
+Setup also works from a fresh clone. It installs CPU PyTorch and
+downloads the pinned Go2 Walk These Ways policy. It uses simulated position
+and heading feedback for tracking, and a standing hold for stopping. Use `--walk` for manual keyboard
+control: W/S forward/back, A/D sideways, Q/E turn, Space stop, R reset. Commands
+persist after releasing a key; press Space to stop. Launching works offline once
+setup finishes. The optional walking path does not add Intel Mac support.
+
+Run `bash macos/run.sh --walk --validate` to repeat the motion checks without a
+window. The JSON report is saved to `_deps/locomotion-results.json`. See
+[the policy comparison and test results](../docs/locomotion.md).
 
 ## What gets installed
 
