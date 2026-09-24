@@ -1,0 +1,146 @@
+[
+  {
+    "repo": "fan-ziqi/rl_sar",
+    "revision": "376d42c9b128f963ab08579762d5a216a976ce39",
+    "path": "_deps/policy-trials/rl_sar/policy/go2/himloco/config.yaml",
+    "url": "https://raw.githubusercontent.com/fan-ziqi/rl_sar/376d42c9b128f963ab08579762d5a216a976ce39/policy/go2/himloco/config.yaml",
+    "sha256": "67179d241385bc142ffe02d0b1c04899f46f2ae9f9eef6e57935a6f57c5430c5",
+    "bytes": 1777
+  },
+  {
+    "repo": "fan-ziqi/rl_sar",
+    "revision": "376d42c9b128f963ab08579762d5a216a976ce39",
+    "path": "_deps/policy-trials/rl_sar/policy/go2/himloco/himloco.pt",
+    "url": "https://raw.githubusercontent.com/fan-ziqi/rl_sar/376d42c9b128f963ab08579762d5a216a976ce39/policy/go2/himloco/himloco.pt",
+    "sha256": "d9945f85a39944aaf241a67f7d2b25a15326a0222d0e503aeb05a7f188430509",
+    "bytes": 991615
+  },
+  {
+    "repo": "fan-ziqi/rl_sar",
+    "revision": "376d42c9b128f963ab08579762d5a216a976ce39",
+    "path": "_deps/policy-trials/rl_sar/policy/go2/base.yaml",
+    "url": "https://raw.githubusercontent.com/fan-ziqi/rl_sar/376d42c9b128f963ab08579762d5a216a976ce39/policy/go2/base.yaml",
+    "sha256": "78e9b9c2be72544ab334362535ab876630808f87170ec3e38c56f9817cd53d02",
+    "bytes": 1381
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/include/user_controller.hpp",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/include/user_controller.hpp",
+    "sha256": "ca8d0375f1f7fbbeeec060fdebb2db7a6de9f0a7485ca61f5fc8712626142e44",
+    "bytes": 29924
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/include/param/cfg.hpp",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/include/param/cfg.hpp",
+    "sha256": "595b6c9a1f92bdebc6107ac307ef08d1e9f9bf1ef14328fe0b6bad9fd77b7f7b",
+    "bytes": 7694
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/params/simple_rl_config.yaml",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/params/simple_rl_config.yaml",
+    "sha256": "c22ac5d20d96a7fe72e171bf20ccb9b97901e3dc6e9618dce84fac77d2ce315a",
+    "bytes": 524
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/params/ts_config.yaml",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/params/ts_config.yaml",
+    "sha256": "3f1641c1144f67def0df0719f31697217645fa8299b2d9ef70ec8d113883ab0a",
+    "bytes": 597
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/params/wtw_config.yaml",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/params/wtw_config.yaml",
+    "sha256": "6e52b63e8b19c6dddeaf0c8b189f8cdae6b8de87138ec24eec67690f397ec6b4",
+    "bytes": 896
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/models/Jan05_09-43-56_simple_rl_genesis.pt",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/models/Jan05_09-43-56_simple_rl_genesis.pt",
+    "sha256": "ddcad0b4c4e7622be3aab8ceffc2f55d9efae78630fdc96b2708a044026dfd9b",
+    "bytes": 769680
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/models/policy_ts_gs.pt",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/models/policy_ts_gs.pt",
+    "sha256": "3378fe2223ddb1cbfe182250f9e1e14acbb46b70b3a509ef274f355de12aea6b",
+    "bytes": 2078079
+  },
+  {
+    "repo": "lupinjia/go2_deploy",
+    "revision": "2ee4388672fa121eb6f827984dfdeb16e415fabe",
+    "path": "_deps/policy-trials/go2_deploy/models/wtw_model.pt",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy/2ee4388672fa121eb6f827984dfdeb16e415fabe/models/wtw_model.pt",
+    "sha256": "946a1631a05e8c0d7d94b79a8c1bbed73bf68adffa504e2ddba8188fbd10bf19",
+    "bytes": 1301880
+  },
+  {
+    "repo": "lupinjia/go2_deploy_python",
+    "revision": "9af212eb998561d07a0ea3939720b81652c7fed7",
+    "path": "_deps/policy-trials/go2_deploy_python/controller.py",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy_python/9af212eb998561d07a0ea3939720b81652c7fed7/controller.py",
+    "sha256": "f69f29b205567d01dbfae6368d2b0b16fcaa60a64036b0f9a39bc9945710874d",
+    "bytes": 15196
+  },
+  {
+    "repo": "lupinjia/go2_deploy_python",
+    "revision": "9af212eb998561d07a0ea3939720b81652c7fed7",
+    "path": "_deps/policy-trials/go2_deploy_python/config.py",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy_python/9af212eb998561d07a0ea3939720b81652c7fed7/config.py",
+    "sha256": "620bb84c8b03aa47de2b8bc1b712317332ce3d2b480d14345fedb53aa661cefe",
+    "bytes": 1446
+  },
+  {
+    "repo": "lupinjia/go2_deploy_python",
+    "revision": "9af212eb998561d07a0ea3939720b81652c7fed7",
+    "path": "_deps/policy-trials/go2_deploy_python/configs/ts.yaml",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy_python/9af212eb998561d07a0ea3939720b81652c7fed7/configs/ts.yaml",
+    "sha256": "5369667deee1c3fd75f9df0b7dc6feb5b11fee63c089610d04ba3e411223a32f",
+    "bytes": 667
+  },
+  {
+    "repo": "lupinjia/go2_deploy_python",
+    "revision": "9af212eb998561d07a0ea3939720b81652c7fed7",
+    "path": "_deps/policy-trials/go2_deploy_python/configs/ee.yaml",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy_python/9af212eb998561d07a0ea3939720b81652c7fed7/configs/ee.yaml",
+    "sha256": "039fcce7466da8616b7f4ce937005a6b6e7a3c938ef2bc76deebda48cea9b92b",
+    "bytes": 723
+  },
+  {
+    "repo": "lupinjia/go2_deploy_python",
+    "revision": "9af212eb998561d07a0ea3939720b81652c7fed7",
+    "path": "_deps/policy-trials/go2_deploy_python/configs/waq.yaml",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy_python/9af212eb998561d07a0ea3939720b81652c7fed7/configs/waq.yaml",
+    "sha256": "2efd0eff0bff4edaf8edc2a285937d18e017a837440d48e9d4153102d8257225",
+    "bytes": 729
+  },
+  {
+    "repo": "lupinjia/go2_deploy_python",
+    "revision": "9af212eb998561d07a0ea3939720b81652c7fed7",
+    "path": "_deps/policy-trials/go2_deploy_python/models/Dec15_14-57-47_gym_ee_policy.pt",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy_python/9af212eb998561d07a0ea3939720b81652c7fed7/models/Dec15_14-57-47_gym_ee_policy.pt",
+    "sha256": "c6ac9a5455d2130b9b72d964c5d69bf506f3b411f72f7882b679135fba22070a",
+    "bytes": 2260746
+  },
+  {
+    "repo": "lupinjia/go2_deploy_python",
+    "revision": "9af212eb998561d07a0ea3939720b81652c7fed7",
+    "path": "_deps/policy-trials/go2_deploy_python/models/Dec16_09-19-17_gym_dreamwaq_policy.pt",
+    "url": "https://raw.githubusercontent.com/lupinjia/go2_deploy_python/9af212eb998561d07a0ea3939720b81652c7fed7/models/Dec16_09-19-17_gym_dreamwaq_policy.pt",
+    "sha256": "216d69d83d875a5b66cb295b1e9b93d6aadfec630df1ba97b90242f8618c993b",
+    "bytes": 2193034
+  }
+]
