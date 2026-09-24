@@ -52,12 +52,15 @@ jobs:
           bash "$GITHUB_WORKSPACE/Go2 simulator/macos/Launch Go2 Viewer.command" --validate
           bash "$GITHUB_WORKSPACE/Go2 simulator/macos/Launch Go2 Viewer - Terrain.command" --validate
           "$GITHUB_WORKSPACE/Go2 simulator/_deps/tools/uv" pip check --python "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/python"
-      - name: Open and close both graphical scenes
+      - name: Validate the native mjpython entry point
         timeout-minutes: 2
         working-directory: ${{ runner.temp }}
         run: |
-          bash "$GITHUB_WORKSPACE/Go2 simulator/macos/run.sh" --auto-close-seconds 5
-          bash "$GITHUB_WORKSPACE/Go2 simulator/macos/run.sh" --terrain --auto-close-seconds 5
+          # Hosted Mac runners cannot create the viewer's OpenGL window. Exercise
+          # the actual native launcher and both scenes without creating a window.
+          source "$GITHUB_WORKSPACE/Go2 simulator/macos/developer-tools.sh"
+          "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/mjpython" "$GITHUB_WORKSPACE/Go2 simulator/go2_viewer.py" --validate
+          "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/mjpython" "$GITHUB_WORKSPACE/Go2 simulator/go2_viewer.py" --terrain --validate
 
   windows:
     name: Windows

@@ -68,8 +68,10 @@ MuJoCo's Intel binaries [require AVX CPU instructions](https://mujoco.readthedoc
 See also [uv's installer options](https://docs.astral.sh/uv/reference/installer/).
 
 GitHub Actions checks clean and repeated installs, both headless scenes, and
-graphical launch on native Apple Silicon and Intel macOS 15 runners. These
-checks do not measure performance on every Core i5 model.
+the native `mjpython` entry point on Apple Silicon and Intel macOS 15 runners.
+The hosted runners cannot create the viewer's OpenGL window, so graphical checks
+require a Mac desktop session. These checks do not measure performance on every
+Core i5 model.
 
 ## Troubleshooting
 
