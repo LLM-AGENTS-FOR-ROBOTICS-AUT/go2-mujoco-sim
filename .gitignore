@@ -10,3 +10,7 @@ MUJOCO_LOG.TXT
 build/
 .idea/
 .vscode/
+
+# LLM command console (command_ui/server.py)
+runtime/
+models/*.gguf

@@ -1,0 +1,6 @@
+# Optional: YOLO object detection (sim 'YOLO' vision mode and the real robot).
+# ultralytics is AGPL-3.0. Keep torch at the simulation pin; torchvision 0.23.0 matches torch 2.8.0.
+ultralytics==8.4.175
+torchvision==0.23.0
+# Weights: models/yolo11n-seg.pt (sha256 55ed65c56c91713d23e8402371c6c49a6fd84f257f7dce452e8d70e41dcbe152)
+# from https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n-seg.pt

@@ -1,0 +1,30 @@
+{
+  "default": "go2-ft-04",
+  "models": {
+    "base": {
+      "label": "Official base Gemma4 E2B IT",
+      "alias": "gemma4-official-readiness-006:q4_k_m",
+      "manifest": "base-gemma4-manifest.json",
+      "manifest_sha256": "26dfdb7ff14e01cb89f1c5721bdb4d179507d5c78cafb6a79479b9b19a11a2c6",
+      "manifest_store_path": "manifests-v2/ollama.com/library/gemma4-official-readiness-006/q4_k_m",
+      "weights_filename": "base-gemma4.gguf",
+      "weights_env": "GO2_BASE_WEIGHTS",
+      "weights_size_bytes": 3427880064,
+      "weights_sha256": "ecf3dd17467e4b40c99a33972428b7af96a6a7820941a34bc54e51a6bc72d1ef",
+      "source": "Verified official Google Gemma4 E2B IT baseline; no project fine-tune, native Q4_K_M text export; quantization source BF16 SHA256 91d6117ecbc2a553509dbd7ad70ff5f8ff0756c19d3ee4c0e97b4cc6a755cd1f; converter/quantizer source c811cb8f0ac91b8ac72a32f970bdd45037f20da7"
+    },
+    "go2-ft-04": {
+      "label": "Go2 ft-04: newest fine-tune (teacher data, 4-bit)",
+      "alias": "go2-voice-go2-ft-04:q4_k_m",
+      "manifest": "go2-ft-04-manifest.json",
+      "manifest_sha256": "4e44a27ab1b426786c39035fdc835b6e73acab53b7467dc6fb52ca4bce8115d7",
+      "manifest_store_path": "manifests-v2/ollama.com/library/go2-voice-go2-ft-04/q4_k_m",
+      "weights_filename": "go2-ft-04.gguf",
+      "weights_env": "GO2_FT_WEIGHTS",
+      "weights_size_bytes": 3416119840,
+      "weights_sha256": "15a875b610d8640e4d004d71e3888ba73a7647c4eddf9b91b4df95929498293d",
+      "prompt_style": "compact",
+      "source": "LoRA fine-tune of google/gemma-4-E2B-it on generated Go2 dialogue (training/, run go2-ft-04)"
+    }
+  }
+}

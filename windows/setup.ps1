@@ -1,7 +1,9 @@
 param(
     [string]$Python = "",
-    [switch]$Locomotion
+    [switch]$Locomotion,
+    [switch]$Agent
 )
+if ($Agent) { $Locomotion = $true }   # the LLM command console walks with the same policy
 
 $ErrorActionPreference = "Stop"
 
@@ -87,6 +89,23 @@ if ($Locomotion) {
     & $venvPython (Join-Path $root "go2_viewer.py") --walk --validate
     if ($LASTEXITCODE -ne 0) { throw "The Go2 locomotion validation failed." }
     Write-Host "Walking demo ready: windows\Launch Go2 Viewer.cmd --demo"
+}
+
+if ($Agent) {
+    Write-Host "Installing the LLM command console (web server, offline voice)..."
+    & $venvPython -m pip install --requirement (Join-Path $root "command_ui\requirements.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Could not install the command console dependencies." }
+    Write-Host "Downloading the household objects for the simulated room..."
+    & $venvPython (Join-Path $root "simulation\fetch_gso.py")
+    if ($LASTEXITCODE -ne 0) { throw "Could not download the room's objects." }
+    Write-Host "Checking the room simulation and the language model..."
+    & $venvPython (Join-Path $root "command_ui\server.py") --check
+    if ($LASTEXITCODE -ne 0) { throw "The room simulation check failed." }
+    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+        Write-Host "Ollama is not installed. Install it (free) from https://ollama.com/download, then start the console."
+    }
+    Write-Host "Command console ready: double-click 'command_ui\Launch Command UI.cmd'"
+    Write-Host "It needs the model file models\go2-ft-04.gguf (shared by the team, not in Git): see command_ui\README.md"
 }
 
 Write-Host ""

@@ -58,6 +58,14 @@ setup and tests are prepared but have not been executed for this change yet.
 The policy weights from `go2_deploy` were tested through this local adapter;
 the original C++/DDS deployment program and physical Go2 EDU were not tested.
 
+## LLM command console
+
+On the `llm-agent` branch, `command_ui/` is driven by the team's fine-tuned language model
+(go2-ft-04) instead of keyword rules: type or speak to the Go2 in a simulated room with household
+objects, LiDAR and a camera, or to the real Go2 EDU. Every tool call passes a safety executor first.
+Set up with `bash macos/setup.sh --agent` (Apple Silicon) or `windows\setup.ps1 -Agent`, then see the
+[command console guide](command_ui/README.md) for the model file and Ollama.
+
 ## macOS simulator quick start
 
 Supports Apple Silicon (M-series) and Intel Macs, including quad-core Intel Core
@@ -135,6 +143,11 @@ windows/requirements.txt   Pinned Windows dependencies
 windows/*.cmd             One-click Windows launchers
 scripts/setup-ubuntu.sh    Full Unitree SDK2/DDS installer
 scripts/run-simulator.sh   Ubuntu simulator launcher
+command_ui/                LLM command console: web page, server, launchers
+go2/                       LLM agent, tools and limits, safety executor, robot adapters
+simulation/                Room simulation for the console: world, sport-mode robot, LiDAR, camera
+models/                    Model catalog and checksums (weights shared separately)
+tests/                     Unit tests: python -m unittest discover -s tests -t .
 ```
 
 ## Important safety boundary

@@ -32,5 +32,24 @@ The earlier rejected robot_lab baseline used the ONNX model from Efferent
 (Apache-2.0): <https://github.com/Eximius-Labs/efferent>. It is not installed by
 the final walking setup.
 
+## LLM command console (`--agent` setup)
+
+- go2-ft-04 is a fine-tuned derivative of Google DeepMind's Gemma 4 E2B. The official model card
+  identifies Apache 2.0: <https://ai.google.dev/gemma/docs/core/model_card_4>. The weights are shared
+  separately by the team and are not in this repository; `models/catalog.json` pins their SHA-256.
+  No production approval is granted.
+- Ollama runs the model: <https://github.com/ollama/ollama> (installed separately by each user).
+- The simulated room's household objects come from **Google Scanned Objects** by Google LLC,
+  **CC-BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>), via
+  <https://github.com/kevinzakka/mujoco_scanned_objects> (MJCF files MIT) at commit `6ff8d275`.
+  `simulation/fetch_gso.py` downloads them into `_deps/gso`; the meshes are used unmodified.
+- Sensor mount positions for the simulated L1 LiDAR and front camera follow Unitree's `go2_description`
+  URDF (unitree_ros, BSD 3-Clause). The room itself is original.
+- Voice: faster-whisper (MIT) with OpenAI's Whisper `base` weights (MIT), downloaded on first use.
+- Optional, for the real robot only (`requirements-robot.txt`, `requirements-vision.txt`):
+  `unitree_sdk2py` (BSD 3-Clause), CycloneDDS (EPL-2.0 / EDL-1.0), OpenCV (Apache 2.0) and
+  `ultralytics` with YOLO weights (**AGPL-3.0**: using it in a distributed or networked product has
+  copyleft obligations; consider a differently licensed detector if that matters).
+
 Each downloaded project remains subject to its own license. Review those
 licenses before redistribution or commercial use.
