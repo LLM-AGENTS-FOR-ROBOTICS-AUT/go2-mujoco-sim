@@ -1,0 +1,5 @@
+flask
+faster-whisper
+sounddevice
+soundfile
+av==13.1.0
