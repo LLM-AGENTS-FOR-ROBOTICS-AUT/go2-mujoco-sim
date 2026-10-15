@@ -10,14 +10,16 @@ UNITREE_MUJOCO="$DEPS/unitree_mujoco"
 
 source "$ROOT/macos/platform.sh"
 LOCOMOTION=false
-if [[ "$#" == 1 && "$1" == "--locomotion" ]]; then
-  LOCOMOTION=true
+AGENT=false
+if [[ "$#" == 1 && ( "$1" == "--locomotion" || "$1" == "--agent" ) ]]; then
+  LOCOMOTION=true                      # the LLM command console (--agent) walks with the same policy
+  [[ "$1" == "--agent" ]] && AGENT=true
   if [[ "$GO2_MAC_ARCH" != "arm64" ]] || [[ "$(sw_vers -productVersion | cut -d. -f1)" -lt 14 ]]; then
-    echo "The optional walking demo requires an Apple Silicon Mac with macOS 14+." >&2
+    echo "The optional walking demo and LLM console require an Apple Silicon Mac with macOS 14+." >&2
     exit 1
   fi
 elif [[ "$#" != 0 ]]; then
-  echo "Usage: bash macos/setup.sh [--locomotion]" >&2
+  echo "Usage: bash macos/setup.sh [--locomotion | --agent]" >&2
   exit 1
 fi
 if ! git --version >/dev/null 2>&1; then
@@ -78,6 +80,20 @@ if $LOCOMOTION; then
   "$ROOT/.venv/bin/python" "$ROOT/policy_assets.py"
   "$ROOT/.venv/bin/python" "$ROOT/go2_viewer.py" --walk --validate
   echo "Walking demo ready: bash macos/run.sh --demo"
+fi
+
+if $AGENT; then
+  echo "Installing the LLM command console (web server, offline voice)..."
+  "$UV" pip install --python "$ROOT/.venv/bin/python" --requirement "$ROOT/command_ui/requirements.txt"
+  echo "Downloading the household objects for the simulated room..."
+  "$ROOT/.venv/bin/python" "$ROOT/simulation/fetch_gso.py"
+  echo "Checking the room simulation and the language model..."
+  "$ROOT/.venv/bin/python" "$ROOT/command_ui/server.py" --check
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "Ollama is not installed. Install it (free) from https://ollama.com/download, then start the console."
+  fi
+  echo "Command console ready: double-click command_ui/Launch Command UI.command"
+  echo "It needs the model file models/go2-ft-04.gguf (shared by the team, not in Git): see command_ui/README.md"
 fi
 
 echo

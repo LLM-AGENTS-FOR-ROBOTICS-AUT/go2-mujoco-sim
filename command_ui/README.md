@@ -1,54 +1,89 @@
-# Go2 Command Console (UI + voice)
+# Go2 Command Console (LLM agent, UI + voice)
 
-A simple natural-language command interface for the Go2 MuJoCo simulation.
-Type or speak a command; it is interpreted into a bounded tool, validated, and
-executed by driving the simulated Go2.
+Type or speak a command to the Go2. A language model understands it and answers, calls bounded robot
+tools, and every call is checked against the per-call limits and the robot's own sensors before anything
+moves. The page is the same as before; what's behind it changed:
 
 ```
-you type / speak  ->  interpret (tool)  ->  validation layer  ->  Move() in MuJoCo
+you type / speak  ->  LLM agent (go2-ft-04)  ->  tool calls  ->  safety executor  ->  robot (simulated room or real Go2)
 ```
+
+| | Before (`main`) | This branch (`llm-agent`) |
+|---|---|---|
+| Understanding | Keyword rules (`agent.py`, the placeholder) | Gemma 4 E2B fine-tuned for Go2 (`go2-ft-04`), via a private Ollama |
+| Actions | Walk, strafe, turn, stop | 12 tools: move, turn, go_to, approach, posture (sit, stand, lie), trick, acrobatic, body pose, look, wait, get_status, stop |
+| Safety | Speed and duration bounds | Per-call limits (0.8 m/s, 5 s, 4 m, 57 deg/s) plus LiDAR clearance checks before and during each move |
+| Robot | Flat floor, walking only | Indoor room with household objects, simulated L1 LiDAR and front camera, or the real Go2 EDU |
+
+## Set up (once)
+
+1. Install **Ollama** (free): <https://ollama.com/download>. The console starts its own private Ollama
+   process; it never touches your own Ollama models.
+2. Get the model file **`go2-ft-04.gguf`** (3.4 GB) from the team. It is not in Git (too big for
+   GitHub). Put it in the `models/` folder, or point the `GO2_FT_WEIGHTS` environment variable at it.
+   The console checks its SHA-256 against `models/catalog.json` and refuses a different file.
+3. Run the setup with the console option. It installs everything else and downloads the room's objects:
+
+   - **macOS (Apple Silicon, macOS 14+):** `bash macos/setup.sh --agent`
+   - **Windows 10/11:** `powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1 -Agent`
+
+   The setup ends with a check of the room simulation and the model file.
 
 ## Run
 
-Double-click **`Launch Command UI.cmd`**, or:
+- **macOS:** double-click **`Launch Command UI.command`**, or `.venv/bin/python command_ui/server.py`
+- **Windows:** double-click **`Launch Command UI.cmd`**, or `.venv\Scripts\python.exe command_ui\server.py`
 
-```powershell
-..\.venv\Scripts\python.exe server.py
-```
+The MuJoCo window opens with the Go2 in the room, then the page: <http://127.0.0.1:5050> on macOS
+(AirPlay Receiver holds port 5000 there) and <http://127.0.0.1:5000> on Windows. Closing the MuJoCo
+window ends the console. The first command waits a few seconds while the model loads.
 
-Two things open: the **MuJoCo window** (watch the robot) and the **web UI** at
-<http://127.0.0.1:5000> (your browser opens automatically).
+Options: `--mock` (scripted replies, no language model: checks the page and robot without the model
+file), `--scene empty`, `--headless` (no MuJoCo window), `--port N`, `--no-browser`, `--check`.
 
 ## Use
 
-- **Type** a command and press Enter / the send button.
-- **Speak**: click the mic, speak within 5 seconds (offline voice-to-text via faster-whisper).
-- **Stop**: the red Stop button halts the robot immediately (independent software stop).
+- **Type** a command and press Enter, e.g. `walk forward 2 metres then turn left`, `sit down`,
+  `what do you see?`, `go to the teddy bear`, `do a little dance`.
+- **Speak**: click the mic and speak within 5 seconds (offline speech recognition, faster-whisper).
+- **Stop**: the red Stop button halts the robot at once, without waiting for the model.
 
-Examples: `walk forward for 3 seconds`, `turn left`, `back for 2 seconds`, `stop`.
-`sit` / `jump` show the controlled fallback for unsupported commands.
+Each command gets a card: **Tool** is what the model called, **Safety** says whether it went ahead
+(or why not: blocked by an obstacle, outside the limits, waiting for your confirmation), **Robot** is
+Go2's reply. Updates that arrive later, such as a move finishing or being blocked halfway, appear under
+the Stop button.
+
+## Real Go2 EDU
+
+Install CycloneDDS 0.10.x and `pip install -r requirements-robot.txt`, connect the computer to the Go2's
+network (192.168.123.x), then:
+
+```
+.venv/bin/python command_ui/server.py --robot en7          # connected, but it will not move
+.venv/bin/python command_ui/server.py --robot en7 --arm    # armed: it moves when told to
+```
+
+Use the name of the network interface cabled to the robot. Follow the safety rules in the main README.
 
 ## Pieces
 
 | File | Role |
 |------|------|
-| `server.py` | Flask backend + MuJoCo sim loop; serves the UI and the `/api/*` endpoints |
-| `agent.py` | Rule-based command interpreter + validation layer (**placeholder for the LLM agent**) |
-| `static/index.html` | The web UI |
+| `server.py` | Flask backend: the page's endpoints, the agent, the robot connection |
+| `static/index.html` | The web page (unchanged) |
+| `../go2/agent.py` | The LLM conversation and tool loop, with proactive robot updates |
+| `../go2/tools.py`, `../go2/limits.py` | Tool definitions, validation and per-call limits |
+| `../go2/executor.py` | Runs tool calls safely: clearance checks, queueing, stopping |
+| `../go2/llm.py` | The private Ollama process and tool-calling chat |
+| `../go2/adapters/` | The robot: `sim.py` (room simulation process) and `go2_sdk.py` (real Go2) |
+| `../simulation/` | The room: world, simulated robot (sport mode over the walking policy), LiDAR and camera |
+| `../models/` | The model catalog and checksums (the weights themselves are shared separately) |
 
-### Note for the team
-`agent.interpret_to_tool()` is a deterministic placeholder. The LLM agent can
-replace it and return the same tool structure, so the validation layer, UI and
-robot execution stay unchanged. Voice uses the `base` faster-whisper model
-(downloaded on first use; not committed to the repo).
+## Troubleshooting
 
-## Requirements (first time)
-Already have the simulator set up (`windows/setup.ps1 -Locomotion`, so `mujoco`
-and `torch` are installed in `.venv`). Then install the UI's extra deps:
-
-```powershell
-..\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-That adds `flask`, `faster-whisper`, `sounddevice`, `soundfile`, `av==13.1.0`.
-The faster-whisper `base` model downloads automatically the first time you use voice.
+- **"Language model unavailable"** under the Stop button: install Ollama, or check the model file (step 2).
+  `server.py --check` says what is missing.
+- **Windows, slow start every time:** without Developer Mode Windows can't make symbolic links, so the
+  console hard-links the model (instant on the same drive) or copies it (3.4 GB, every start). Keep the
+  model on the same drive as the repo, or turn on Developer Mode.
+- **The page doesn't load on a Mac at port 5000:** that's AirPlay Receiver; use the printed address (5050).

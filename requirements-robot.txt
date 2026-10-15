@@ -1,0 +1,6 @@
+# Optional: only needed to drive the real Go2 EDU from this Mac.
+# unitree_sdk2py needs CycloneDDS 0.10.x built first (see README "Real robot").
+unitree_sdk2py
+# Object detection on the real robot (YOLO segmentation + JPEG decoding).
+ultralytics
+opencv-python
