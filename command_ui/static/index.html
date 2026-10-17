@@ -6,49 +6,84 @@
 <title>Go2 Command Console</title>
 <style>
   :root{--bg:#0B1B2B;--panel:#13293D;--panel2:#0F2234;--border:#22384C;--teal:#1FBFA8;
-        --white:#FFFFFF;--mute:#9FB3C8;--green:#2FBF71;--red:#E24B4A;--accent:#2E6FB5;}
+        --white:#EAF2F8;--mute:#9FB3C8;--green:#2FBF71;--amber:#E8A13A;--red:#E24B4A;--accent:#2E6FB5;}
   *{box-sizing:border-box;}
-  body{margin:0;background:var(--bg);color:var(--white);
-       font-family:'Segoe UI',system-ui,Arial,sans-serif;font-size:15px;}
-  header{display:flex;align-items:center;justify-content:space-between;
-         padding:14px 20px;border-bottom:1px solid var(--border);}
-  .title{display:flex;align-items:center;gap:10px;font-weight:600;font-size:17px;}
+  [hidden]{display:none!important;}
+  body{margin:0;background:var(--bg);color:var(--white);font-family:'Segoe UI',system-ui,Arial,sans-serif;font-size:15px;}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .title{display:flex;align-items:center;gap:10px;font-weight:600;font-size:16px;}
   .title svg{width:22px;height:22px;stroke:var(--teal);}
-  .badge{font-size:13px;background:rgba(47,191,113,.15);color:var(--green);
-         padding:4px 12px;border-radius:20px;border:1px solid rgba(47,191,113,.3);}
-  .wrap{display:flex;gap:16px;padding:16px 20px;max-width:1000px;margin:0 auto;}
+  .badge{font-size:13px;padding:4px 12px;border-radius:20px;border:1px solid;display:inline-flex;align-items:center;gap:6px;}
+  .badge .dot{width:9px;height:9px;border-radius:50%;background:currentColor;}
+  .b-green{color:var(--green);border-color:rgba(47,191,113,.4);background:rgba(47,191,113,.12);}
+  .b-amber{color:var(--amber);border-color:rgba(232,161,58,.4);background:rgba(232,161,58,.12);}
+  .b-red{color:var(--red);border-color:rgba(226,75,74,.4);background:rgba(226,75,74,.12);}
+  .b-grey{color:var(--mute);border-color:var(--border);background:var(--panel2);}
+  .wrap{display:flex;gap:16px;padding:14px 18px;max-width:1080px;margin:0 auto;align-items:flex-start;}
   .main{flex:2;min-width:0;}
-  .side{flex:1;min-width:190px;display:flex;flex-direction:column;gap:10px;}
-  #log{display:flex;flex-direction:column;gap:14px;min-height:320px;max-height:60vh;overflow-y:auto;padding-right:4px;}
-  .cmd{align-self:flex-end;background:rgba(46,111,181,.25);border:1px solid rgba(46,111,181,.5);
-       color:#cfe3f7;padding:9px 13px;border-radius:12px;max-width:80%;}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px 14px;}
-  .row{display:flex;align-items:center;gap:8px;margin:5px 0;font-size:14px;}
-  .row .lbl{color:var(--mute);min-width:78px;}
-  .pill{font-size:12px;padding:2px 9px;border-radius:6px;}
-  .pill.ok{background:rgba(47,191,113,.18);color:var(--green);}
-  .pill.no{background:rgba(226,75,74,.18);color:var(--red);}
-  code{background:var(--panel2);padding:2px 7px;border-radius:6px;color:var(--teal);font-size:13px;}
-  .stat{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 13px;}
+  .side{flex:1;min-width:200px;display:flex;flex-direction:column;gap:10px;}
+  .banner{padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:14px;display:flex;align-items:center;gap:10px;}
+  .banner.red{background:rgba(226,75,74,.15);border:1px solid rgba(226,75,74,.5);color:#ffd4d4;}
+  .banner.armed{background:rgba(226,75,74,.18);border:1px solid var(--red);color:#ffd9d9;font-weight:600;justify-content:space-between;}
+  .banner.safe{background:rgba(47,191,113,.12);border:1px solid rgba(47,191,113,.4);color:#d6f6e4;justify-content:space-between;}
+  #log{display:flex;flex-direction:column;gap:12px;min-height:300px;max-height:62vh;overflow-y:auto;padding-right:4px;}
+  .cmd{align-self:flex-end;background:rgba(46,111,181,.25);border:1px solid rgba(46,111,181,.5);color:#d4e6fa;padding:8px 13px;border-radius:12px;max-width:85%;display:flex;align-items:center;gap:7px;}
+  .cmd svg{width:14px;height:14px;stroke:currentColor;opacity:.8;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:11px 13px;}
+  .card.ambercard{border-color:rgba(232,161,58,.6);}
+  .standalone{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13.5px;color:var(--mute);}
+  .standalone.proactive{color:var(--white);}
+  .toolrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;}
+  .pill{font-size:12px;padding:2px 9px;border-radius:6px;white-space:nowrap;}
+  .p-green{background:rgba(47,191,113,.18);color:var(--green);}
+  .p-amber{background:rgba(232,161,58,.18);color:var(--amber);}
+  .p-red{background:rgba(226,75,74,.18);color:var(--red);}
+  .p-grey{background:rgba(159,179,200,.15);color:var(--mute);}
+  code{background:var(--panel2);padding:2px 7px;border-radius:6px;color:var(--teal);font-size:12.5px;}
+  .step{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:14px;flex-wrap:wrap;}
+  .step .prog{color:var(--mute);font-size:12.5px;}
+  .err{color:#ffb3b3;font-size:13px;margin-top:3px;}
+  .reply{margin-top:7px;font-size:14.5px;}
+  .confirm{display:flex;gap:8px;margin-top:9px;}
+  .confirm button{padding:6px 16px;border-radius:8px;cursor:pointer;font-size:14px;border:1px solid;}
+  .yes{background:rgba(47,191,113,.18);color:var(--green);border-color:rgba(47,191,113,.5);}
+  .no{background:rgba(226,75,74,.15);color:var(--red);border-color:rgba(226,75,74,.5);}
+  .thinking{display:flex;align-items:center;gap:8px;color:var(--amber);font-size:14px;}
+  .thinking .dots span{animation:blink 1.2s infinite both;}
+  .thinking .dots span:nth-child(2){animation-delay:.2s;}.thinking .dots span:nth-child(3){animation-delay:.4s;}
+  @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+  .stat{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;}
   .stat .k{font-size:12px;color:var(--mute);}
-  .stat .v{font-size:17px;font-weight:600;margin-top:2px;}
-  #stop{background:rgba(226,75,74,.15);color:var(--red);border:1px solid rgba(226,75,74,.45);
-        border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;
-        display:flex;align-items:center;justify-content:center;gap:8px;}
-  #stop:hover{background:rgba(226,75,74,.28);}
-  .bar{display:flex;gap:8px;padding:14px 20px;border-top:1px solid var(--border);
-       max-width:1000px;margin:0 auto;}
-  #text{flex:1;background:var(--panel2);border:1px solid var(--border);color:var(--white);
-        border-radius:9px;padding:11px 13px;font-size:15px;outline:none;}
-  #text:focus{border-color:var(--teal);}
-  .iconbtn{width:44px;background:var(--panel2);border:1px solid var(--border);border-radius:9px;
-           color:var(--white);cursor:pointer;display:flex;align-items:center;justify-content:center;}
-  .iconbtn:hover{border-color:var(--teal);}
-  .iconbtn svg{width:20px;height:20px;stroke:currentColor;}
-  .iconbtn.rec{color:var(--red);border-color:var(--red);animation:pulse 1s infinite;}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-  .hint{color:var(--mute);font-size:12.5px;margin-top:8px;}
-  .note{color:#f0a; font-size:12.5px;margin-top:6px;}
+  .stat .v{font-size:15px;font-weight:600;margin-top:2px;}
+  .telem{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;margin-top:8px;font-size:13px;}
+  .telem .tk{color:var(--mute);}
+  .acard .a-cur{font-size:14px;margin-top:4px;}
+  .acard .a-q{font-size:13px;color:var(--mute);margin-top:4px;}
+  .cambox{position:relative;width:100%;border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-top:8px;}
+  .cambox img{display:block;width:100%;}
+  .cambox .bx{position:absolute;border:1.5px solid var(--teal);border-radius:3px;}
+  .cambox .bx span{position:absolute;top:-16px;left:0;font-size:10px;background:var(--teal);color:#06231d;padding:0 4px;border-radius:3px;white-space:nowrap;}
+  .btns{display:flex;flex-direction:column;gap:8px;}
+  .btns button{border-radius:9px;padding:11px;font-size:15px;font-weight:600;cursor:pointer;border:1px solid;display:flex;align-items:center;justify-content:center;gap:8px;}
+  .btns button svg{width:18px;height:18px;}
+  .btn-stop{background:rgba(226,75,74,.15);color:var(--red);border-color:rgba(226,75,74,.45);}
+  .btn-stop:hover{background:rgba(226,75,74,.28);}
+  .btn-soft{background:var(--panel2);color:var(--white);border-color:var(--border);font-weight:500;font-size:14px;padding:9px;}
+  .btn-soft:hover{border-color:var(--teal);}
+  .bar{display:flex;gap:8px;padding:12px 18px;border-top:1px solid var(--border);max-width:1080px;margin:0 auto;align-items:center;}
+  #text{flex:1;background:var(--panel2);border:1px solid var(--border);color:var(--white);border-radius:9px;padding:11px 13px;font-size:15px;outline:none;}
+  #text:focus{border-color:var(--teal);}#text:disabled{opacity:.6;}
+  .iconbtn{width:44px;height:44px;background:var(--panel2);border:1px solid var(--border);border-radius:9px;color:var(--white);cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  .iconbtn:hover{border-color:var(--teal);}.iconbtn svg{width:20px;height:20px;stroke:currentColor;}
+  .iconbtn.rec{color:var(--red);border-color:var(--red);}
+  .listening{display:inline-flex;align-items:center;gap:7px;color:var(--red);font-size:13px;margin-left:6px;}
+  .listening .wave{width:9px;height:9px;border-radius:50%;background:currentColor;animation:breathe 1.3s ease-in-out infinite;}
+  @keyframes breathe{0%,100%{transform:scale(.7);opacity:.6}50%{transform:scale(1);opacity:1}}
+  .hint{color:var(--mute);font-size:12.5px;margin-top:10px;}
+  .chip{display:inline-block;background:var(--panel2);border:1px solid var(--border);border-radius:16px;padding:3px 10px;margin:3px 4px 0 0;font-size:12.5px;color:var(--white);cursor:pointer;}
+  .chip:hover{border-color:var(--teal);}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);}
+  @media(max-width:760px){.wrap{flex-direction:column;}.side{width:100%;}}
 </style>
 </head>
 <body>
@@ -57,74 +92,233 @@
     <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="8" width="16" height="10" rx="2"/><path d="M12 8V5M9 13h.01M15 13h.01M8 18v2M16 18v2"/></svg>
     LLM Agents for Robots &mdash; Command console
   </div>
-  <div class="badge" id="badge">standing</div>
+  <div id="badge" class="badge b-grey"><span class="dot"></span><span id="badgeText">connecting</span></div>
 </header>
 
 <div class="wrap">
   <div class="main">
-    <div id="log"></div>
-    <div class="hint">Try: &ldquo;walk forward for 3 seconds&rdquo;, &ldquo;turn left&rdquo;, &ldquo;back for 2 seconds&rdquo;, &ldquo;stop&rdquo;. &ldquo;sit&rdquo; shows the unsupported-command fallback.</div>
+    <div id="banners"></div>
+    <div id="log" aria-live="polite" aria-label="Conversation"></div>
+    <div class="hint">
+      Try:
+      <span class="chip" data-send="walk forward 2 metres then turn left">walk forward 2 m then turn left</span>
+      <span class="chip" data-send="what do you see?">what do you see?</span>
+      <span class="chip" data-send="go to the teddy bear">go to the teddy bear</span>
+      <span class="chip" data-send="sit down">sit down</span>
+      <span class="chip" data-send="do a little dance">do a little dance</span>
+    </div>
   </div>
+
   <div class="side">
-    <div class="stat"><div class="k">Robot state</div><div class="v" id="s_state">standing</div></div>
-    <div class="stat"><div class="k">Last action</div><div class="v" id="s_action">&mdash;</div></div>
-    <div class="stat"><div class="k">Speed</div><div class="v" id="s_speed">0.0 m/s</div></div>
-    <button id="stop">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-      Stop
-    </button>
-    <div class="note" id="note"></div>
+    <div class="stat" id="robotCard">
+      <div class="k">Robot</div><div class="v" id="robotLabel">&mdash;</div>
+      <div class="telem" id="telem"></div>
+    </div>
+    <div class="stat"><div class="k">Model</div><div class="v" id="modelLabel">&mdash;</div></div>
+    <div class="stat acard"><div class="k">Now running</div><div class="a-cur" id="aCurrent">&mdash;</div><div class="a-q" id="aQueued"></div></div>
+    <div id="cameraCard" hidden class="stat"><div class="k">Last camera view</div><div class="cambox" id="cambox"></div></div>
+    <div class="btns">
+      <button class="btn-stop" id="stop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop <span style="font-weight:400;font-size:12px;opacity:.8">(Esc)</span></button>
+      <button class="btn-soft" id="reset" hidden>Reset simulation</button>
+      <button class="btn-soft" id="disarm" hidden>Disarm robot</button>
+      <button class="btn-soft" id="clear">Clear conversation</button>
+    </div>
   </div>
 </div>
 
 <div class="bar">
-  <input id="text" type="text" placeholder="Type a command, e.g. walk forward for 3 seconds" autocomplete="off">
-  <button class="iconbtn" id="mic" title="Speak a command">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-  </button>
-  <button class="iconbtn" id="send" title="Send">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg>
-  </button>
+  <input id="text" type="text" placeholder="Type a command, e.g. walk forward 2 metres" autocomplete="off">
+  <span id="listening" class="listening" hidden><span class="wave"></span>Listening&hellip;</span>
+  <button class="iconbtn" id="mic" title="Speak a command" aria-label="Speak a command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+  <button class="iconbtn" id="send" title="Send" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg></button>
 </div>
 
 <script>
-const log=document.getElementById('log'), txt=document.getElementById('text');
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-function addEntry(r){
-  const cmd=document.createElement('div');cmd.className='cmd';cmd.innerHTML=esc(r.command);log.appendChild(cmd);
-  const card=document.createElement('div');card.className='card';
-  let html='';
-  if(r.tool){html+=`<div class="row"><span class="lbl">Tool</span><code>${esc(r.tool)}</code></div>`;}
-  const ok=r.valid;
-  html+=`<div class="row"><span class="lbl">Safety</span><span class="pill ${ok?'ok':'no'}">${esc(r.validation)}</span></div>`;
-  html+=`<div class="row"><span class="lbl">Robot</span><span>${esc(r.response)}</span></div>`;
-  card.innerHTML=html;log.appendChild(card);
-  log.scrollTop=log.scrollHeight;
+const $=id=>document.getElementById(id);
+const log=$('log'), txt=$('text');
+function esc(s){const d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML;}
+let lastRevision=-1, lastConvId=null, stopped=false;
+
+// ---- status badge ----
+function setBadge(cls,text){const b=$('badge');b.className='badge '+cls;$('badgeText').textContent=text;}
+function overallBadge(s){
+  if(!s.robot||s.robot.connected===false) return setBadge('b-red','console stopped');
+  const p=s.robot.posture;
+  if(p==='fallen') return setBadge('b-red','fallen');
+  if(s.agent&&s.agent.thinking) return setBadge('b-amber','thinking');
+  if(p==='walking'||p==='busy') return setBadge('b-amber','moving');
+  if(p==='standing') return setBadge('b-green','standing');
+  return setBadge('b-grey',p||'ready');
 }
+
+// ---- side panel ----
+const POSTURE={standing:'standing',walking:'moving',sitting:'sitting',lying:'lying down',busy:'changing posture',holding:'holding a pose',locked_stand:'locked stand',damp:'motors relaxed',fallen:'fallen',unknown:'unknown'};
+function renderSide(s){
+  const r=s.robot||{};
+  $('robotLabel').textContent=(r.label||'—')+(r.connected===false?' (disconnected)':'');
+  const t=r.telemetry||{};
+  const rows=[];
+  if(r.posture) rows.push(['State',POSTURE[r.posture]||r.posture]);
+  if(t.x_m!=null) rows.push(['Position',t.x_m.toFixed(2)+', '+t.y_m.toFixed(2)+' m']);
+  if(t.heading_deg!=null) rows.push(['Heading',Math.round(t.heading_deg)+'°']);
+  if(t.speed_mps!=null) rows.push(['Speed',t.speed_mps.toFixed(2)+' m/s']);
+  if(t.turn_dps!=null) rows.push(['Turning',Math.round(t.turn_dps)+'°/s']);
+  if(t.battery_pct!=null) rows.push(['Battery',t.battery_pct+'%']);
+  $('telem').innerHTML=rows.map(([k,v])=>`<span class="tk">${k}</span><span>${esc(v)}</span>`).join('');
+  // model
+  const m=s.model||{};
+  let ml=m.label||m.id||'—';
+  if(m.state==='downloading'&&m.progress) ml=`downloading ${Math.round(m.progress.done_mb)}/${Math.round(m.progress.total_mb)} MB`;
+  else if(m.state==='loading') ml='loading…';
+  else if(m.state==='unavailable') ml='unavailable'+(m.error?': '+m.error:'');
+  else if(m.state==='scripted') ml='scripted (mock)';
+  else if(m.state==='ready') ml=(m.label||m.id)+' — ready';
+  $('modelLabel').textContent=ml;
+  // actions
+  const a=s.actions||{};
+  $('aCurrent').textContent=a.current?a.current.summary:'—';
+  $('aQueued').textContent=(a.queued&&a.queued.length)?('Next: '+a.queued.map(q=>q.summary).join('; ')):'';
+  // camera
+  if(s.camera&&s.camera.url){renderCamera(s.camera);$('cameraCard').hidden=false;} else $('cameraCard').hidden=true;
+  // buttons
+  $('reset').hidden=(r.kind!=='sim');
+  $('disarm').hidden=!(r.requires_arming&&r.armed);
+}
+function renderCamera(cam){
+  const box=$('cambox');
+  let html=`<img src="${esc(cam.url)}" alt="Camera view from Go2">`;
+  for(const b of (cam.boxes||[])){
+    const[l,t,rr,bb]=b.box;
+    html+=`<div class="bx" style="left:${(l*100).toFixed(1)}%;top:${(t*100).toFixed(1)}%;width:${((rr-l)*100).toFixed(1)}%;height:${((bb-t)*100).toFixed(1)}%"><span>${esc(b.label)}</span></div>`;
+  }
+  box.innerHTML=html;
+}
+
+// ---- banners ----
+function renderBanners(s){
+  const r=s.robot||{};let html='';
+  if(r.connected===false) html+=`<div class="banner red"><strong>Console stopped.</strong> The MuJoCo window was closed or the robot disconnected. Relaunch the console.</div>`;
+  if(r.requires_arming){
+    if(r.armed) html+=`<div class="banner armed"><span>⚠ ARMED — the real Go2 will move when told.</span></div>`;
+    else html+=`<div class="banner safe"><span>Not armed — the real Go2 will not move.</span></div>`;
+  }
+  $('banners').innerHTML=html;
+}
+
+// ---- conversation ----
+const OUTCOME={queued:['Accepted','p-amber'],done:['Done','p-green'],already_queued:['Already queued','p-grey'],
+  needs_confirmation:['Needs your confirmation','p-amber'],rejected:['Rejected','p-red'],blocked:['Blocked','p-red'],
+  failed:['Failed','p-red'],cancelled:['Cancelled','p-grey']};
+const STEP={queued:['Queued','p-amber'],running:['Running','p-amber'],completed:['Done','p-green'],
+  stopped:['Stopped','p-grey'],blocked:['Blocked','p-red'],failed:['Failed','p-red'],cancelled:['Cancelled','p-grey']};
+
+function stepLine(st){
+  const[lbl,cls]=STEP[st.status]||['',''];
+  let prog='';
+  if(st.target_m!=null&&st.moved_m!=null) prog=`<span class="prog">${st.moved_m.toFixed(2)} / ${st.target_m} m</span>`;
+  else if(st.target_deg!=null&&st.turned_deg!=null) prog=`<span class="prog">${Math.round(st.turned_deg)} / ${st.target_deg}°</span>`;
+  let err=st.error?`<div class="err">${esc(st.error)}</div>`:'';
+  let note=st.note?`<div class="prog">${esc(st.note)}</div>`:'';
+  return `<div class="step"><span>${esc(st.summary)}</span><span class="pill ${cls}">${lbl}</span>${prog}</div>${err}${note}`;
+}
+function callHtml(e,showConfirm){
+  const[lbl,cls]=OUTCOME[e.outcome]||['',''];
+  let h=`<div class="toolrow"><span class="pill ${cls}">${lbl}</span><code>${esc(e.tool)}</code></div>`;
+  for(const st of (e.steps||[])) h+=stepLine(st);
+  if(e.message) h+=`<div class="err">${esc(e.message)}</div>`;
+  if(showConfirm) h+=`<div class="confirm"><button class="yes" data-send="yes">Yes, go ahead</button><button class="no" data-send="no">No</button></div>`;
+  return h;
+}
+function renderLog(conv){
+  if(conv.id!==lastConvId){lastConvId=conv.id;}
+  const entries=conv.entries||[];
+  const maxUserId=Math.max(-1,...entries.filter(e=>e.kind==='user').map(e=>e.id));
+  // a needs_confirmation call shows Yes/No only if it's the latest turn and unanswered
+  let confirmCallId=null;
+  for(const e of entries){ if(e.kind==='call'&&e.outcome==='needs_confirmation'&&e.turn===maxUserId) confirmCallId=e.id; }
+  let html='', openTurn=null;
+  const closeCard=()=>{ if(openTurn!==null){html+='</div>';openTurn=null;} };
+  for(const e of entries){
+    if(e.kind==='user'){
+      closeCard();
+      const mic=e.voice?'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>':'';
+      html+=`<div class="cmd">${mic}<span>${esc(e.text)}</span></div>`;
+      const amber=(e.id===maxUserId&&confirmCallId!=null);
+      html+=`<div class="card${amber?' ambercard':''}">`;openTurn=e.id;
+    } else if((e.kind==='call'||e.kind==='reply'||e.kind==='error')&&e.turn!=null&&e.turn===openTurn){
+      if(e.kind==='call') html+=callHtml(e,e.id===confirmCallId);
+      else if(e.kind==='reply') html+=`<div class="reply">${esc(e.text)}</div>`;
+      else html+=`<div class="err">${esc(e.text)}</div>`;
+    } else {
+      closeCard();
+      if(e.kind==='update') html+=`<div class="standalone"><svg style="width:13px;height:13px;vertical-align:-1px;stroke:currentColor" viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg> ${esc(e.text)}</div>`;
+      else if(e.kind==='reply') html+=`<div class="standalone proactive">${esc(e.text)}</div>`;
+      else if(e.kind==='note') html+=`<div class="standalone">${esc(e.text)}</div>`;
+      else if(e.kind==='error') html+=`<div class="standalone" style="color:#ffb3b3">${esc(e.text)}</div>`;
+      else if(e.kind==='call'){html+=`<div class="card">${callHtml(e,e.id===confirmCallId)}</div>`;}
+    }
+  }
+  closeCard();
+  if(s_thinking) html+=`<div class="thinking"><span>Go2 is thinking</span><span class="dots"><span>.</span><span>.</span><span>.</span></span></div>`;
+  const nearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<80;
+  log.innerHTML=html;
+  if(nearBottom) log.scrollTop=log.scrollHeight;
+}
+
+// ---- main render ----
+let s_thinking=false;
+function render(s){
+  if(s.revision===lastRevision) return; lastRevision=s.revision;
+  s_thinking=!!(s.agent&&s.agent.thinking);
+  overallBadge(s); renderBanners(s); renderSide(s); renderLog(s.conversation||{entries:[]});
+  // disable Send while thinking; Stop always on
+  txt.disabled=s_thinking;
+  $('send').style.opacity=s_thinking?'.5':'1';
+}
+
+// ---- actions ----
 async function send(text){
-  if(!text.trim())return;
-  const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-  addEntry(await r.json());
+  if(!text||!text.trim())return;
+  try{
+    const r=await fetch('/api/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    if(!r.ok){const j=await r.json().catch(()=>({}));flashError(j.error||'Command failed.');}
+  }catch(e){flashError('Could not reach the console.');}
 }
-document.getElementById('send').onclick=()=>{send(txt.value);txt.value='';};
-txt.addEventListener('keydown',e=>{if(e.key==='Enter'){send(txt.value);txt.value='';}});
-document.getElementById('stop').onclick=async()=>{await fetch('/api/stop',{method:'POST'});};
-const mic=document.getElementById('mic');
+function flashError(msg){
+  const b=$('banners');const d=document.createElement('div');d.className='banner red';d.textContent=msg;b.appendChild(d);setTimeout(()=>d.remove(),5000);
+}
+$('send').onclick=()=>{send(txt.value);txt.value='';};
+txt.addEventListener('keydown',e=>{if(e.key==='Enter'&&!txt.disabled){send(txt.value);txt.value='';}});
+$('stop').onclick=()=>fetch('/api/stop',{method:'POST'}).catch(()=>{});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){fetch('/api/stop',{method:'POST'}).catch(()=>{});}});
+$('reset').onclick=()=>fetch('/api/reset',{method:'POST'}).catch(()=>{});
+$('clear').onclick=()=>fetch('/api/clear',{method:'POST'}).catch(()=>{});
+$('disarm').onclick=()=>fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({armed:false})}).catch(()=>{});
+// delegated clicks: chips, Yes/No
+document.addEventListener('click',e=>{const el=e.target.closest('[data-send]');if(el){send(el.dataset.send);}});
+// mic (interim: server-side recording via the existing endpoint; browser voice is Luka's next round)
+const mic=$('mic');
 mic.onclick=async()=>{
-  mic.classList.add('rec');txt.placeholder='Listening… speak now (5s)';txt.disabled=true;
-  try{const r=await fetch('/api/voice',{method:'POST'});addEntry(await r.json());}
-  finally{mic.classList.remove('rec');txt.disabled=false;txt.placeholder='Type a command, e.g. walk forward for 3 seconds';}
+  mic.classList.add('rec');$('listening').hidden=false;
+  try{await fetch('/api/voice',{method:'POST'});}catch(e){flashError('Voice failed.');}
+  finally{mic.classList.remove('rec');$('listening').hidden=true;}
 };
-async function poll(){
-  try{const s=await (await fetch('/api/status')).json();
-    document.getElementById('s_state').textContent=s.state;
-    document.getElementById('badge').textContent=s.state;
-    document.getElementById('s_action').textContent=s.action;
-    document.getElementById('s_speed').textContent=s.speed.toFixed(1)+' m/s';
-    document.getElementById('note').textContent=s.note||'';
-  }catch(e){}
+
+// ---- live connection: SSE with polling fallback ----
+function connect(){
+  let es;
+  try{
+    es=new EventSource('/api/events');
+    es.addEventListener('state',ev=>{try{render(JSON.parse(ev.data));}catch(e){}});
+    es.onerror=()=>{es.close();setBadge('b-red','console stopped');setTimeout(poll,1500);};
+  }catch(e){poll();}
 }
-setInterval(poll,500);poll();
+async function poll(){
+  try{const s=await (await fetch('/api/state')).json();render(s);}
+  catch(e){setBadge('b-red','console stopped');}
+  setTimeout(poll,400);
+}
+connect();
 </script>
 </body>
 </html>
