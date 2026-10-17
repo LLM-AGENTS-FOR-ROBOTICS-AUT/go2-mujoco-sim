@@ -53,9 +53,10 @@ speech recognition or spoken replies, saving memory), `--check`.
 - **Speak one command**: click the mic and say it. It ends when you pause, Go2 answers aloud, and the mic
   turns off again.
 - **Live conversation**: click the waveform button next to the mic and just talk, as with ChatGPT's voice
-  mode or Gemini Live. Each sentence is sent when you pause, Go2 answers aloud, and you can cut in at any
-  time by speaking (or say "stop" to halt the robot mid-sentence). Click the button again to end it.
-  Headphones work best; with speakers the browser's echo cancellation keeps Go2 from hearing itself.
+  mode or Gemini Live. Each sentence is sent when you pause (carry on after a short pause and it's joined
+  up), Go2 answers aloud, and you can cut in at any time by speaking up (or say "stop" to halt the robot
+  mid-sentence). Click the button again to end it. Headphones work best; with speakers the browser's echo
+  cancellation keeps Go2 from hearing itself.
 - Recognition and the voice run on this computer: Whisper large-v3-turbo (on the Mac's GPU through MLX,
   elsewhere faster-whisper on an NVIDIA GPU or the CPU) and Kokoro. No audio is stored. The browser asks
   once for the microphone. If Go2's voice isn't loaded yet, the browser's own voice is used.

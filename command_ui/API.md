@@ -271,10 +271,11 @@ and `Go2Speaker` plays Go2's replies. `static/index.html` shows how they're wire
 **Listening.** The page records the microphone itself (with the browser's echo cancellation) and cuts it
 into sentences: one starts when the level rises above the room's noise and ends after a 600 ms pause. Each
 sentence goes to `POST /api/stt` as raw 16 kHz mono float32 samples (at most 30 s), and the text it answers
-with goes to `/api/messages` with `voice: true`. While the user is still talking, the sentence so far is
-sent 400 ms in and then about once a second too, for a live caption and so that "stop" halts the robot
-(`/api/stop {"said": "Stop!"}`) without waiting for the end of the sentence. Each transcription takes about
-0.65 s on an M1 Pro, whatever its length.
+with goes to `/api/messages` with `voice: true`. If the user carries on talking before a sentence's text is
+back, it is joined to what they say next rather than sent (or lost) on its own. While the user is still
+talking, the sentence so far is also sent about once a second, for a live caption and so that "stop" halts
+the robot (`/api/stop {"said": "Stop!"}`) without waiting for the end of the sentence. Each transcription
+takes about 0.65 s on an M1 Pro, whatever its length.
 
 ```json
 POST /api/stt  (117,760 bytes: 1.8 s of audio)  -> {"text": "Walk backward 2 meters."}

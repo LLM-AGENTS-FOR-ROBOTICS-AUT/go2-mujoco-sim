@@ -4,36 +4,26 @@
 // Everything runs on this computer: the console transcribes with Whisper (/api/stt) and speaks with Kokoro
 // (/api/tts). No audio is stored. See command_ui/API.md, "Voice".
 const STOP_WORDS = /^\s*(stop|halt|freeze|whoa)\b/i;
-
 // Go2's voice. Its words arrive from the console phrase by phrase while the model is still writing (each turn
 // ends with an end marker; see /api/speech). Each phrase's audio comes from the console, which starts making it
 // as soon as the phrase is written, and phrases play in order while the next one loads. The browser's own voice
-// is the fallback. A turn the user started replaces whatever is playing; a robot update (a proactive turn, such
-// as "finished the walk") waits until everything before it has been said.
+// is the fallback.
+// Turns queue up: a turn the user started replaces whatever is playing, while a robot update (a proactive
+// turn, e.g. "finished the walk") waits until everything before it has been said.
 class Go2Speaker {
-  constructor({voice = () => null, onidle = () => {}, onstart = () => {}} = {}) {
-    this.voice = voice; this.onidle = onidle; this.onstart = onstart;
-    this.context = null; this.gain = null; this.source = null; this.generation = 0; this.ducked = false;
-    this.turns = [];            // in order: {epoch, proactive, phrases: [{text, audio, controller}], ended}
+  constructor({voice = () => null, onidle = () => {}} = {}) {
+    this.voice = voice; this.onidle = onidle;
+    this.context = null; this.source = null; this.generation = 0;
+    this.turns = [];            // FIFO of {epoch, proactive, phrases: [{text, audio, controller}], ended}
     this.playing = false; this.talking = false; this.lastEpoch = -1; this.minEpoch = 0;
   }
   // Browsers only allow sound after a click or key press; the page calls this on every one.
   unlock() {
     const Context = window.AudioContext || window.webkitAudioContext;
-    if (!this.context && Context) {
-      this.context = new Context();
-      this.gain = this.context.createGain(); this.gain.connect(this.context.destination);
-    }
+    if (!this.context && Context) this.context = new Context();
     this.context?.resume().catch(() => {});
   }
-  // Quieter while the user may be cutting in, back to full volume if it was only a noise.
-  duck(on) {
-    if (on === this.ducked) return;
-    this.ducked = on;
-    if (this.gain) this.gain.gain.setTargetAtTime(on ? Go2Speaker.DUCKED : 1, this.context.currentTime, .02);
-    if (window.speechSynthesis?.speaking) { if (on) window.speechSynthesis.pause(); else window.speechSynthesis.resume(); }
-  }
-  // Phrases of a turn that was cut off (Stop, an interruption, a new message) can still be in flight: ignore them.
+  // Phrases of a turn that was cut off (Stop, Interrupt, a new message) can still be in flight: ignore them.
   accepts(epoch) { return typeof epoch !== 'number' || epoch >= this.minEpoch; }
   say(epoch, text, proactive = false) {
     if (!this.accepts(epoch)) return;
@@ -51,7 +41,8 @@ class Go2Speaker {
     const turn = this.turns.find(t => t.epoch === epoch);
     if (turn) { turn.ended = true; this.pump(); }
   }
-  // Everything the user starts (a message, Stop, an interruption, Clear) silences Go2, queued updates included.
+  // Everything the user starts (a typed message, Stop, Interrupt, Clear, a spoken request) silences Go2,
+  // queued robot updates included.
   cancel() { this.minEpoch = this.lastEpoch + 1; this.reset(); }
   reset() {
     this.generation++; this.playing = false;
@@ -60,15 +51,14 @@ class Go2Speaker {
     const source = this.source; this.source = null;
     try { source?.stop(); } catch (_) { /* Already stopped. */ }
     window.speechSynthesis?.cancel();
-    this.duck(false);
-    if (this.talking) { this.talking = false; this.onidle(); }
+    this.talking = false;
   }
   pump() {
     if (this.playing) return;
     while (this.turns.length && !this.turns[0].phrases.length && this.turns[0].ended) this.turns.shift();
     const turn = this.turns[0];
     if (!turn) {
-      if (this.talking) { this.talking = false; this.onidle(); }   // everything queued has been said
+      if (this.talking) { this.talking = false; this.onidle?.(); }   // everything queued has been said
       return;
     }
     if (!turn.phrases.length) return;   // more words of this turn are still being written
@@ -78,7 +68,7 @@ class Go2Speaker {
     this.play(phrase, generation).then(done, done);
     this.prefetch();
   }
-  // Ask for the audio of the next phrase in line (this turn's, or a queued update's) while one plays.
+  // Make the audio of the next phrase in line (this turn's, or a queued update's) while one plays.
   prefetch() {
     const next = this.turns.flatMap(turn => turn.phrases)[0];
     if (next && !next.audio) this.load(next);
@@ -100,11 +90,10 @@ class Go2Speaker {
     let buffer = null;
     try { buffer = await (phrase.audio || this.load(phrase)); } catch (_) { buffer = null; }
     if (generation !== this.generation) return;
-    this.onstart(phrase.text);
     if (!buffer) return this.browserSay(phrase.text, generation);
     await new Promise(resolve => {
       const source = this.context.createBufferSource();
-      source.buffer = buffer; source.connect(this.gain); this.source = source;
+      source.buffer = buffer; source.connect(this.context.destination); this.source = source;
       source.onended = resolve; source.start();
     });
   }
@@ -120,21 +109,19 @@ class Go2Speaker {
     });
   }
 }
-Go2Speaker.DUCKED = .12;
 window.Go2Speaker = Go2Speaker;
 
 // Cuts the microphone stream (16 kHz, 20 ms frames) into sentences: one starts when the level rises well above
 // the room's noise and ends after a pause. Pure logic (no microphone), so it can be tested on its own.
-// Modes per frame: 'listen'; 'barge' while Go2 is talking (louder, so its own voice leaking past echo cancellation
-// doesn't count, and counted over a short window because spoken words have gaps); 'mute' just after Go2 stops
-// (its echo tail).
+// Modes per frame: 'listen'; 'barge' while Go2 is talking (louder and longer, so its own voice leaking past echo
+// cancellation doesn't count); 'mute' just after Go2 stops (its echo tail).
 class Go2Utterances {
   constructor({onStart = () => {}, onPartial = () => {}, onEnd = () => {}} = {}) {
     Object.assign(this, {onStart, onPartial, onEnd});
-    this.noise = .005; this.ring = []; this.recent = []; this.frames = null; this.loud = 0;
+    this.noise = .005; this.ring = []; this.frames = null; this.loud = 0;
   }
   get inSpeech() { return this.frames !== null; }
-  reset() { this.frames = null; this.loud = 0; this.ring = []; this.recent = []; }
+  reset() { this.frames = null; this.loud = 0; this.ring = []; }
   feed(frame, mode = 'listen') {
     let sum = 0;
     for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
@@ -142,28 +129,21 @@ class Go2Utterances {
     if (!this.inSpeech) {
       this.ring.push(frame);
       if (this.ring.length > Go2Utterances.PRE_ROLL) this.ring.shift();
-      const barge = mode === 'barge';
-      const loud = mode !== 'mute' && rms > (barge ? Math.max(.022, this.noise * 4) : Math.max(.012, this.noise * 3.5));
-      this.recent.push(loud);
-      if (this.recent.length > Go2Utterances.BARGE_WINDOW) this.recent.shift();
-      if (loud) this.loud++;
+      const threshold = mode === 'barge' ? Math.max(.022, this.noise * 4) : Math.max(.012, this.noise * 3.5);
+      if (mode !== 'mute' && rms > threshold) this.loud++;
       else {
         this.loud = 0;
         if (rms < this.noise * 3) this.noise = Math.max(.002, .95 * this.noise + .05 * rms);
       }
-      const count = barge ? this.recent.filter(Boolean).length : this.loud;
-      if (count >= (barge ? Go2Utterances.BARGE_FRAMES : Go2Utterances.START_FRAMES)) {
-        this.frames = this.ring; this.ring = []; this.recent = [];
-        this.voiced = count; this.quiet = 0; this.sincePartial = 0; this.partials = 0;
+      if (this.loud >= (mode === 'barge' ? Go2Utterances.BARGE_FRAMES : Go2Utterances.START_FRAMES)) {
+        this.frames = this.ring; this.ring = []; this.voiced = this.loud; this.quiet = 0; this.sincePartial = 0;
         this.onStart(mode);
       }
       return;
     }
     this.frames.push(frame); this.sincePartial++;
     if (rms > Math.max(.008, this.noise * 2.2)) { this.voiced++; this.quiet = 0; } else this.quiet++;
-    if (this.sincePartial >= (this.partials ? Go2Utterances.PARTIAL_EVERY : Go2Utterances.FIRST_PARTIAL)) {
-      this.sincePartial = 0; this.partials++; this.onPartial(this.audio(0));
-    }
+    if (this.sincePartial >= Go2Utterances.PARTIAL_EVERY) { this.sincePartial = 0; this.onPartial(this.audio(0)); }
     if (this.quiet >= Go2Utterances.END_FRAMES || this.frames.length >= Go2Utterances.MAX_FRAMES) {
       const audio = this.audio(Math.max(0, this.quiet - 10)), voiced = this.voiced;   // keep 200 ms of the pause
       this.frames = null; this.loud = 0;
@@ -178,20 +158,16 @@ class Go2Utterances {
     return out;
   }
 }
-// In 20 ms frames: 300 ms kept from before a sentence starts, 60 ms of voice to start one (while Go2 talks, 120 ms
-// of voice within 200 ms), a 600 ms pause ends it, a partial transcript 400 ms in (so a short "stop" is caught
-// while it is said) and then about once a second, 20 s at most, and 160 ms of voice to count.
-Object.assign(Go2Utterances, {PRE_ROLL: 15, START_FRAMES: 3, BARGE_FRAMES: 6, BARGE_WINDOW: 10, END_FRAMES: 30,
-                              FIRST_PARTIAL: 20, PARTIAL_EVERY: 50, MAX_FRAMES: 1000, MIN_VOICED: 8});
+Object.assign(Go2Utterances, {PRE_ROLL: 15, START_FRAMES: 3, BARGE_FRAMES: 8, END_FRAMES: 30, PARTIAL_EVERY: 50,
+                              MAX_FRAMES: 1000, MIN_VOICED: 8});
 window.Go2Utterances = Go2Utterances;
 
 // Spoken commands. The microphone is cut into sentences in the page and each one is transcribed by Whisper on
-// this computer. While the user is still talking, the sentence so far is transcribed about once a second, for
-// the caption and so "stop" acts without waiting for the end.
+// this computer (/api/stt). While the user is still talking the sentence so far is transcribed about once a
+// second, for the caption and so "stop" acts without waiting for the end. A sentence the user carries on from
+// after a pause, before its transcript is back, is joined to what they say next rather than dropped.
 // start({single: true}) takes one command and turns the microphone off again (the mic button); start() keeps
-// listening for a hands-free conversation, in which talking over Go2, or while it thinks, cuts it off: Go2's
-// voice drops at once, and the reply is dropped once it is clear the user is speaking (CONFIRM_FRAMES of voice,
-// or a whole sentence). A cough or a bump only dips Go2's voice for a moment.
+// listening for a hands-free conversation, in which talking over Go2, or while it thinks, cuts it off.
 class Go2LiveVoice {
   constructor(callbacks) {
     this.callbacks = callbacks;
@@ -200,13 +176,13 @@ class Go2LiveVoice {
     this.speaking = false; this.waiting = false; this.phase = 'off';
     this.caption = ''; this.historyCursor = 0; this.interrupting = null;
     this.timers = new Set(); this.held = []; this.lastHeard = 0; this.guardUntil = 0;
-    this.partial = null; this.finalPending = false; this.tentative = false;
+    this.partial = null; this.finalsPending = 0; this.carried = '';
   }
+  get finalPending() { return this.finalsPending > 0; }
   get supported() {
     return Boolean(navigator.mediaDevices?.getUserMedia && (window.AudioContext || window.webkitAudioContext) &&
       window.AudioWorkletNode && window.fetch);
   }
-  get talking() { return this.speaking || this.callbacks.speaker.talking; }
   report(phase, detail) {
     this.phase = phase;
     this.callbacks.onState({active: this.active, single: this.single, phase, detail, caption: this.caption});
@@ -218,7 +194,7 @@ class Go2LiveVoice {
   }
   clearTimer(timer) { clearTimeout(timer); this.timers.delete(timer); }
   cancelSpeech() {
-    this.speaking = false; this.held = []; this.tentative = false;
+    this.speaking = false; this.held = [];
     this.clearTimer(this.speechTimer); this.clearTimer(this.holdTimer); this.holdTimer = null;
     this.callbacks.speaker.cancel();
   }
@@ -227,9 +203,8 @@ class Go2LiveVoice {
     this.active = false; this.session++; this.turn++; this.utterance++;
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
-    this.partial?.abort(); this.partial = null; this.finalPending = false;
-    if (keepSpeech) { this.speaking = false; this.held = []; this.tentative = false; this.callbacks.speaker.duck(false); }
-    else this.cancelSpeech();
+    this.partial?.abort(); this.partial = null; this.finalsPending = 0; this.carried = '';
+    if (keepSpeech) { this.speaking = false; this.held = []; } else this.cancelSpeech();
     try { this.node?.disconnect(); } catch (_) { /* Already disconnected. */ }
     this.node = null; this.cutter = null;
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;
@@ -244,14 +219,14 @@ class Go2LiveVoice {
     if (!this.supported) return this.fail('Voice needs a browser with microphone and Web Audio support (Chrome, Edge, Safari or Firefox).');
     this.active = true; this.single = single; const session = ++this.session;
     this.turn++; this.historyCursor = this.callbacks.historyLength();
-    this.caption = ''; this.held = [];
+    this.caption = ''; this.held = []; this.carried = '';
     this.report('starting', 'Starting the microphone…');
     let audio, stream;
     try {
       for (let waited = 0; !this.callbacks.sttReady(); waited += 500) {
         if (this.callbacks.sttError()) throw new Error(`speech recognition is unavailable (${this.callbacks.sttError()})`);
         if (waited > 180000) throw new Error('speech recognition did not finish loading');
-        this.report('starting', 'Loading speech recognition (Whisper, first start only takes a while)…');
+        this.report('starting', 'Loading speech recognition (Whisper, the first start takes a while)…');
         await new Promise(resolve => setTimeout(resolve, 500));
         if (!this.active || this.session !== session) return;
       }
@@ -282,8 +257,7 @@ class Go2LiveVoice {
     } catch (error) {
       stream?.getTracks().forEach(track => track.stop());
       if (!this.active || session !== this.session) { audio?.close().catch(() => {}); return; }
-      const denied = error.name === 'NotAllowedError';
-      this.fail(denied ? 'Microphone access was blocked: allow it for this page in the browser.' :
+      this.fail(error.name === 'NotAllowedError' ? 'Microphone access was blocked: allow it for this page in the browser.' :
         `The microphone could not start: ${error.message || error.name}`);
     }
   }
@@ -299,27 +273,19 @@ class Go2LiveVoice {
     let sum = 0;
     for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
     this.callbacks.onLevel(Math.min(1, Math.sqrt(sum / samples.length) * 8));
-    const mode = this.talking ? 'barge' : performance.now() < this.guardUntil ? 'mute' : 'listen';
+    // While Go2 talks (a single command can start while it still answers the last one), only a louder voice counts.
+    const talking = this.speaking || (this.single && this.callbacks.speaker.talking);
+    const mode = talking ? 'barge' : performance.now() < this.guardUntil ? 'mute' : 'listen';
     this.cutter.feed(samples, mode);
-    if (this.cutter.inSpeech) {
-      this.lastHeard = performance.now();
-      if (this.tentative && this.cutter.voiced >= Go2LiveVoice.CONFIRM_FRAMES) this.cutIn();
-    }
+    if (this.cutter.inSpeech) this.lastHeard = performance.now();
   }
   heard(mode) {
     this.utterance++; this.lastHeard = performance.now();
     this.partial?.abort(); this.partial = null;
     this.clearTimer(this.idleTimer);
-    // Talking over Go2, or while it is still thinking, may be cutting in: quieten Go2 now, decide shortly.
-    if (mode === 'barge' || this.talking || this.waiting || this.callbacks.isBusy()) {
-      this.tentative = true; this.callbacks.speaker.duck(true);
-    }
-    this.report('listening', 'Hearing you…');
-  }
-  cutIn() {
-    if (!this.tentative) return;
-    this.tentative = false;
-    this.interrupt();
+    // Talking over Go2, or while it is still thinking, cuts in.
+    if (mode === 'barge' || this.waiting || this.callbacks.isBusy()) this.interrupt();
+    else this.report('listening', 'Hearing you…');
   }
   async stt(samples, signal) {
     const response = await fetch('/api/stt', {method: 'POST', body: samples, signal,
@@ -335,32 +301,24 @@ class Go2LiveVoice {
     this.partial = controller;
     try {
       const text = await this.stt(samples, controller.signal);
-      if (!this.active || session !== this.session || utterance !== this.utterance) return;
-      // Safety: act on "stop" as soon as it is heard, without waiting for the end of the sentence (or for the
-      // whole sentence's transcript, if it has just ended).
-      if (STOP_WORDS.test(text)) return this.stopWord(text);
-      if (!this.cutter?.inSpeech) return;
+      if (!this.active || session !== this.session || utterance !== this.utterance || !this.cutter?.inSpeech) return;
       this.caption = text;
+      // Safety: act on "stop" as soon as it is heard, without waiting for the end of the sentence.
+      if (STOP_WORDS.test(text)) return this.stopWord(text);
       this.report(this.interrupting ? 'interrupting' : 'listening', this.interrupting ? 'Cutting in…' : 'Hearing you…');
     } catch (_) { /* Superseded or failed: the final transcription still follows. */ }
     finally { if (this.partial === controller) this.partial = null; }
   }
   async transcribeFinal(samples) {
-    // A partial still in flight is left to finish: the console is already working on it (the whole sentence
-    // waits its turn anyway), and it may be a "stop".
+    this.partial?.abort(); this.partial = null;
     if (!samples) {                                   // a click or bump, not speech
-      if (this.tentative) {
-        this.tentative = false; this.callbacks.speaker.duck(false);
-        this.report(this.speaking ? 'speaking' : this.waiting ? 'thinking' : 'listening',
-          this.speaking ? 'Go2 is talking · speak to cut in' : this.waiting ? 'Thinking · speak to cut in' : 'Listening');
-      }
+      if (this.carried && !this.finalPending) return this.flush(this.takeCarried(''));
       if (!this.finalPending) this.releaseHeld();
       if (this.single) this.awaitSpeech();
       return;
     }
-    this.cutIn();                                     // a whole sentence: they meant to cut in
     const utterance = this.utterance, session = this.session;
-    this.finalPending = true;
+    this.finalsPending++;
     this.report('listening', 'Understanding…');
     let text;
     try {
@@ -371,25 +329,40 @@ class Go2LiveVoice {
         this.callbacks.onError(`Speech recognition: ${error.message}`); this.report('listening', 'Listening');
       }
       return;
-    } finally { if (session === this.session) this.finalPending = false; }
-    if (!this.active || session !== this.session || utterance !== this.utterance) return;
+    } finally { if (session === this.session) this.finalsPending = Math.max(0, this.finalsPending - 1); }
+    if (!this.active || session !== this.session) return;
+    if (STOP_WORDS.test(text)) return this.stopWord(text);
+    if (utterance !== this.utterance) {
+      // They carried on talking before this came back: it belongs with what they're saying now (or, if that
+      // was only a noise and nothing else is on its way, it is sent on its own).
+      if (text) this.carried = this.takeCarried(text);
+      if (this.carried && !this.cutter?.inSpeech && !this.finalPending) this.flush(this.takeCarried(''));
+      return;
+    }
+    text = this.takeCarried(text);
     if (!text) {
       this.caption = ''; this.releaseHeld();
       if (this.single) this.awaitSpeech();
       this.report('listening', this.single ? "Didn't catch that, say it again" : 'Listening');
       return;
     }
-    if (STOP_WORDS.test(text)) return this.stopWord(text);
     this.flush(text);
   }
+  // What was carried over, then `text`: one sentence ("in this room. and tell me" reads "in this room and tell me").
+  takeCarried(text) {
+    const before = this.carried;
+    this.carried = '';
+    if (!before || !text) return before || text;
+    return /^[a-z]/.test(text) ? `${before.replace(/[.…]+$/, '')} ${text}` : `${before} ${text}`;
+  }
   stopWord(text) {
-    // Safety: act on "stop" immediately, even mid-sentence and while Go2 is talking.
+    // Safety: act on "stop" immediately, even mid-sentence and while speaking.
     this.utterance++; this.cutter?.reset();
     this.partial?.abort(); this.partial = null;
-    this.caption = ''; this.cancelSpeech(); this.waiting = false;
+    this.caption = ''; this.carried = ''; this.cancelSpeech(); this.waiting = true;
     this.callbacks.onStopWord(text);
     if (this.single) return this.stop('', true);
-    this.report('listening', 'Stopped · listening');
+    this.report('listening', 'Stopping…');
   }
   async flush(text) {
     if (!this.active) return;
@@ -472,18 +445,16 @@ class Go2LiveVoice {
       this.report('speaking', 'Go2 is talking · speak to cut in');
     }
     this.clearTimer(this.speechTimer);
-    this.speechTimer = this.later(() => this.speechDone(), 60000);    // never stay deaf if playback hangs
+    this.speechTimer = this.later(() => this.fail('Go2\'s voice stopped responding. Click Live to start again.'), 60000);
     speaker.say(item.epoch, item.text, item.proactive);
   }
-  // Called by the speaker when everything queued (robot updates included) has been said.
+  // Called by the speaker when everything queued (including robot updates) has been said.
   speechDone() {
-    if (!this.active) return;
-    this.clearTimer(this.speechTimer);
+    if (!this.active || !this.speaking) return;
+    this.clearTimer(this.speechTimer); this.speaking = false;
     this.guardUntil = performance.now() + 300;      // the tail of Go2's own voice is not the user
-    if (!this.speaking) return;
-    this.speaking = false; this.caption = '';
+    this.caption = '';
     this.report('listening', 'Listening · your turn');
   }
 }
-Go2LiveVoice.CONFIRM_FRAMES = 15;                   // 300 ms of voice
 window.Go2LiveVoice = Go2LiveVoice;
