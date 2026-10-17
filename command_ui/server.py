@@ -30,6 +30,7 @@ import struct
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 import zlib
 from collections import OrderedDict
@@ -37,6 +38,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+FEEDBACK = ROOT / "feedback"    # replies flagged with the page's "bad reply" button (feedback/README.md)
 sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
@@ -83,12 +85,14 @@ class SpokenReply:
 
 # ---- the robot, the executor and the agent ----------------------------------------------------------------
 class Console:
-    def __init__(self, model, adapter, robot_info=None, voice=False):
+    def __init__(self, model, adapter, robot_info=None, voice=False, feedback=FEEDBACK):
         self.model, self.adapter = model, adapter
+        self.feedback = Path(feedback)
         self.robot_info = robot_info or {}       # {"scene": "room"} or {"interface": "en7"}, shown in the state
         self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task))
         self.agent = Agent(model, self.executor)
         self.agent.robot_line = lambda: robot_state_line(self.adapter, self.executor)
+        self.agent.robot_snapshot = self._robot_snapshot
         self.executor.attach(adapter)
         self.commands = threading.Lock()        # the page shows one card per command, in order
         self.shown = 0                          # transcript rows already shown on a card
@@ -350,6 +354,58 @@ class Console:
                 spoken.epoch = epoch
         return entry
 
+    # ---- the "bad reply" button --------------------------------------------------------------------------
+    def _robot_snapshot(self):
+        """Where the robot was and what it was doing when a turn started (saved with flagged replies, so a
+        training run can put the simulated robot back there and redo the turn)."""
+        if not self.adapter.connected:
+            return None
+        s, info, executor = self.adapter.state(), self.adapter.status(), self.executor.snapshot()
+        return {"target": self.adapter.kind, "scene": info.get("scene"), "detector": info.get("detector"),
+                "x": round(s.x, 3), "y": round(s.y, 3), "yaw": round(s.yaw, 4), "posture": s.posture,
+                "doing": executor["current"]["summary"] if executor["current"] else None,
+                "queued": [t["summary"] for t in executor["queue"]], "armed": executor["armed"]}
+
+    def flag(self, entry):
+        """Save the turn behind one of Go2's replies (conversation entry `entry`) as feedback/<id>.json, for the
+        next training run to redo properly. ValueError for anything but a reply the model made."""
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            raise ValueError("Send the id of one of Go2's replies.")
+        turn = self.agent.flagged_turn(entry)
+        flag_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        record = {"id": flag_id, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "model": self.model_info["id"],
+                  "prompt_style": getattr(self.model, "prompt_style", "full"), "note": "", **turn}
+        self._save_flag(record)
+        self.agent.mark_flag(entry, flag_id)
+        return self._flag_answer(flag_id)
+
+    def note_flag(self, flag_id, note):
+        """Add what Go2 should have done to a flagged reply."""
+        if not isinstance(flag_id, str) or not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}", flag_id):
+            raise ValueError("Unknown flagged reply.")
+        path = self.feedback / f"{flag_id}.json"
+        if not path.is_file():
+            raise ValueError("Unknown flagged reply.")
+        record = json.loads(path.read_text())
+        record["note"] = str(note or "")[:2000].strip()
+        self._save_flag(record)
+        return self._flag_answer(flag_id)
+
+    def _save_flag(self, record):
+        self.feedback.mkdir(parents=True, exist_ok=True)
+        path = self.feedback / f"{record['id']}.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(record, indent=1, default=str))
+        temporary.replace(path)
+
+    def _flag_answer(self, flag_id):
+        path = self.feedback / f"{flag_id}.json"
+        try:
+            shown = path.resolve().relative_to(ROOT).as_posix()      # "feedback/<id>.json"
+        except ValueError:                      # a folder outside the repository
+            shown = str(path)
+        return {"id": flag_id, "path": shown}
+
     def clear(self):
         self._cut_off()
         self.agent.clear()
@@ -532,7 +588,7 @@ def conversation_entries(transcript, tasks):
         elif role == "assistant":
             proactive = bool(row.get("proactive"))
             entries.append({"id": i, "kind": "reply", "turn": None if proactive else turn, "text": text,
-                            "proactive": proactive})
+                            "proactive": proactive, "flaggable": "msg_end" in row, "flag": row.get("flag")})
         elif role == "event":
             if "turn" in row:                   # a report that starts Go2's own turn
                 turn = None
@@ -663,6 +719,16 @@ def make_app(console, port):
         except ValueError as error:
             return refused(error)
         return jsonify({"accepted": True, "entry": entry, "conversation": console.conversation_id}), 202
+
+    @app.route("/api/feedback", methods=["POST"])
+    def api_feedback():
+        value = body()
+        try:
+            if "id" in value:
+                return jsonify(console.note_flag(value["id"], value.get("note")))
+            return jsonify(console.flag(value.get("entry"))), 201
+        except ValueError as error:
+            return refused(error)
 
     @app.route("/api/clear", methods=["POST"])
     def api_clear():

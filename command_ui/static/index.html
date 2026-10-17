@@ -44,6 +44,16 @@
   .step .prog{color:var(--mute);font-size:12.5px;}
   .err{color:#ffb3b3;font-size:13px;margin-top:3px;}
   .reply{margin-top:7px;font-size:14.5px;}
+  .flagbtn{margin-left:6px;padding:1px 7px;font-size:11.5px;color:var(--mute);background:transparent;border:1px solid var(--border);border-radius:6px;cursor:pointer;vertical-align:1px;}
+  .flagbtn:hover{color:var(--amber);border-color:rgba(232,161,58,.6);}
+  .flagbtn:disabled{opacity:.5;cursor:default;}
+  .flagged{margin-left:6px;font-size:11.5px;color:var(--mute);white-space:nowrap;}
+  .notepanel{background:var(--panel);border:1px solid rgba(232,161,58,.5);border-radius:10px;padding:10px 12px;margin-top:10px;font-size:13.5px;}
+  .notepanel textarea{width:100%;margin-top:7px;background:var(--panel2);border:1px solid var(--border);color:var(--white);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;resize:vertical;outline:none;}
+  .notepanel textarea:focus{border-color:var(--teal);}
+  .notepanel .nbtns{display:flex;gap:8px;margin-top:8px;}
+  .notepanel .nbtns button{padding:6px 14px;border-radius:8px;font-size:13.5px;cursor:pointer;background:var(--panel2);color:var(--white);border:1px solid var(--border);}
+  .notepanel .nbtns button:hover{border-color:var(--teal);}
   .confirm{display:flex;gap:8px;margin-top:9px;}
   .confirm button{padding:6px 16px;border-radius:8px;cursor:pointer;font-size:14px;border:1px solid;}
   .yes{background:rgba(47,191,113,.18);color:var(--green);border-color:rgba(47,191,113,.5);}
@@ -103,6 +113,11 @@
   <div class="main">
     <div id="banners"></div>
     <div id="log" aria-live="polite" aria-label="Conversation"></div>
+    <div class="notepanel" id="notePanel" hidden>
+      <div><strong>Saved for the next training run.</strong> What should Go2 have done? (optional)</div>
+      <textarea id="noteText" rows="2" placeholder="e.g. It should have turned left first, then walked to the ball"></textarea>
+      <div class="nbtns"><button id="noteSave" type="button">Save note</button><button id="noteSkip" type="button">Skip</button></div>
+    </div>
     <div class="hint">
       Try:
       <span class="chip" data-send="walk forward 2 metres then turn left">walk forward 2 m then turn left</span>
@@ -235,6 +250,12 @@ function callHtml(e,showConfirm){
   if(showConfirm) h+=`<div class="confirm"><button class="yes" data-send="yes">Yes, go ahead</button><button class="no" data-send="no">No</button></div>`;
   return h;
 }
+// "Bad reply" on Go2's replies the model wrote; "saved for training" once flagged.
+function flagHtml(e){
+  if(e.flag) return '<span class="flagged">saved for training</span>';
+  if(!e.flaggable) return '';
+  return `<button class="flagbtn" type="button" data-flag="${e.id}" title="Save this turn so the next training run learns the right reply">Bad reply</button>`;
+}
 function renderLog(conv){
   if(conv.id!==lastConvId){lastConvId=conv.id;}
   const entries=conv.entries||[];
@@ -253,12 +274,12 @@ function renderLog(conv){
       html+=`<div class="card${amber?' ambercard':''}">`;openTurn=e.id;
     } else if((e.kind==='call'||e.kind==='reply'||e.kind==='error')&&e.turn!=null&&e.turn===openTurn){
       if(e.kind==='call') html+=callHtml(e,e.id===confirmCallId);
-      else if(e.kind==='reply') html+=`<div class="reply">${esc(e.text)}</div>`;
+      else if(e.kind==='reply') html+=`<div class="reply">${esc(e.text)}${flagHtml(e)}</div>`;
       else html+=`<div class="err">${esc(e.text)}</div>`;
     } else {
       closeCard();
       if(e.kind==='update') html+=`<div class="standalone"><svg style="width:13px;height:13px;vertical-align:-1px;stroke:currentColor" viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg> ${esc(e.text)}</div>`;
-      else if(e.kind==='reply') html+=`<div class="standalone proactive">${esc(e.text)}</div>`;
+      else if(e.kind==='reply') html+=`<div class="standalone proactive">${esc(e.text)}${flagHtml(e)}</div>`;
       else if(e.kind==='note') html+=`<div class="standalone">${esc(e.text)}</div>`;
       else if(e.kind==='error') html+=`<div class="standalone" style="color:#ffb3b3">${esc(e.text)}</div>`;
       else if(e.kind==='call'){html+=`<div class="card">${callHtml(e,e.id===confirmCallId)}</div>`;}
@@ -316,6 +337,26 @@ $('clear').onclick=()=>{speaker.cancel();fetch('/api/clear',{method:'POST'}).cat
 $('disarm').onclick=()=>fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({armed:false})}).catch(()=>{});
 // delegated clicks: chips, Yes/No
 document.addEventListener('click',e=>{const el=e.target.closest('[data-send]');if(el){send(el.dataset.send);}});
+// ---- "Bad reply": the turn behind a reply is saved in feedback/ for the next training run to redo ----
+let flagId=null;
+async function feedback(value){
+  const r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error||'Could not save that.');
+  return j;
+}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('[data-flag]');if(!b)return;
+  b.disabled=true;
+  try{flagId=(await feedback({entry:Number(b.dataset.flag)})).id;$('noteText').value='';$('notePanel').hidden=false;$('noteText').focus();}
+  catch(err){flashError(err.message);b.disabled=false;}
+});
+$('noteSave').onclick=async()=>{
+  const note=$('noteText').value.trim();
+  try{if(flagId&&note)await feedback({id:flagId,note});$('notePanel').hidden=true;flagId=null;}
+  catch(err){flashError(err.message);}
+};
+$('noteSkip').onclick=()=>{$('notePanel').hidden=true;flagId=null;};
 // ---- voice: the mic takes one spoken command; Live is a hands-free conversation (live-voice.js) ----
 let voiceInfo={available:false}, entries=[], speakReplies=false, voiceNoteTimer=null;
 const speaker=new Go2Speaker({voice:()=>(voiceInfo.speech&&voiceInfo.speech.default)||null,onidle:()=>live.speechDone()});
