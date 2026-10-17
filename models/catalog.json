@@ -23,6 +23,7 @@
       "weights_env": "GO2_FT_WEIGHTS",
       "weights_size_bytes": 3416119840,
       "weights_sha256": "15a875b610d8640e4d004d71e3888ba73a7647c4eddf9b91b4df95929498293d",
+      "download_url": "https://huggingface.co/SageStack01/go2-ft-04/resolve/2ff53aa871eaecb7f42c0012454d8749bb615948/go2-ft-04.gguf",
       "prompt_style": "compact",
       "source": "LoRA fine-tune of google/gemma-4-E2B-it on generated Go2 dialogue (training/, run go2-ft-04)"
     }

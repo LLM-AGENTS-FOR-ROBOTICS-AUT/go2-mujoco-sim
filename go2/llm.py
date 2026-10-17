@@ -134,6 +134,16 @@ class OllamaModel:
                 return path.resolve()
         raise ModelError(f"{self.spec['label']} weights are missing. Set {self.spec['weights_env']} to the GGUF.")
 
+    def fetch(self, progress=None):
+        """The weights' path, downloading them first (once) if they're missing and the catalog says where from."""
+        try:
+            return self._weights()
+        except ModelError:
+            if not self.spec.get("download_url") or os.environ.get(self.spec["weights_env"]):
+                raise
+        with self.lock:
+            return download_weights(self.spec, progress=progress)
+
     def check(self):
         with self.lock:
             if os.environ.get("GO2_OLLAMA_URL"):     # a shared server owns the weights (see _start)
@@ -285,6 +295,42 @@ class OllamaModel:
             # Only links to the weights and a log live here; the weights themselves are untouched.
             shutil.rmtree(self.directory, ignore_errors=True)
         return {"unloaded": True}
+
+
+def download_weights(spec, folder=None, progress=None, block=1 << 20):
+    """Fetch a catalog model's weights from its pinned download_url into models/. A partial download (.part) is
+    resumed; the file is kept only if its size and SHA-256 match the catalog. progress(done, total) gets bytes."""
+    folder = Path(folder or ROOT / "models")
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / spec["weights_filename"]
+    part = target.with_name(target.name + ".part")
+    total = spec["weights_size_bytes"]
+    done = part.stat().st_size if part.exists() else 0
+    if done > total:
+        part.unlink()
+        done = 0
+    if done < total:
+        request = urllib.request.Request(spec["download_url"], headers={"Range": f"bytes={done}-"} if done else {})
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                resumed = done > 0 and response.status == 206
+                done = done if resumed else 0
+                with part.open("ab" if resumed else "wb") as out:
+                    while chunk := response.read(block):
+                        out.write(chunk)
+                        done += len(chunk)
+                        if progress:
+                            progress(done, total)
+        except (OSError, http.client.HTTPException) as error:     # offline, timed out, cut off mid-way
+            raise ModelError(f"The model download stopped ({error}); start again to resume it.") from None
+    if part.stat().st_size != total:
+        raise ModelError("The model download is incomplete; start again to resume it.")
+    with part.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != spec["weights_sha256"]:
+            part.unlink()
+            raise ModelError("The downloaded model failed its checksum and was deleted; start again to retry.")
+    part.replace(target)
+    return target.resolve()
 
 
 def model_for(spec, options=None):

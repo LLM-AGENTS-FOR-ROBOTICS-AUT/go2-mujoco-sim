@@ -98,6 +98,9 @@ if ($Agent) {
     Write-Host "Downloading the household objects for the simulated room..."
     & $venvPython (Join-Path $root "simulation\fetch_gso.py")
     if ($LASTEXITCODE -ne 0) { throw "Could not download the room's objects." }
+    Write-Host "Downloading the language model (3.4 GB, once)..."
+    & $venvPython (Join-Path $root "command_ui\server.py") --fetch-model
+    if ($LASTEXITCODE -ne 0) { Write-Host "The model wasn't downloaded now; the console downloads it on its first start." }
     Write-Host "Checking the room simulation and the language model..."
     & $venvPython (Join-Path $root "command_ui\server.py") --check
     if ($LASTEXITCODE -ne 0) { throw "The room simulation check failed." }
@@ -105,7 +108,6 @@ if ($Agent) {
         Write-Host "Ollama is not installed. Install it (free) from https://ollama.com/download, then start the console."
     }
     Write-Host "Command console ready: double-click 'command_ui\Launch Command UI.cmd'"
-    Write-Host "It needs the model file models\go2-ft-04.gguf (shared by the team, not in Git): see command_ui\README.md"
 }
 
 Write-Host ""

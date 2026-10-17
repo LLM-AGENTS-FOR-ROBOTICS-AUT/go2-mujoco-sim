@@ -35,8 +35,9 @@ the final walking setup.
 ## LLM command console (`--agent` setup)
 
 - go2-ft-04 is a fine-tuned derivative of Google DeepMind's Gemma 4 E2B. The official model card
-  identifies Apache 2.0: <https://ai.google.dev/gemma/docs/core/model_card_4>. The weights are shared
-  separately by the team and are not in this repository; `models/catalog.json` pins their SHA-256.
+  identifies Apache 2.0: <https://ai.google.dev/gemma/docs/core/model_card_4>. The weights are not in this
+  repository: the console downloads them from <https://huggingface.co/SageStack01/go2-ft-04> (Apache 2.0)
+  on its first start, and `models/catalog.json` pins the exact upload and its SHA-256.
   No production approval is granted.
 - Ollama runs the model: <https://github.com/ollama/ollama> (installed separately by each user).
 - The simulated room's household objects come from **Google Scanned Objects** by Google LLC,

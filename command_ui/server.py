@@ -79,8 +79,13 @@ class Console:
             self.loaded.set()
 
     def _warm_up(self):
-        """Load the model in the background so the first command doesn't wait for it."""
+        """Load the model in the background so the first command doesn't wait for it (downloading it first, the
+        first time)."""
         try:
+            self.model.fetch(progress=self._downloading)
+            self.model_info.pop("progress", None)
+            self.model_info["state"] = "loading"
+            self.note = "Loading the language model..."
             self.model.check()
             self.model.chat([{"role": "user", "content": "Hello"}])
             self.note = ""
@@ -90,6 +95,12 @@ class Console:
             self.model_info.update(state="unavailable", error=str(error))
         finally:
             self.loaded.set()
+
+    def _downloading(self, done, total):
+        self.model_info["state"] = "downloading"
+        self.model_info["progress"] = {"done_mb": round(done / 1e6), "total_mb": round(total / 1e6)}
+        self.note = (f"Downloading the language model (first start only): {done / total:.0%}, "
+                     f"{done / 1e9:.1f} of {total / 1e9:.1f} GB")
 
     def command(self, text, voice=False):
         """One command -> the card the page shows: tool, safety result and Go2's reply."""
@@ -500,6 +511,25 @@ def connect_robot(args):
     return adapter
 
 
+def fetch_model(args):
+    """Download the model now (setup scripts), rather than on the console's first start."""
+    model = OllamaModel(args.model)
+    shown = [-1]
+
+    def progress(done, total):
+        percent = int(done * 100 / total)
+        if percent != shown[0]:
+            shown[0] = percent
+            print(f"\rDownloading {model.spec['weights_filename']}: {percent}% of {total / 1e9:.1f} GB", end="",
+                  flush=True)
+    try:
+        path = model.fetch(progress)
+    except ModelError as error:
+        print()
+        sys.exit(f"Model not downloaded: {error}")
+    print(f"\nModel ready and verified: {path}")
+
+
 def check(args):
     """Setup check: the simulator starts and reports its state; the model file is there and verified."""
     adapter = SimAdapter(scene="room", headless=True)
@@ -512,8 +542,10 @@ def check(args):
     try:
         print(json.dumps({"model": OllamaModel(args.model).check()}))
     except ModelError as error:
+        spec = CATALOG["models"][args.model]
         print(json.dumps({"model": "not ready", "why": str(error),
-                          "fix": "see command_ui/README.md (model file and Ollama)"}))
+                          "fix": "it downloads on the console's first start (or run server.py --fetch-model)"
+                                 if spec.get("download_url") else "see command_ui/README.md (model file and Ollama)"}))
 
 
 def main():
@@ -528,9 +560,12 @@ def main():
     parser.add_argument("--port", type=int, default=5050 if sys.platform == "darwin" else 5000)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--check", action="store_true", help="check the simulator and model, then exit")
+    parser.add_argument("--fetch-model", action="store_true", help="download the model now (once), then exit")
     args = parser.parse_args()
     if args.check:
         return check(args)
+    if args.fetch_model:
+        return fetch_model(args)
 
     def shut_down(*_):
         raise KeyboardInterrupt                 # runs the clean-up at the end (simulator, model server)

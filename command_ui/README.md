@@ -19,15 +19,16 @@ you type / speak  ->  LLM agent (go2-ft-04)  ->  tool calls  ->  safety executor
 
 1. Install **Ollama** (free): <https://ollama.com/download>. The console starts its own private Ollama
    process; it never touches your own Ollama models.
-2. Get the model file **`go2-ft-04.gguf`** (3.4 GB) from the team. It is not in Git (too big for
-   GitHub). Put it in the `models/` folder, or point the `GO2_FT_WEIGHTS` environment variable at it.
-   The console checks its SHA-256 against `models/catalog.json` and refuses a different file.
-3. Run the setup with the console option. It installs everything else and downloads the room's objects:
+2. Run the setup with the console option. It installs everything else, downloads the room's objects and
+   the language model (**go2-ft-04**, 3.4 GB, from the project's Hugging Face page; once):
 
    - **macOS (Apple Silicon, macOS 14+):** `bash macos/setup.sh --agent`
    - **Windows 10/11:** `powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1 -Agent`
 
-   The setup ends with a check of the room simulation and the model file.
+   The setup ends with a check of the room simulation and the model. If the model download didn't finish,
+   the console downloads it on its first start instead (resuming where it stopped), showing progress
+   under the Stop button. It is checked against the SHA-256 in `models/catalog.json`, and a different
+   file is refused. To use a copy you already have, put it in `models/` or point `GO2_FT_WEIGHTS` at it.
 
 ## Run
 
@@ -82,8 +83,9 @@ Use the name of the network interface cabled to the robot. Follow the safety rul
 
 ## Troubleshooting
 
-- **"Language model unavailable"** under the Stop button: install Ollama, or check the model file (step 2).
-  `server.py --check` says what is missing.
+- **"Language model unavailable"** under the Stop button: install Ollama (step 1), or the model download
+  was interrupted (no internet): start the console again and it resumes. `server.py --check` says what is
+  missing; `server.py --fetch-model` downloads the model on its own.
 - **Windows, slow start every time:** without Developer Mode Windows can't make symbolic links, so the
   console hard-links the model (instant on the same drive) or copies it (3.4 GB, every start). Keep the
   model on the same drive as the repo, or turn on Developer Mode.

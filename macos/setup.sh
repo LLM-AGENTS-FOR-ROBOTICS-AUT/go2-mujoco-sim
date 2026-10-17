@@ -87,13 +87,15 @@ if $AGENT; then
   "$UV" pip install --python "$ROOT/.venv/bin/python" --requirement "$ROOT/command_ui/requirements.txt"
   echo "Downloading the household objects for the simulated room..."
   "$ROOT/.venv/bin/python" "$ROOT/simulation/fetch_gso.py"
+  echo "Downloading the language model (3.4 GB, once)..."
+  "$ROOT/.venv/bin/python" "$ROOT/command_ui/server.py" --fetch-model || \
+    echo "The model wasn't downloaded now; the console downloads it on its first start."
   echo "Checking the room simulation and the language model..."
   "$ROOT/.venv/bin/python" "$ROOT/command_ui/server.py" --check
   if ! command -v ollama >/dev/null 2>&1; then
     echo "Ollama is not installed. Install it (free) from https://ollama.com/download, then start the console."
   fi
   echo "Command console ready: double-click command_ui/Launch Command UI.command"
-  echo "It needs the model file models/go2-ft-04.gguf (shared by the team, not in Git): see command_ui/README.md"
 fi
 
 echo
