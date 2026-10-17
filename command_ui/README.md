@@ -14,6 +14,7 @@ you type / speak  ->  LLM agent (go2-ft-04)  ->  tool calls  ->  safety executor
 | Actions | Walk, strafe, turn, stop | 12 tools: move, turn, go_to, approach, posture (sit, stand, lie), trick, acrobatic, body pose, look, wait, get_status, stop |
 | Safety | Speed and duration bounds | Per-call limits (0.8 m/s, 5 s, 4 m, 57 deg/s) plus LiDAR clearance checks before and during each move |
 | Robot | Flat floor, walking only | Indoor room with household objects, simulated L1 LiDAR and front camera, or the real Go2 EDU |
+| Voice | Records 5 s, faster-whisper base | Ends when you pause; hands-free conversation you can cut into; Whisper large-v3-turbo in, Kokoro voice out |
 
 ## Set up (once)
 
@@ -29,6 +30,8 @@ you type / speak  ->  LLM agent (go2-ft-04)  ->  tool calls  ->  safety executor
    the console downloads it on its first start instead (resuming where it stopped), showing progress
    under the Stop button. It is checked against the SHA-256 in `models/catalog.json`, and a different
    file is refused. To use a copy you already have, put it in `models/` or point `GO2_FT_WEIGHTS` at it.
+   The voice models (speech recognition 1.6 GB, Go2's voice 330 MB) download from Hugging Face on the
+   console's first start, in the background; the page says when they're ready.
 
 ## Run
 
@@ -40,14 +43,25 @@ The MuJoCo window opens with the Go2 in the room, then the page: <http://127.0.0
 window ends the console. The first command waits a few seconds while the model loads.
 
 Options: `--mock` (scripted replies, no language model: checks the page and robot without the model
-file), `--scene empty`, `--headless` (no MuJoCo window), `--port N`, `--no-browser`, `--check`.
+file), `--scene empty`, `--headless` (no MuJoCo window), `--port N`, `--no-browser`, `--no-voice` (no
+speech recognition or spoken replies, saving memory), `--check`.
 
 ## Use
 
 - **Type** a command and press Enter, e.g. `walk forward 2 metres then turn left`, `sit down`,
   `what do you see?`, `go to the teddy bear`, `do a little dance`.
-- **Speak**: click the mic and speak within 5 seconds (offline speech recognition, faster-whisper).
-- **Stop**: the red Stop button halts the robot at once, without waiting for the model.
+- **Speak one command**: click the mic and say it. It ends when you pause, Go2 answers aloud, and the mic
+  turns off again.
+- **Live conversation**: click the waveform button next to the mic and just talk, as with ChatGPT's voice
+  mode or Gemini Live. Each sentence is sent when you pause, Go2 answers aloud, and you can cut in at any
+  time by speaking (or say "stop" to halt the robot mid-sentence). Click the button again to end it.
+  Headphones work best; with speakers the browser's echo cancellation keeps Go2 from hearing itself.
+- Recognition and the voice run on this computer: Whisper large-v3-turbo (on the Mac's GPU through MLX,
+  elsewhere faster-whisper on an NVIDIA GPU or the CPU) and Kokoro. No audio is stored. The browser asks
+  once for the microphone. If Go2's voice isn't loaded yet, the browser's own voice is used.
+- A spoken reply and the movement start together: the robot waits (at most 1.2 s) until Go2's voice for the
+  reply is ready, instead of moving half a second before it says anything.
+- **Stop**: the red Stop button (or Esc) halts the robot at once, without waiting for the model.
 
 Each command gets a card: **Tool** is what the model called, **Safety** says whether it went ahead
 (or why not: blocked by an obstacle, outside the limits, waiting for your confirmation), **Robot** is
@@ -72,7 +86,9 @@ Use the name of the network interface cabled to the robot. Follow the safety rul
 |------|------|
 | `server.py` | Flask backend: the page's endpoints, the agent, the robot connection |
 | `API.md` | The backend API for building a page: live state, messages, steps, camera, arming (with real examples) |
-| `static/index.html` | The web page (unchanged) |
+| `static/index.html` | The web page |
+| `static/live-voice.js`, `static/mic-worklet.js` | Voice in the page: the microphone cut into sentences, live conversation, Go2's spoken replies |
+| `../go2/stt.py`, `../go2/tts.py` | Speech recognition (Whisper large-v3-turbo) and Go2's voice (Kokoro) |
 | `../go2/agent.py` | The LLM conversation and tool loop, with proactive robot updates |
 | `../go2/tools.py`, `../go2/limits.py` | Tool definitions, validation and per-call limits |
 | `../go2/executor.py` | Runs tool calls safely: clearance checks, queueing, stopping |
@@ -90,3 +106,5 @@ Use the name of the network interface cabled to the robot. Follow the safety rul
   console hard-links the model (instant on the same drive) or copies it (3.4 GB, every start). Keep the
   model on the same drive as the repo, or turn on Developer Mode.
 - **The page doesn't load on a Mac at port 5000:** that's AirPlay Receiver; use the printed address (5050).
+- **The mic says access was blocked:** allow the microphone for 127.0.0.1 in the browser's site settings.
+- **Go2 keeps cutting itself off on speakers:** use headphones, or turn the volume down a little.

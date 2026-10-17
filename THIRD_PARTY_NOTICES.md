@@ -46,7 +46,14 @@ the final walking setup.
   `simulation/fetch_gso.py` downloads them into `_deps/gso`; the meshes are used unmodified.
 - Sensor mount positions for the simulated L1 LiDAR and front camera follow Unitree's `go2_description`
   URDF (unitree_ros, BSD 3-Clause). The room itself is original.
-- Voice: faster-whisper (MIT) with OpenAI's Whisper `base` weights (MIT), downloaded on first use.
+- Speech recognition: OpenAI's Whisper large-v3-turbo weights (MIT), downloaded from Hugging Face on first
+  use at pinned revisions: `mlx-community/whisper-large-v3-turbo` for mlx-whisper (MIT) on Apple Silicon,
+  `dropbox-dash/faster-whisper-large-v3-turbo` for faster-whisper (MIT) elsewhere. The original page's
+  5-second voice button uses faster-whisper with Whisper `base` (MIT).
+- Go2's voice: Kokoro-82M by hexgrad (Apache 2.0, weights and voices downloaded from Hugging Face on first
+  use at a pinned revision) through the `kokoro` package (Apache 2.0). Its pronunciation uses `misaki`
+  (Apache 2.0) with spaCy and `en_core_web_sm` (MIT), and for unusual words `phonemizer-fork` and eSpeak NG
+  (**GPL-3.0**), installed as dependencies; this repository doesn't include any of them.
 - Optional, for the real robot only (`requirements-robot.txt`, `requirements-vision.txt`):
   `unitree_sdk2py` (BSD 3-Clause), CycloneDDS (EPL-2.0 / EDL-1.0), OpenCV (Apache 2.0) and
   `ultralytics` with YOLO weights (**AGPL-3.0**: using it in a distributed or networked product has

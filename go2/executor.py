@@ -84,6 +84,8 @@ class Task:
     finished: float | None = None
     awaiting: bool = False          # the model's tool call is waiting to hear whether it started
     reported: bool = False          # its outcome went back in the tool result, so it isn't announced again
+    user_turn: int = 0              # the user message it answers
+    held: bool = False              # before_motion has had its say (it is asked once per task)
 
     def public(self):
         return {"id": self.id, "tool": self.command.tool, "summary": self.command.summary,
@@ -115,6 +117,10 @@ class Executor:
         self.last_frame_meta = None
         self.closed = False
         self._observed = math.inf
+        # Optional f(task, cancel), asked once per task right before it first moves the robot (after its first
+        # safety check). It may wait briefly: the console holds a spoken reply's first movement until Go2's voice
+        # is ready, so the two start together. Stop cuts the wait short (cancel is set).
+        self.before_motion = None
         threading.Thread(target=self._worker, daemon=True, name="executor").start()
 
     # ---- attachment ------------------------------------------------------------
@@ -196,6 +202,19 @@ class Executor:
                 task.awaiting = False
                 self.wake.notify_all()
 
+    def _hold(self, task, cancel):
+        """Right before `task` first moves the robot: let before_motion wait if it wants to (once per task)."""
+        if task.held:
+            return
+        task.held = True
+        hold = self.before_motion
+        if hold is not None:
+            try:
+                hold(task, cancel)
+            except Exception:
+                pass
+        self._check(cancel)
+
     def _submit_one(self, command, group, user_turn):
         if command.kind == "stop":
             return self.stop("requested by the model")
@@ -225,7 +244,7 @@ class Executor:
                                            f"their next message, call acrobatic again with confirmed=true."}
                 del self.confirmations[name]
             self._require_armed()
-            task = Task(command, group, self.generation)
+            task = Task(command, group, self.generation, user_turn=user_turn)
             self.queue.append(task)
             position = len(self.queue) + (1 if self.current else 0)
             task.awaiting = position == 1 and command.kind in ("velocity", "goto", "approach")
@@ -495,6 +514,10 @@ class Executor:
             if s.posture in ("standing", "walking"):
                 return
         if s.posture in LOW_POSTURES or s.posture in ("busy", "unknown"):
+            # Standing up takes longer than START_CHECK_S, so the tool call hears 'queued' now rather than after a
+            # second's wait; the path is checked once standing, and a block then is reported as a robot update.
+            self._underway(task)
+            self._hold(task, cancel)
             note = self.adapter.sport("stand")
             self._wait_idle(cancel, 6.0, want_ready=True)
             task.detail["stood_up_first"] = True
@@ -522,6 +545,7 @@ class Executor:
             self._ensure_standing(task, cancel)
         elif self._fresh_state().posture in ("busy", "walking"):
             self._wait_idle(cancel, 8.0)
+        self._hold(task, cancel)
         note = self.adapter.sport(name, **args)
         if note:
             task.detail["note"] = note
@@ -563,6 +587,7 @@ class Executor:
             task._observed = self._observed
             raise _blocked(task, "path is blocked", clear, 0., toward)
         self._underway(task)
+        self._hold(task, cancel)            # the loop below checks the path again before the first step
         distance, angle, duration = p.get("distance"), p.get("angle"), p.get("duration")
         nominal = duration if duration is not None else (
             distance / speed if distance is not None else angle / p["turn_rate"])

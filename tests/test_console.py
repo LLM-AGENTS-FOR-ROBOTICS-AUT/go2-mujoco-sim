@@ -121,7 +121,7 @@ class ApiTests(unittest.TestCase):
     def test_state_describes_the_robot_the_model_and_the_conversation(self):
         self.make()
         state = self.get("/api/state")
-        self.assertEqual(set(state), {"revision", "robot", "model", "agent", "actions", "conversation", "camera"})
+        self.assertEqual(set(state), {"revision", "robot", "model", "voice", "agent", "actions", "conversation", "camera"})
         robot = state["robot"]
         self.assertEqual((robot["kind"], robot["connected"], robot["requires_arming"], robot["armed"], robot["scene"]),
                          ("fake", True, False, False, "test"))
