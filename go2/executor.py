@@ -59,6 +59,20 @@ class Cancelled(Exception):
     pass
 
 
+def image_boxes(masks, shape):
+    """Where each segmented object is in the camera image: label, score and [left, top, right, bottom] as fractions
+    of the image size (for drawing on the frame)."""
+    h, w = shape[:2]
+    boxes = []
+    for m in masks:
+        rows, cols = np.nonzero(m.mask)
+        if len(rows):
+            boxes.append({"label": m.label, "score": round(float(m.score), 2),
+                          "box": [round(cols.min() / w, 4), round(rows.min() / h, 4),
+                                  round((cols.max() + 1) / w, 4), round((rows.max() + 1) / h, 4)]})
+    return boxes
+
+
 @dataclass
 class Task:
     command: Command
@@ -268,6 +282,12 @@ class Executor:
         with self.lock:
             return dict(self.last_frame_meta) if self.last_frame_meta else None
 
+    def tasks(self):
+        """Every task still known (running, queued, or among the last 40 finished), by id, as public dicts."""
+        with self.lock:
+            known = [*self.history, *([self.current] if self.current else []), *self.queue]
+            return {t.id: t.public() for t in known}
+
     def close(self):
         self.stop("app closing")
         with self.lock:
@@ -353,7 +373,8 @@ class Executor:
                 self.last_detections = [(d, (s.x, s.y, s.yaw)) for d in detections]
                 self._remember(detections, (s.x, s.y, s.yaw))
                 self.last_frame = frame.rgb
-                self.last_frame_meta = {"stamp": time.time(), "objects": len(detections)}
+                self.last_frame_meta = {"stamp": time.time(), "objects": len(detections),
+                                        "boxes": image_boxes(frame.masks, frame.rgb.shape)}
             result["objects"] = [{**d.public(), "direction": P.describe_bearing(d.bearing_deg)} for d in detections]
         except AdapterError as error:
             result["camera_error"] = str(error)

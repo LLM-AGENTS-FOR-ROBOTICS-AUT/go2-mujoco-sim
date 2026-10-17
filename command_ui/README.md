@@ -70,6 +70,7 @@ Use the name of the network interface cabled to the robot. Follow the safety rul
 | File | Role |
 |------|------|
 | `server.py` | Flask backend: the page's endpoints, the agent, the robot connection |
+| `API.md` | The backend API for building a page: live state, messages, steps, camera, arming (with real examples) |
 | `static/index.html` | The web page (unchanged) |
 | `../go2/agent.py` | The LLM conversation and tool loop, with proactive robot updates |
 | `../go2/tools.py`, `../go2/limits.py` | Tool definitions, validation and per-call limits |

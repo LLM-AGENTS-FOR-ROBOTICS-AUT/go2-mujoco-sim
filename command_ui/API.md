@@ -1,0 +1,264 @@
+# Command console API
+
+What the console backend (`command_ui/server.py`) offers a web page: the live state of the robot, the
+model and the conversation, plus the actions a page can take. Every example below is a real message from
+the console running go2-ft-04 with the room simulation, shortened only where marked `...`.
+
+The original four endpoints (`/api/command`, `/api/voice`, `/api/stop`, `/api/status`) still work exactly
+as before, so the current page keeps working while a new one is built. They're described at the end.
+
+## The short version
+
+```js
+// Everything the page shows comes from one object, pushed whenever it changes.
+const events = new EventSource('/api/events');
+events.addEventListener('state', e => render(JSON.parse(e.data)));
+
+// Send what the user typed (returns at once; the reply and actions arrive in the state).
+fetch('/api/messages', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: 'walk forward one metre then turn left'})});
+
+// Stop the robot at once (doesn't wait for the model).
+fetch('/api/stop', {method: 'POST'});
+```
+
+If server-sent events don't suit, poll `GET /api/state` (every 300 to 500 ms): same object.
+
+## Rules for every request
+
+- The console only listens on `127.0.0.1` (port 5050 on macOS, 5000 on Windows; `--port` changes it).
+- Requests must come from the page the console itself serves. A request with an `Origin` header from any
+  other site, or a `Host` other than `127.0.0.1:<port>` / `localhost:<port>`, gets **403**. A page served
+  by the console needs to do nothing special. (This stops other websites driving the robot.)
+- Request and response bodies are JSON. Errors are `{"error": "message for the user"}` with **400**
+  (refused) or **404** (nothing there yet).
+
+## Endpoints
+
+| Method and path | Body | Answer |
+|---|---|---|
+| `GET /api/state` | | The state object (below) |
+| `GET /api/events` | | Server-sent events: `event: state` with the state object each time it changes, and a `: still here` comment every 15 s |
+| `POST /api/messages` | `{"text": "...", "voice": false}` | **202** `{"accepted": true, "entry": 0, "conversation": 0}`: `entry` is the id the message got in the conversation |
+| `POST /api/stop` | | `{"ok": true}`: the robot stops at once and queued steps are cancelled |
+| `POST /api/clear` | | The state, with an empty conversation and a new `conversation.id` |
+| `POST /api/reset` | | Simulation only: the robot back at its start. The state |
+| `POST /api/arm` | `{"armed": true}` or `{"armed": false}` | Real robot only: allow or forbid motion. The state |
+| `GET /api/camera.png` | `?size=full` for full size | The last camera frame Go2 looked at (640 x 360, or 1280 x 720 full). **404** before the first look |
+
+`voice: true` only marks a message as spoken (shown in its entry). A short message starting with a stop
+phrase ("stop", "halt", "freeze", "whoa", "don't move", "stay there", "cancel that", "abort") stops the robot
+at once without the model, exactly like `/api/stop`. Stopping also cancels every queued step (their
+status becomes `cancelled`).
+
+Refusals, as they really come back:
+
+```json
+POST /api/messages {"text": ""}        -> 400 {"error": "Say or type something first."}
+POST /api/arm {"armed": true} (sim)    -> 400 {"error": "Only the real robot needs arming; the simulation always moves."}
+POST /api/reset (real robot)           -> 400 {"error": "Reset is only available in the simulation."}
+GET  /api/camera.png (no look yet)     -> 404 {"error": "No camera frame yet: ask Go2 what it sees."}
+```
+
+## The state object
+
+```json
+{
+ "revision": 3,
+ "robot": {
+  "kind": "sim", "label": "MuJoCo simulation", "connected": true,
+  "requires_arming": false, "armed": false, "scene": "room",
+  "posture": "walking",
+  "telemetry": {"x_m": -2.52, "y_m": 0.0, "heading_deg": 0, "speed_mps": 0.03, "turn_dps": 3,
+                "battery_pct": null, "fault": null},
+  "error": null
+ },
+ "model": {"id": "go2-ft-04", "label": "Go2 ft-04: newest fine-tune (teacher data, 4-bit)",
+           "state": "ready", "error": null},
+ "agent": {"thinking": true, "error": null},
+ "actions": {
+  "current": {"id": "tcd0905", "tool": "move", "summary": "move forward 1 m at 0.20 m/s", "status": "running"},
+  "queued": [{"id": "t10f101", "tool": "turn", "summary": "turn left 90° at 29°/s", "status": "queued"}],
+  "recent": []
+ },
+ "conversation": {"id": 0, "entries": ["... see below"]},
+ "camera": null
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `revision` | Goes up by one whenever anything in the state changed. Skip re-rendering when it's the same. |
+| `robot.kind` | `"sim"` (room simulation) or `"go2"` (real Go2 EDU, then `robot.interface` is the network interface instead of `robot.scene`) |
+| `robot.requires_arming`, `robot.armed` | The real robot moves only while `armed` is true. **Show this prominently when `requires_arming` is true.** The simulation never needs arming. |
+| `robot.posture` | `standing`, `walking`, `sitting`, `lying`, `busy` (a trick or posture change in progress), `holding` (holding a body pose), `locked_stand`, `damp` (motors relaxed), `fallen`, `unknown`; `null` while disconnected |
+| `robot.telemetry` | Position from the start (m), heading (degrees, positive = left), speed (m/s) and turning speed (degrees/s), battery % and fault text (real robot only) |
+| `robot.error` | Why telemetry couldn't be read, if it couldn't |
+| `robot.connected` | False once the simulation window is closed or the robot disconnects; the console then shuts down |
+| `model.state` | `loading` (the first seconds after start-up; messages wait for it), `ready`, `unavailable` (then `model.error` says why, such as a missing model file), `scripted` (started with `--mock`: no language model) |
+| `agent.thinking` | The model is working on a reply. A message sent now interrupts that reply and is answered instead. |
+| `agent.error` | The last model error, if the last reply failed |
+| `actions` | What the robot is doing (`current`), what's waiting (`queued`, in order) and the last 8 finished (`recent`): steps, described below |
+| `conversation` | `id` changes when the conversation is cleared (start a fresh log); `entries` are below |
+| `camera` | Set after Go2 has looked: see "Camera" |
+
+## Conversation entries
+
+Entries come in order, each with an `id` (its position, stable until the conversation is cleared) and a
+`kind`. To build one card per user message, group the entries by `turn`: the id of the user message they
+answer. Entries with `turn: null` are Go2 acting on its own, such as reporting that a move finished;
+show those as their own entries in the log.
+
+| `kind` | Fields | Meaning |
+|---|---|---|
+| `user` | `text`, `voice` | What the user typed or said |
+| `call` | `turn`, `tool`, `arguments`, `outcome`, `message`, `steps` | A tool the model called (one reply can make several) |
+| `reply` | `turn`, `text`, `proactive` | What Go2 said. `proactive: true` (with `turn: null`) when Go2 spoke on its own |
+| `update` | `text` | A robot report: a request finished, was blocked, or failed |
+| `error` | `turn`, `text` | The model failed (for example it isn't loaded) |
+| `note` | `text` | Anything else, such as "Reply interrupted." |
+
+### `call.outcome` and `call.message`
+
+`outcome` is the robot's answer **when the call was made**; it doesn't change afterwards.
+
+| `outcome` | Meaning |
+|---|---|
+| `queued` | Accepted. It will run (or is running): follow `steps[].status` for what happens next |
+| `done` | A question answered at once (`look`, `get_status`), nothing to run |
+| `already_queued` | The same request is already waiting, so it wasn't added twice |
+| `needs_confirmation` | Go2 asks first (see "Confirmations") |
+| `rejected` | Refused before starting: outside the limits, not possible here, wrong arguments |
+| `blocked` | Refused at the start by the safety check (an obstacle) |
+| `failed` | Couldn't start (for example the robot faulted) |
+| `cancelled` | Not started because an earlier step in the same request was refused |
+
+`message` is a short line for the user when the outcome isn't `queued` or `done`, such as
+`"Rejected: front flip only runs on the real Go2; the simulator can't do acrobatics"`, otherwise `null`.
+
+### Steps: what a call became, live
+
+`call.steps` and `actions.current/queued/recent` hold the same step objects, so a card can update as its
+steps run. A step's `status` is `queued`, `running`, then one of `completed`, `stopped` (by Stop or a newer
+request), `blocked` (the safety check stopped it on the way), `failed` or `cancelled`.
+
+Always present: `id`, `tool`, `summary` (plain words), `status`. Present when they apply:
+
+| Field | Meaning |
+|---|---|
+| `target_m`, `moved_m` | Distance asked for and walked so far (move, go to, approach) |
+| `target_deg`, `turned_deg` | Angle asked for and turned so far |
+| `error` | Why it stopped early (blocked or failed), in words |
+| `blocked` | `{"reason", "clearance_m", "toward"}` when the safety check stopped it |
+| `note` | Something worth showing, such as a default the robot used |
+| `group_remaining` | Steps of the same request still to come after this one |
+
+## Example: "walk forward one metre then turn left"
+
+Right after `POST /api/messages` (202, `"entry": 0`), the model is thinking (`agent.thinking: true`). Then:
+
+```json
+{"id": 0, "kind": "user", "text": "walk forward one metre then turn left", "voice": false},
+{"id": 1, "kind": "call", "turn": 0, "tool": "move", "arguments": {"direction": "forward", "distance_m": 1},
+ "outcome": "queued", "message": null,
+ "steps": [{"id": "tcd0905", "tool": "move", "summary": "move forward 1 m at 0.20 m/s", "status": "running"}]},
+{"id": 2, "kind": "call", "turn": 0, "tool": "turn", "arguments": {"direction": "left"},
+ "outcome": "queued", "message": null,
+ "steps": [{"id": "t10f101", "tool": "turn", "summary": "turn left 90° at 29°/s", "status": "queued"}]}
+```
+
+When both steps have run:
+
+```json
+{"id": 1, "kind": "call", "...": "...",
+ "steps": [{"id": "tcd0905", "tool": "move", "summary": "move forward 1 m at 0.20 m/s", "status": "completed",
+            "target_m": 1.0, "moved_m": 1.03, "group_remaining": 1}]},
+{"id": 2, "kind": "call", "...": "...",
+ "steps": [{"id": "t10f101", "tool": "turn", "summary": "turn left 90° at 29°/s", "status": "completed",
+            "target_deg": 90, "turned_deg": 91, "note": "no angle given, turning the default 90 degrees",
+            "group_remaining": 0}]},
+{"id": 3, "kind": "reply", "turn": 0, "proactive": false, "text": "Walking forward one metre and turning left now!"},
+{"id": 4, "kind": "update", "text": "finished all steps: move forward 1 m at 0.20 m/s then turn left 90° at 29°/s."},
+{"id": 5, "kind": "reply", "turn": null, "proactive": true, "text": "All done, I'm right where you wanted me!"}
+```
+
+## Example: a move blocked on the way ("walk forward 4 metres")
+
+The call was accepted (`outcome: "queued"`), then the safety check stopped the robot after 0.54 m:
+
+```json
+{"id": 10, "kind": "call", "turn": 9, "tool": "move", "arguments": {"direction": "forward", "distance_m": 4},
+ "outcome": "queued", "message": null,
+ "steps": [{"id": "tc57e1f", "tool": "move", "summary": "move forward 4 m at 0.80 m/s", "status": "blocked",
+            "target_m": 4.0, "moved_m": 0.54, "error": "obstacle ahead: 0.20 m of free space",
+            "blocked": {"reason": "obstacle ahead", "clearance_m": 0.2, "toward": "ahead"}, "group_remaining": 0}]},
+{"id": 11, "kind": "reply", "turn": 9, "proactive": false, "text": "On it, walking forward four metres!"},
+{"id": 12, "kind": "update", "text": "move forward 4 m at 0.80 m/s stopped early, without touching anything: obstacle ahead, 0.2 m short of it after 0.54 of 4.0 m."},
+{"id": 13, "kind": "reply", "turn": null, "proactive": true, "text": "I had to stop early because there was an obstacle right in front of me."}
+```
+
+A move refused at the very start comes back with `outcome: "blocked"` and a `message`, and any later
+steps of the same request with `outcome: "cancelled"`.
+
+## Camera ("what do you see?")
+
+The `look` call answers at once (`outcome: "done"`, no steps) and the state gains `camera`:
+
+```json
+"camera": {
+ "stamp": 1792212267.4898748,
+ "url": "/api/camera.png?t=1792212267.4898748",
+ "boxes": [
+  {"label": "potted plant", "score": 1.0, "box": [0.2844, 0.4722, 0.3484, 0.6083]},
+  {"label": "couch", "score": 1.0, "box": [0.4781, 0.475, 0.6703, 0.6111]},
+  {"label": "bowl", "score": 1.0, "box": [0.4531, 0.7194, 0.5062, 0.7972]},
+  "..."
+ ],
+ "objects": [
+  {"id": "obj1", "label": "bowl", "color": "blue", "distance_m": 1.12, "bearing_deg": 4,
+   "direction": "straight ahead", "x_m": 1.12, "y_m": 0.07, "distance_source": "lidar", "confidence": 1.0},
+  "..."
+ ]
+}
+```
+
+- `url` changes with every new look, so it can go straight into an `<img>`.
+- `boxes` are where each object is in the image: `[left, top, right, bottom]` as fractions of the image
+  size, so they fit either image size.
+- `objects` are what Go2 placed in the room: distance from the body (m), bearing (degrees, positive =
+  left) and a direction in words. They are listed separately from `boxes` and aren't matched one to one.
+
+## Confirmations
+
+Acrobatics (flips, jumps, handstand and the like) only run on the real robot, and only after the user
+agrees. The model's first call comes back with `outcome: "needs_confirmation"` and Go2 asks in its reply.
+To answer from buttons, send the answer as the next message:
+
+```js
+yes.onclick = () => send('yes');   // the model then calls the trick again with confirmed=true
+no.onclick  = () => send('no');
+```
+
+The yes has to be the very next message, within 60 seconds. In the simulation acrobatics are refused
+outright (`outcome: "rejected"`), so there's nothing to confirm.
+
+## The original endpoints
+
+Kept for the current page:
+
+- `POST /api/command` `{"text"}`: waits for the whole reply, then answers with one card:
+  `{"command", "tool", "valid", "validation", "response", "exec": null}`. `tool` lists the calls as text
+  (`"move(direction=forward, distance_m=1) then turn(direction=left)"`); `validation` is
+  `"Passed: within limits"`, `"No robot action"` or the first problem (`"Blocked: ..."`,
+  `"Rejected: ..."`, `"Needs your confirmation: say yes to go ahead"`).
+- `POST /api/voice`: records 5 seconds from the computer's microphone, then the same as `/api/command`.
+- `POST /api/stop`: `{"ok": true}`.
+- `GET /api/status`: `{"state", "action", "speed", "note"}` for the side panel; `note` carries the latest
+  robot update or Go2's own report.
+
+## Developing against it
+
+- `command_ui/server.py --mock` runs everything with scripted replies instead of the language model (no
+  model file or Ollama needed): "walk forward 2 m", "turn left", "sit", "look" and "status" work.
+- `--headless` runs the simulation without its window.
+- Voice endpoints (speech to text from the browser, spoken replies) are planned for the next round.
