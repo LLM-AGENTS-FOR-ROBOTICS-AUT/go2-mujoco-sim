@@ -63,8 +63,9 @@ the original C++/DDS deployment program and physical Go2 EDU were not tested.
 On the `llm-agent` branch, `command_ui/` is driven by the team's fine-tuned language model
 (go2-ft-04) instead of keyword rules: type or speak to the Go2 in a simulated room with household
 objects, LiDAR and a camera, or to the real Go2 EDU. Every tool call passes a safety executor first.
-Set up with `bash macos/setup.sh --agent` (Apple Silicon) or `windows\setup.ps1 -Agent`, then see the
-[command console guide](command_ui/README.md) for the model file and Ollama.
+Set up with `bash macos/setup.sh --agent` (Apple Silicon) or `windows\setup.ps1 -Agent`; the model
+downloads automatically. See the [command console guide](command_ui/README.md) (Ollama is the one thing
+to install yourself).
 
 ## macOS simulator quick start
 

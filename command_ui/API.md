@@ -95,7 +95,7 @@ GET  /api/camera.png (no look yet)     -> 404 {"error": "No camera frame yet: as
 | `robot.telemetry` | Position from the start (m), heading (degrees, positive = left), speed (m/s) and turning speed (degrees/s), battery % and fault text (real robot only) |
 | `robot.error` | Why telemetry couldn't be read, if it couldn't |
 | `robot.connected` | False once the simulation window is closed or the robot disconnects; the console then shuts down |
-| `model.state` | `loading` (the first seconds after start-up; messages wait for it), `ready`, `unavailable` (then `model.error` says why, such as a missing model file), `scripted` (started with `--mock`: no language model) |
+| `model.state` | `downloading` (first start only: `model.progress` is `{"done_mb", "total_mb"}`), `loading` (the first seconds after start-up; messages wait for it), `ready`, `unavailable` (then `model.error` says why, such as no internet for the first download), `scripted` (started with `--mock`: no language model) |
 | `agent.thinking` | The model is working on a reply. A message sent now interrupts that reply and is answered instead. |
 | `agent.error` | The last model error, if the last reply failed |
 | `actions` | What the robot is doing (`current`), what's waiting (`queued`, in order) and the last 8 finished (`recent`): steps, described below |
