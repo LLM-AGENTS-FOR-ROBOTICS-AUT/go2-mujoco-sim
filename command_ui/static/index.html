@@ -76,9 +76,13 @@
   .iconbtn{width:44px;height:44px;background:var(--panel2);border:1px solid var(--border);border-radius:9px;color:var(--white);cursor:pointer;display:flex;align-items:center;justify-content:center;}
   .iconbtn:hover{border-color:var(--teal);}.iconbtn svg{width:20px;height:20px;stroke:currentColor;}
   .iconbtn.rec{color:var(--red);border-color:var(--red);}
-  .listening{display:inline-flex;align-items:center;gap:7px;color:var(--red);font-size:13px;margin-left:6px;}
-  .listening .wave{width:9px;height:9px;border-radius:50%;background:currentColor;animation:breathe 1.3s ease-in-out infinite;}
-  @keyframes breathe{0%,100%{transform:scale(.7);opacity:.6}50%{transform:scale(1);opacity:1}}
+  .iconbtn.on{color:var(--teal);border-color:var(--teal);background:rgba(31,191,168,.12);}
+  .voicebar{display:flex;align-items:center;gap:9px;max-width:1080px;margin:0 auto;padding:8px 18px 0;font-size:13.5px;color:var(--mute);min-width:0;}
+  .voicebar .lvl{flex:none;width:11px;height:11px;border-radius:50%;background:var(--teal);transition:transform .08s linear;}
+  .voicebar.single .lvl{background:var(--red);}
+  .voicebar.off .lvl{background:var(--mute);}
+  .voicebar .phase{flex:none;color:var(--white);}
+  .voicebar .cap{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:italic;}
   .hint{color:var(--mute);font-size:12.5px;margin-top:10px;}
   .chip{display:inline-block;background:var(--panel2);border:1px solid var(--border);border-radius:16px;padding:3px 10px;margin:3px 4px 0 0;font-size:12.5px;color:var(--white);cursor:pointer;}
   .chip:hover{border-color:var(--teal);}
@@ -126,13 +130,15 @@
   </div>
 </div>
 
+<div class="voicebar" id="voicebar" hidden aria-live="polite"><span class="lvl" id="lvl"></span><span class="phase" id="vPhase"></span><span class="cap" id="vCaption"></span></div>
 <div class="bar">
   <input id="text" type="text" placeholder="Type a command, e.g. walk forward 2 metres" autocomplete="off">
-  <span id="listening" class="listening" hidden><span class="wave"></span>Listening&hellip;</span>
-  <button class="iconbtn" id="mic" title="Speak a command" aria-label="Speak a command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+  <button class="iconbtn" id="mic" title="Speak one command (it ends when you pause)" aria-label="Speak one command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+  <button class="iconbtn" id="live" title="Live conversation: talk hands-free, and cut Go2 off just by speaking" aria-label="Live conversation" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg></button>
   <button class="iconbtn" id="send" title="Send" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12l16-8-6 16-3-7-7-1z"/></svg></button>
 </div>
 
+<script src="/static/live-voice.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const log=$('log'), txt=$('text');
@@ -274,35 +280,96 @@ function render(s){
   // disable Send while thinking; Stop always on
   txt.disabled=s_thinking;
   $('send').style.opacity=s_thinking?'.5':'1';
+  voiceInfo=s.voice||{available:false};
+  entries=(s.conversation&&s.conversation.entries)||[];
+  live.observe(entries);
 }
 
 // ---- actions ----
-async function send(text){
-  if(!text||!text.trim())return;
+// voice=true: the user said it. Go2 answers aloud during a live conversation and after a spoken command.
+async function send(text,voice=false){
+  if(!text||!text.trim())return false;
+  speakReplies=live.active||voice;
+  speaker.cancel();
   try{
-    const r=await fetch('/api/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-    if(!r.ok){const j=await r.json().catch(()=>({}));flashError(j.error||'Command failed.');}
-  }catch(e){flashError('Could not reach the console.');}
+    const r=await fetch('/api/messages',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text,voice,speak:speakReplies})});
+    if(!r.ok){const j=await r.json().catch(()=>({}));flashError(j.error||'Command failed.');return false;}
+    return true;
+  }catch(e){flashError('Could not reach the console.');return false;}
+}
+// said: the user's words when they said "stop" (shown in the conversation).
+function stopRobot(said){
+  if(live.active) live.cancelSpeech(); else speaker.cancel();
+  fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(typeof said==='string'?{said}:{})}).catch(()=>{});
 }
 function flashError(msg){
   const b=$('banners');const d=document.createElement('div');d.className='banner red';d.textContent=msg;b.appendChild(d);setTimeout(()=>d.remove(),5000);
 }
 $('send').onclick=()=>{send(txt.value);txt.value='';};
 txt.addEventListener('keydown',e=>{if(e.key==='Enter'&&!txt.disabled){send(txt.value);txt.value='';}});
-$('stop').onclick=()=>fetch('/api/stop',{method:'POST'}).catch(()=>{});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){fetch('/api/stop',{method:'POST'}).catch(()=>{});}});
+$('stop').onclick=()=>stopRobot();
+document.addEventListener('keydown',e=>{if(e.key==='Escape')stopRobot();});
 $('reset').onclick=()=>fetch('/api/reset',{method:'POST'}).catch(()=>{});
-$('clear').onclick=()=>fetch('/api/clear',{method:'POST'}).catch(()=>{});
+$('clear').onclick=()=>{speaker.cancel();fetch('/api/clear',{method:'POST'}).catch(()=>{});};
 $('disarm').onclick=()=>fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({armed:false})}).catch(()=>{});
 // delegated clicks: chips, Yes/No
 document.addEventListener('click',e=>{const el=e.target.closest('[data-send]');if(el){send(el.dataset.send);}});
-// mic (interim: server-side recording via the existing endpoint; browser voice is Luka's next round)
+// ---- voice: the mic takes one spoken command; Live is a hands-free conversation (live-voice.js) ----
+let voiceInfo={available:false}, entries=[], speakReplies=false, voiceNoteTimer=null;
+const speaker=new Go2Speaker({voice:()=>(voiceInfo.speech&&voiceInfo.speech.default)||null,onidle:()=>live.speechDone()});
+const live=new Go2LiveVoice({
+  speaker,
+  sttReady:()=>!!(voiceInfo.recognition&&voiceInfo.recognition.ready),
+  sttError:()=>voiceInfo.available===false?'the console was started with --no-voice':((voiceInfo.recognition&&voiceInfo.recognition.error)||null),
+  isBusy:()=>s_thinking,
+  historyLength:()=>entries.length,
+  onState:showVoice,
+  onLevel:level=>{$('lvl').style.transform=`scale(${(.7+level*.9).toFixed(2)})`;},
+  onError:flashError,
+  onInterrupt:()=>fetch('/api/interrupt',{method:'POST'}).then(r=>{if(!r.ok)throw new Error(r.statusText);}),
+  onStopWord:stopRobot,
+  onUtterance:text=>send(text,true),
+});
+function showVoice(v){
+  const bar=$('voicebar');clearTimeout(voiceNoteTimer);
+  bar.className='voicebar'+(v.single?' single':'')+(v.active?'':' off');
+  bar.hidden=!v.active&&!v.detail;
+  $('vPhase').textContent=v.detail||'';
+  $('vCaption').textContent=v.caption?`\u201c${v.caption}\u201d`:'';
+  mic.classList.toggle('rec',v.active&&v.single);
+  $('live').classList.toggle('on',v.active&&!v.single);
+  $('live').setAttribute('aria-pressed',String(v.active&&!v.single));
+  if(!v.active&&v.detail) voiceNoteTimer=setTimeout(()=>{if(!live.active)bar.hidden=true;},4000);
+}
 const mic=$('mic');
-mic.onclick=async()=>{
-  mic.classList.add('rec');$('listening').hidden=false;
-  try{await fetch('/api/voice',{method:'POST'});}catch(e){flashError('Voice failed.');}
-  finally{mic.classList.remove('rec');$('listening').hidden=true;}
+mic.onclick=()=>{
+  if(live.active){const was=live.single;live.stop('');if(was)return;}   // a second click cancels
+  speakReplies=true;live.start({single:true});
 };
+$('live').onclick=()=>{
+  if(live.active&&!live.single){live.stop('Live conversation ended.');return;}
+  if(live.active)live.stop('');
+  live.start();
+};
+// Sound may only start after a click or key press: unlock it on every one.
+for(const type of ['click','keydown'])document.addEventListener(type,()=>speaker.unlock(),true);
+// Go2's words, phrase by phrase while the model writes them (held open until there is something new).
+async function speechFeed(){
+  let last=-1;
+  for(;;){
+    try{
+      const j=await (await fetch('/api/speech?after='+last)).json();
+      const fresh=last>=0;last=j.last;
+      if(fresh)for(const item of j.items){
+        if(live.active)live.onSpeech(item);
+        else if(speakReplies){if(item.end)speaker.end(item.epoch);else speaker.say(item.epoch,item.text,item.proactive);}
+      }
+    }catch(e){await new Promise(r=>setTimeout(r,1500));}
+  }
+}
+speechFeed();
 
 // ---- live connection: SSE with polling fallback ----
 function connect(){

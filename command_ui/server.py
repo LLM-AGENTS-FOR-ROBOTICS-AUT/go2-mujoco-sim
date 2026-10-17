@@ -5,7 +5,9 @@ The web page (static/index.html) sends a typed or spoken command. The LLM agent 
 fine-tuned as go2-ft-04, run by a private Ollama) answers it and calls bounded robot tools; the executor
 (go2/executor.py) checks every call against the limits and the robot's own sensors before anything moves.
 The robot is the MuJoCo room simulation in its own window (simulation/), or the real Go2 EDU with --robot.
-Voice uses faster-whisper locally (offline): the mic button records 5 seconds here.
+Voice runs on this computer too: the page records the microphone and cuts it where you pause, Whisper
+large-v3-turbo (go2/stt.py) turns each sentence into text, and Kokoro (go2/tts.py) speaks Go2's replies phrase by
+phrase as the model writes them.
 
 API: the page's original endpoints (/api/command, /api/voice, /api/stop, /api/status) still work. The richer
 API for a new page (live state over /api/state or /api/events, /api/messages, /api/clear, /api/reset, /api/arm,
@@ -20,20 +22,24 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import select
 import shutil
 import signal
+import socket
 import struct
 import sys
 import threading
 import time
 import webbrowser
 import zlib
+from collections import OrderedDict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
+import numpy as np  # noqa: E402
 from flask import Flask, Response, abort, jsonify, request, send_from_directory  # noqa: E402
 
 from go2 import perception as P  # noqa: E402
@@ -44,10 +50,19 @@ from go2.agent import Agent, is_stop, robot_state_line  # noqa: E402
 from go2.executor import Executor  # noqa: E402
 from go2.llm import CATALOG, ModelError, OllamaModel  # noqa: E402
 from go2.mock_model import MockModel  # noqa: E402
+from go2.stt import MAX_BYTES as STT_MAX_BYTES  # noqa: E402
+from go2.stt import Listener  # noqa: E402
+from go2.tts import DEFAULT_VOICE, VOICES, Speaker  # noqa: E402
 
 VOICE_SECONDS = 5
 SR = 16000
 TURN_TIMEOUT_S = 120
+SPEECH_WAIT_S = 20              # how long /api/speech holds a request open waiting for Go2's next phrase
+# A spoken reply's words come from a second model step after the tool call, and its audio takes a few tenths of a
+# second more, so on its own the robot would start about half a second before Go2 says anything. Its first
+# movement waits for the audio instead, but never longer than this (and Stop always cuts through).
+VOICE_HOLD_S = 1.2
+PREPARED = 32                   # phrases' audio kept ready (replies like "Okay, stopped." repeat)
 LOAD_WAIT_S = 30                # a message sent while the model loads (seconds after start-up) waits this long
 
 
@@ -56,9 +71,19 @@ class NotReady(ValueError):
 PROBLEMS = ("blocked", "failed", "rejected", "cancelled", "needs_confirmation")
 
 
+class SpokenReply:
+    """A user turn whose reply the page plays aloud: its first robot movement starts with Go2's voice."""
+
+    def __init__(self, user_turn):
+        self.user_turn, self.epoch = user_turn, None
+        self.audible = threading.Event()   # the first phrase can be heard now (or the turn ended without one)
+        self.preparing = False             # its first phrase's audio is being made
+        self.held = False                  # a movement has already waited for it
+
+
 # ---- the robot, the executor and the agent ----------------------------------------------------------------
 class Console:
-    def __init__(self, model, adapter, robot_info=None):
+    def __init__(self, model, adapter, robot_info=None, voice=False):
         self.model, self.adapter = model, adapter
         self.robot_info = robot_info or {}       # {"scene": "room"} or {"interface": "en7"}, shown in the state
         self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task))
@@ -76,6 +101,20 @@ class Console:
         self.revision, self.last_state = 0, None
         self.state_lock = threading.Lock()
         self.closed = False
+        self.listener = self.speaker = None     # speech recognition and Go2's voice (both load in the background)
+        self.voice_name = None                  # the voice the page plays replies in; None while it doesn't
+        self.spoken = None                      # the latest user turn the page speaks the reply of (SpokenReply)
+        self.cut = 0                            # phrases of turns before this epoch were cut off: not prepared
+        self.prepared = OrderedDict()           # (text, voice) -> {"done": Event, "wav": bytes or None}
+        self.to_prepare = []
+        self.preparing = threading.Condition()
+        self.agent.speech.listeners.append(self._on_speech)
+        self.executor.before_motion = self._with_voice
+        if voice:
+            self.listener, self.speaker = Listener(), Speaker()
+            self.listener.warm_up()
+            self.speaker.warm_up()
+            threading.Thread(target=self._prepare_audio, daemon=True, name="voice-prepare").start()
         if isinstance(model, OllamaModel):
             self.note = "Loading the language model..."
             self.model_info["state"] = "loading"
@@ -133,6 +172,8 @@ class Console:
             return card(text, None, False, "Language model not ready", str(error))
         with self.commands:
             start = len(self.agent.snapshot()["transcript"])
+            self._speaks(False)                 # the original page shows replies; it doesn't speak them
+            self._cut_off()
             try:
                 self.agent.submit(text, voice)
             except ValueError as error:
@@ -148,8 +189,122 @@ class Console:
                 return card(text, None, False, "No answer", "The model took too long to answer. Try again.")
             return turn_card(text, rows, snapshot["error"])
 
-    def stop(self):
-        return self.agent.stop()
+    def stop(self, said=None):
+        """Halt at once. `said`: the user's words, when they said "stop" (recorded as their spoken message)."""
+        self._cut_off()
+        return self.agent.stop(spoken=said or None, voice=True)
+
+    # ---- voice --------------------------------------------------------------------------------------------
+    def _speaks(self, speak):
+        """Remember how the page plays Go2's replies: `speak` is True (the default voice), a voice's name, or
+        False (it doesn't). Raises ValueError for a voice that doesn't exist."""
+        if speak is True:
+            speak = DEFAULT_VOICE
+        if speak and speak not in VOICES:
+            raise ValueError(f"Unknown voice {speak!r}: use one of {', '.join(VOICES)}.")
+        self.voice_name = speak or None
+
+    def _cut_off(self):
+        """A new message, Stop, Interrupt or Clear: what Go2 was about to say is no longer wanted."""
+        self.cut = self.agent.epoch + 1
+        spoken, self.spoken = self.spoken, None
+        if spoken:
+            spoken.audible.set()
+
+    def _on_speech(self, item):
+        """Each phrase as the model writes it: when the page speaks replies with Kokoro, make its audio now (so it
+        is ready when the page asks), and let the turn's first movement go once its first phrase can be heard."""
+        spoken = self.spoken
+        first = (spoken is not None and item["epoch"] == spoken.epoch and not spoken.audible.is_set()
+                 and not spoken.preparing)
+        if item.get("end") or self.voice_name is None or self.speaker is None or not self.speaker.ready.is_set():
+            if first:
+                spoken.audible.set()        # the turn said nothing, or the browser's own voice starts at once
+            return
+        if first:
+            spoken.preparing = True
+        self._prepare(item["text"], self.voice_name, item["epoch"], spoken if first else None)
+
+    def _prepare(self, text, voice, epoch, spoken=None):
+        key = (" ".join(text.split()), voice)
+        with self.preparing:
+            if key in self.prepared:
+                entry = self.prepared[key]
+                self.prepared.move_to_end(key)
+            else:
+                entry = self.prepared[key] = {"done": threading.Event(), "wav": None}
+                while len(self.prepared) > PREPARED:
+                    self.prepared.popitem(last=False)[1]["done"].set()
+                self.to_prepare.append((key, entry, epoch))
+                self.preparing.notify()
+            if spoken is not None:
+                entry.setdefault("then", []).append(spoken)
+        if entry["done"].is_set():
+            self._prepared(entry)
+
+    @staticmethod
+    def _prepared(entry):
+        for spoken in entry.pop("then", []):
+            spoken.audible.set()
+
+    def _prepare_audio(self):
+        while not self.closed:
+            with self.preparing:
+                self.preparing.wait_for(lambda: self.to_prepare or self.closed)
+                if self.closed:
+                    return
+                key, entry, epoch = self.to_prepare.pop(0)
+            if epoch >= self.cut:
+                try:
+                    entry["wav"] = self.speaker.wav(*key)
+                except Exception:              # the page's own request then reports it (or uses the browser voice)
+                    pass
+            entry["done"].set()
+            self._prepared(entry)
+
+    def _with_voice(self, task, cancel):
+        """The executor's before_motion: a spoken reply's first movement waits (at most VOICE_HOLD_S) until Go2's
+        voice for it is ready, so it moves as it starts talking."""
+        spoken = self.spoken
+        if spoken is None or spoken.held or task.user_turn != spoken.user_turn:
+            return
+        spoken.held = True
+        deadline = time.monotonic() + VOICE_HOLD_S
+        while not spoken.audible.wait(.02) and not cancel.is_set() and time.monotonic() < deadline:
+            pass
+
+    def voice_status(self):
+        if self.listener is None:
+            return {"available": False}
+        listen, speak = self.listener.status(), self.speaker.status()
+        return {"available": True,
+                "recognition": {key: listen[key] for key in ("ready", "error", "model", "runs_on")},
+                "speech": {key: speak[key] for key in ("ready", "error", "voices", "default")}}
+
+    def transcribe(self, audio, wanted=lambda: True):
+        """Text for one sentence of 16 kHz mono float samples. RuntimeError while recognition loads or is off;
+        LookupError when the page stopped waiting."""
+        if self.listener is None:
+            raise RuntimeError("Voice is off (the console was started with --no-voice).")
+        return self.listener.transcribe(audio, wanted)
+
+    def speech_wav(self, text, voice=None, wanted=lambda: True):
+        """Go2's voice for one phrase as WAV bytes. RuntimeError while it loads or is off (the page then uses the
+        browser's own voice); LookupError when the page dropped the phrase."""
+        if self.speaker is None:
+            raise RuntimeError("Voice is off (the console was started with --no-voice).")
+        voice = voice or DEFAULT_VOICE
+        with self.preparing:
+            entry = self.prepared.get((" ".join(str(text).split()), voice))
+        if entry is not None and entry["done"].wait(30) and entry["wav"]:
+            return entry["wav"]             # made while the model was still writing
+        return self.speaker.wav(text, voice, wanted)
+
+    def interrupt(self):
+        """The user cut in while Go2 was thinking or talking: drop the reply. Robot actions already under way
+        carry on (Stop halts them)."""
+        self._cut_off()
+        self.agent.interrupt()
 
     def status(self):
         snapshot = self.agent.snapshot()
@@ -176,16 +331,27 @@ class Console:
                 "note": self.note or latest_update(snapshot["transcript"][self.shown:])}
 
     # ---- the richer API (command_ui/API.md) --------------------------------------------------------------
-    def post(self, text, voice=False):
+    def post(self, text, voice=False, speak=None):
         """Accept a message and return at once (the reply and actions arrive in the state). Returns the id of
-        the conversation entry it became. NotReady while the model is downloading or failed to load."""
+        the conversation entry it became. NotReady while the model is downloading or failed to load.
+        `speak` says the page plays the reply aloud (True or a voice's name; by default, when the message was
+        spoken): its audio is then made as the model writes it, and the first movement starts with the voice."""
         self.ready_for(text)
         with self.commands:
             entry = len(self.agent.snapshot()["transcript"])
-            self.agent.submit(text, voice)      # ValueError for an empty or overlong message
+            self._speaks(voice if speak is None else speak)
+            self._cut_off()
+            spoken = SpokenReply(self.agent.user_turns + 1) if self.voice_name else None
+            self.spoken = spoken
+            epoch = self.agent.submit(text, voice)      # ValueError for an empty or overlong message
+            if spoken is not None:
+                if epoch is None:                       # "stop": no movement to wait for
+                    self.spoken = None
+                spoken.epoch = epoch
         return entry
 
     def clear(self):
+        self._cut_off()
         self.agent.clear()
         self.conversation_id += 1
         self.shown = 0
@@ -230,7 +396,7 @@ class Console:
                       "objects": [{**d.public(), "direction": P.describe_bearing(d.bearing_deg)}
                                   for d, _ in list(self.executor.last_detections)],
                       "boxes": frame.get("boxes", [])}
-        return {"robot": robot, "model": dict(self.model_info),
+        return {"robot": robot, "model": dict(self.model_info), "voice": self.voice_status(),
                 "agent": {"thinking": agent["busy"], "error": agent["error"]},
                 "actions": {"current": executor["current"], "queued": executor["queue"],
                             "recent": executor["recent"]},
@@ -263,6 +429,8 @@ class Console:
 
     def close(self):
         self.closed = True
+        with self.preparing:
+            self.preparing.notify_all()
         self.agent.close()
         self.executor.close()
         for stop in (self.adapter.close, getattr(self.model, "unload", None)):
@@ -391,7 +559,18 @@ def png_bytes(rgb):
             chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-# ---- voice (lazy-loaded so the console starts fast) --------------------------------------------------------
+def client_gone(sock):
+    """True when the browser has closed this request's connection (the page gave up on it)."""
+    if sock is None:
+        return False
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        return bool(readable) and sock.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
+
+
+# ---- the original page's voice button: records 5 seconds here (lazy-loaded so the console starts fast) -----
 _whisper = None
 _whisper_lock = threading.Lock()
 
@@ -447,7 +626,8 @@ def make_app(console, port):
 
     @app.route("/api/stop", methods=["POST"])
     def api_stop():
-        console.stop()
+        said = body().get("said")
+        console.stop(said[:200] if isinstance(said, str) else None)
         return jsonify({"ok": True})
 
     @app.route("/api/status")
@@ -474,8 +654,10 @@ def make_app(console, port):
     @app.route("/api/messages", methods=["POST"])
     def api_messages():
         value = body()
+        speak = value.get("speak")
         try:
-            entry = console.post(str(value.get("text", "")), bool(value.get("voice")))
+            entry = console.post(str(value.get("text", "")), bool(value.get("voice")),
+                                 speak if isinstance(speak, (bool, str)) else None)
         except NotReady as error:
             return jsonify({"error": str(error), "model": console.model_info}), 503
         except ValueError as error:
@@ -505,6 +687,52 @@ def make_app(console, port):
         except ValueError as error:
             return refused(error)
         return jsonify(console.state())
+
+    # ---- voice (command_ui/API.md, "Voice") --------------------------------------------------------------
+    def gone():
+        sock = request.environ.get("werkzeug.socket")
+        return lambda: not client_gone(sock)
+
+    @app.route("/api/stt", methods=["POST"])
+    def api_stt():
+        size = request.content_length or 0
+        if not 0 < size <= STT_MAX_BYTES or size % 4:
+            why = f"Send one sentence as 16 kHz mono float32 samples (at most {STT_MAX_BYTES} bytes)."
+            return refused(why, 413 if size > STT_MAX_BYTES else 400)
+        audio = np.frombuffer(request.get_data(cache=False), "<f4")
+        try:
+            text = console.transcribe(audio, wanted=gone())
+        except LookupError:                   # the page stopped waiting for this one
+            return "", 204
+        except RuntimeError as error:         # still loading, or voice is off
+            return refused(error, 503)
+        return jsonify({"text": text})
+
+    @app.route("/api/tts", methods=["POST"])
+    def api_tts():
+        value = body()
+        try:
+            audio = console.speech_wav(value.get("text", ""), value.get("voice"), wanted=gone())
+        except LookupError:                   # the page dropped this phrase while it waited its turn
+            return "", 204
+        except RuntimeError as error:         # still loading, or voice is off: the page uses the browser's voice
+            return refused(error, 503)
+        except ValueError as error:
+            return refused(error)
+        return Response(audio, mimetype="audio/wav", headers={"Cache-Control": "no-store"})
+
+    @app.route("/api/speech")
+    def api_speech():
+        try:
+            last = int(request.args.get("after", "-1"))
+        except ValueError:
+            last = -1
+        return jsonify(console.agent.speech.after(last, timeout=SPEECH_WAIT_S))
+
+    @app.route("/api/interrupt", methods=["POST"])
+    def api_interrupt():
+        console.interrupt()
+        return jsonify({"ok": True})
 
     @app.route("/api/camera.png")
     def api_camera():
@@ -587,6 +815,7 @@ def main():
     # macOS's AirPlay Receiver listens on port 5000, so the Mac default is 5050.
     parser.add_argument("--port", type=int, default=5050 if sys.platform == "darwin" else 5000)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--no-voice", action="store_true", help="don't load speech recognition or Go2's voice")
     parser.add_argument("--check", action="store_true", help="check the simulator and model, then exit")
     parser.add_argument("--fetch-model", action="store_true", help="download the model now (once), then exit")
     args = parser.parse_args()
@@ -607,7 +836,8 @@ def main():
         adapter = connect_robot(args)
     except AdapterError as error:
         sys.exit(f"Could not start the robot: {error}")
-    console = Console(model, adapter, {"interface": args.robot} if args.robot else {"scene": args.scene})
+    console = Console(model, adapter, {"interface": args.robot} if args.robot else {"scene": args.scene},
+                      voice=not args.no_voice)
     if args.robot and args.arm:
         console.executor.set_armed(True)
         print("The real Go2 is ARMED: it will move when told to. Press Stop on the page to halt it.")

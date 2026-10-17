@@ -58,6 +58,7 @@ class SpeechStream:
     def __init__(self):
         self.cond = threading.Condition()
         self.items, self.next_id = [], 1
+        self.listeners = []         # f(item) for each new item (the console prepares the audio as phrases arrive)
 
     def _put(self, item):
         with self.cond:
@@ -66,6 +67,11 @@ class SpeechStream:
             self.items.append(item)
             del self.items[:-300]
             self.cond.notify_all()
+        for listener in list(self.listeners):
+            try:
+                listener(dict(item))
+            except Exception:
+                pass
 
     def say(self, epoch, text, proactive=False):
         self._put({"epoch": epoch, "text": text, "proactive": proactive})
@@ -84,7 +90,8 @@ class SpeechStream:
 
 class Phrases:
     """Cuts one model step's text into phrases as it streams in: at sentence ends, and at commas once a
-    phrase is long enough. Anything that could be a tool call written as text is never spoken early; the
+    phrase is long enough (sooner for the first phrase, so Go2 starts talking sooner: the voice makes each
+    phrase's audio in one go). Anything that could be a tool call written as text is never spoken early; the
     step's final words are completed by finish()."""
 
     def __init__(self, emit, enabled=True):
@@ -100,8 +107,9 @@ class Phrases:
         pending = text[len(self.sent):]
         while True:
             cut = None
+            clause = 30 if self.sent.strip() else 16
             for match in PHRASE_BREAK.finditer(pending):
-                if len(pending[:match.end()].strip()) >= (12 if pending[match.start()] in ".!?…" else 30):
+                if len(pending[:match.end()].strip()) >= (12 if pending[match.start()] in ".!?…" else clause):
                     cut = match.end()
                     break
             if cut is None:
@@ -148,8 +156,8 @@ class Agent:
         if len(text) > 2000:
             raise ValueError("That message is too long.")
         if is_stop(text):
-            self.stop(spoken=text)
-            return
+            self.stop(spoken=text, voice=voice)
+            return None
         with self.lock:
             if self.busy:
                 self._cancel_turn()     # a new utterance interrupts the reply in progress
@@ -161,13 +169,14 @@ class Agent:
             self.transcript.append({"role": "user", "content": text, "voice": voice, "turn": self._turn_start()})
         self.on_change()
         threading.Thread(target=self._turn, args=(epoch,), daemon=True).start()
+        return epoch
 
-    def stop(self, spoken=None):
+    def stop(self, spoken=None, voice=True):
         result = self.executor.stop("user")
         with self.lock:
             self._cancel_turn()
             if spoken:
-                self.transcript.append({"role": "user", "content": spoken, "voice": True})
+                self.transcript.append({"role": "user", "content": spoken, "voice": voice})
             reply = "Okay, stopped."
             self.messages.append({"role": "user", "content": spoken or "Stop!"})
             self.messages.append({"role": "assistant", "content": reply})

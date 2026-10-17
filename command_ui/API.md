@@ -39,14 +39,21 @@ If server-sent events don't suit, poll `GET /api/state` (every 300 to 500 ms): s
 |---|---|---|
 | `GET /api/state` | | The state object (below) |
 | `GET /api/events` | | Server-sent events: `event: state` with the state object each time it changes, and a `: still here` comment every 15 s |
-| `POST /api/messages` | `{"text": "...", "voice": false}` | **202** `{"accepted": true, "entry": 0, "conversation": 0}`: `entry` is the id the message got in the conversation |
-| `POST /api/stop` | | `{"ok": true}`: the robot stops at once and queued steps are cancelled |
+| `POST /api/messages` | `{"text": "...", "voice": false, "speak": false}` | **202** `{"accepted": true, "entry": 0, "conversation": 0}`: `entry` is the id the message got in the conversation |
+| `POST /api/stop` | Optional `{"said": "Stop!"}` | `{"ok": true}`: the robot stops at once and queued steps are cancelled. `said` (when the user said it) is added as their spoken message |
+| `POST /api/interrupt` | | `{"ok": true}`: Go2's reply in progress is dropped (the user cut in); robot steps carry on |
+| `GET /api/speech?after=N` | | Go2's words phrase by phrase, held open until there's something new (see "Voice") |
+| `POST /api/tts` | `{"text": "...", "voice": "af_heart"}` | The phrase spoken by Go2, as a WAV file. **503** while the voice loads (use the browser's own voice) |
+| `POST /api/stt` | One sentence: 16 kHz mono float32 samples, raw (`application/octet-stream`) | `{"text": "walk forward one metre"}` (`""` for silence or noise). **503** while recognition loads |
 | `POST /api/clear` | | The state, with an empty conversation and a new `conversation.id` |
 | `POST /api/reset` | | Simulation only: the robot back at its start. The state |
 | `POST /api/arm` | `{"armed": true}` or `{"armed": false}` | Real robot only: allow or forbid motion. The state |
 | `GET /api/camera.png` | `?size=full` for full size | The last camera frame Go2 looked at (640 x 360, or 1280 x 720 full). **404** before the first look |
 
-`voice: true` only marks a message as spoken (shown in its entry). A short message starting with a stop
+`voice: true` marks a message as spoken (shown in its entry). `speak` says the page plays Go2's reply aloud:
+`true` (the default voice) or a voice's name from `voice.speech.voices`, and by default the same as `voice`.
+The console then makes the reply's audio while the model is still writing it, and starts the robot's first
+movement together with Go2's voice (see "Voice"). A short message starting with a stop
 phrase ("stop", "halt", "freeze", "whoa", "don't move", "stay there", "cancel that", "abort") stops the robot
 at once without the model, exactly like `/api/stop`. Stopping also cancels every queued step (their
 status becomes `cancelled`).
@@ -57,6 +64,7 @@ Refusals, as they really come back:
 POST /api/messages {"text": ""}        -> 400 {"error": "Say or type something first."}
 POST /api/arm {"armed": true} (sim)    -> 400 {"error": "Only the real robot needs arming; the simulation always moves."}
 POST /api/reset (real robot)           -> 400 {"error": "Reset is only available in the simulation."}
+POST /api/messages {"speak": "nobody"} -> 400 {"error": "Unknown voice 'nobody': use one of af_heart, af_bella, ..."}
 GET  /api/camera.png (no look yet)     -> 404 {"error": "No camera frame yet: ask Go2 what it sees."}
 POST /api/messages while downloading   -> 503 {"error": "Still downloading the language model (first start only): 3%, 0.1 of 3.4 GB. Try again when it's ready; Stop works now.",
                                                "model": {"state": "downloading", "progress": {"done_mb": 118, "total_mb": 3416}, "...": "..."}}
@@ -82,6 +90,10 @@ A stop phrase ("stop", "halt", ...) always goes through, as does `/api/stop`.
  },
  "model": {"id": "go2-ft-04", "label": "Go2 ft-04: newest fine-tune (teacher data, 4-bit)",
            "state": "ready", "error": null},
+ "voice": {"available": true,
+           "recognition": {"ready": true, "error": null, "model": "Whisper large-v3-turbo", "runs_on": "mlx"},
+           "speech": {"ready": true, "error": null, "default": "af_heart",
+                      "voices": {"af_heart": "Heart · warm (US)", "...": "..."}}},
  "agent": {"thinking": true, "error": null},
  "actions": {
   "current": {"id": "tcd0905", "tool": "move", "summary": "move forward 1 m at 0.20 m/s", "status": "running"},
@@ -103,6 +115,7 @@ A stop phrase ("stop", "halt", ...) always goes through, as does `/api/stop`.
 | `robot.error` | Why telemetry couldn't be read, if it couldn't |
 | `robot.connected` | False once the simulation window is closed or the robot disconnects; the console then shuts down |
 | `model.state` | `downloading` (first start only: `model.progress` is `{"done_mb", "total_mb"}`), `loading` (the first seconds after start-up; messages wait for it), `ready`, `unavailable` (then `model.error` says why, such as no internet for the first download), `scripted` (started with `--mock`: no language model) |
+| `voice` | `available: false` when the console was started with `--no-voice`. Otherwise speech recognition (`runs_on`: `mlx` on Apple Silicon, `faster-whisper (GPU)` or `faster-whisper (CPU)` elsewhere) and Go2's voice, each `ready` once loaded (a few seconds; the first start downloads them: 1.6 GB and 330 MB) or with an `error` |
 | `agent.thinking` | The model is working on a reply. A message sent now interrupts that reply and is answered instead. |
 | `agent.error` | The last model error, if the last reply failed |
 | `actions` | What the robot is doing (`current`), what's waiting (`queued`, in order) and the last 8 finished (`recent`): steps, described below |
@@ -249,6 +262,54 @@ no.onclick  = () => send('no');
 The yes has to be the very next message, within 60 seconds. In the simulation acrobatics are refused
 outright (`outcome: "rejected"`), so there's nothing to confirm.
 
+## Voice
+
+Everything runs on this computer and no audio is stored. `static/live-voice.js` does all of the page's part
+and can be reused as it is: `Go2LiveVoice` takes spoken commands (one at a time, or a hands-free conversation)
+and `Go2Speaker` plays Go2's replies. `static/index.html` shows how they're wired in.
+
+**Listening.** The page records the microphone itself (with the browser's echo cancellation) and cuts it
+into sentences: one starts when the level rises above the room's noise and ends after a 600 ms pause. Each
+sentence goes to `POST /api/stt` as raw 16 kHz mono float32 samples (at most 30 s), and the text it answers
+with goes to `/api/messages` with `voice: true`. While the user is still talking, the sentence so far is
+sent 400 ms in and then about once a second too, for a live caption and so that "stop" halts the robot
+(`/api/stop {"said": "Stop!"}`) without waiting for the end of the sentence. Each transcription takes about
+0.65 s on an M1 Pro, whatever its length.
+
+```json
+POST /api/stt  (117,760 bytes: 1.8 s of audio)  -> {"text": "Walk backward 2 meters."}
+POST /api/stt  (64,000 bytes of silence)        -> {"text": ""}
+POST /api/stt  (while it loads)                 -> 503 {"error": "speech recognition is still loading"}
+```
+
+**Go2's voice.** `GET /api/speech?after=N` answers with every phrase newer than item `N`, waiting up to 20 s
+for one (start with `after=-1`, which only says where the stream is). The model's reply arrives phrase by
+phrase as it is written; each turn ends with an `end` item, and `epoch` tells turns apart: a newer turn
+replaces what is still playing, except a `proactive` one (Go2 reporting on its own, such as a walk that
+finished), which waits its turn.
+
+```json
+GET /api/speech?after=-1  -> {"last": 8, "items": []}
+GET /api/speech?after=8   -> {"last": 10, "items": [
+                               {"epoch": 6, "id": 9, "proactive": false, "text": "Turning to the left now!"},
+                               {"epoch": 6, "id": 10, "end": true}]}
+```
+
+`POST /api/tts {"text", "voice"}` gives each phrase's audio (Kokoro, 24 kHz WAV). When the message was sent
+with `speak`, the console has already started making it while the model wrote the phrase, so it is usually
+ready by the time the page asks. **503** means the voice is still loading or off: speak the phrase with the
+browser's own voice instead (`speechSynthesis`), as `Go2Speaker` does.
+
+**Moving with the voice.** The model writes its spoken reply after the tool call, so on its own the robot
+would start moving about half a second before Go2 says anything. For a message sent with `speak`, the
+robot's first movement waits until the first phrase's audio is ready, at most 1.2 s. The safety checks run
+as usual, and Stop still halts at once.
+
+**Cutting in.** When the user talks over Go2 (or while it is still thinking), the page stops playing and calls
+`POST /api/interrupt`: the reply is dropped (a "Reply interrupted." note is added), while robot steps already
+started carry on. The new sentence then goes to `/api/messages` as usual. A robot update that arrives while
+the user is talking is held until they pause, and dropped if what they said is a new request.
+
 ## The original endpoints
 
 Kept for the current page:
@@ -268,4 +329,7 @@ Kept for the current page:
 - `command_ui/server.py --mock` runs everything with scripted replies instead of the language model (no
   model file or Ollama needed): "walk forward 2 m", "turn left", "sit", "look" and "status" work.
 - `--headless` runs the simulation without its window.
-- Voice endpoints (speech to text from the browser, spoken replies) are planned for the next round.
+- `--no-voice` starts without speech recognition and Go2's voice (saves about 2.5 GB of memory); the
+  voice endpoints then answer **503**.
+- `experiments/voice_latency.py` measures, for a set of commands, when the robot starts moving and when
+  Go2's spoken reply is ready.

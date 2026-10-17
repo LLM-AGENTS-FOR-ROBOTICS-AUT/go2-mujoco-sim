@@ -284,6 +284,16 @@ class SpeechStreamingTests(unittest.TestCase):
         self.assertEqual(out, ["On it, heading over to the blue ball now!", "I had to stop after about 1.5 metres,",
                                "because something is in the way."])
 
+    def test_the_first_phrase_is_cut_sooner_so_go2_starts_talking_sooner(self):
+        from go2.agent import Phrases
+        out = []
+        phrases = Phrases(out.append)
+        text = "I'm your robot dog companion, ready to explore and follow your lead."
+        for i in range(1, len(text) + 1):
+            phrases.feed(text[:i])
+        phrases.finish(text)
+        self.assertEqual(out, ["I'm your robot dog companion,", "ready to explore and follow your lead."])
+
     def test_tool_calls_written_as_text_are_never_spoken(self):
         from go2.agent import Phrases
         out = []
