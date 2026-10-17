@@ -40,7 +40,7 @@ from go2 import perception as P  # noqa: E402
 from go2 import procs  # noqa: E402
 from go2.adapters.base import AdapterError  # noqa: E402
 from go2.adapters.sim import SimAdapter  # noqa: E402
-from go2.agent import Agent, robot_state_line  # noqa: E402
+from go2.agent import Agent, is_stop, robot_state_line  # noqa: E402
 from go2.executor import Executor  # noqa: E402
 from go2.llm import CATALOG, ModelError, OllamaModel  # noqa: E402
 from go2.mock_model import MockModel  # noqa: E402
@@ -48,6 +48,11 @@ from go2.mock_model import MockModel  # noqa: E402
 VOICE_SECONDS = 5
 SR = 16000
 TURN_TIMEOUT_S = 120
+LOAD_WAIT_S = 30                # a message sent while the model loads (seconds after start-up) waits this long
+
+
+class NotReady(ValueError):
+    """The language model can't take messages yet (still downloading, or failed to load)."""
 PROBLEMS = ("blocked", "failed", "rejected", "cancelled", "needs_confirmation")
 
 
@@ -102,10 +107,31 @@ class Console:
         self.note = (f"Downloading the language model (first start only): {done / total:.0%}, "
                      f"{done / 1e9:.1f} of {total / 1e9:.1f} GB")
 
+    def ready_for(self, text):
+        """Raise NotReady, with the reason and download progress, unless the model can answer this message
+        now. "Stop" always goes through: it halts the robot without the model."""
+        if is_stop(text):
+            return
+        if self.model_info["state"] == "loading":
+            self.loaded.wait(LOAD_WAIT_S)       # loading takes seconds: wait rather than refuse
+        state = self.model_info["state"]
+        if state == "downloading":
+            progress = self.model_info.get("progress") or {}
+            done, total = progress.get("done_mb", 0), progress.get("total_mb") or 1
+            raise NotReady(f"Still downloading the language model (first start only): {done / total:.0%}, "
+                           f"{done / 1000:.1f} of {total / 1000:.1f} GB. Try again when it's ready; Stop works now.")
+        if state == "loading":
+            raise NotReady("The language model is still loading. Try again in a few seconds.")
+        if state == "unavailable":
+            raise NotReady(f"The language model isn't available: {self.model_info['error']}")
+
     def command(self, text, voice=False):
         """One command -> the card the page shows: tool, safety result and Go2's reply."""
+        try:
+            self.ready_for(text)
+        except NotReady as error:
+            return card(text, None, False, "Language model not ready", str(error))
         with self.commands:
-            self.loaded.wait(TURN_TIMEOUT_S)    # one model request at a time: not during the warm-up
             start = len(self.agent.snapshot()["transcript"])
             try:
                 self.agent.submit(text, voice)
@@ -152,9 +178,9 @@ class Console:
     # ---- the richer API (command_ui/API.md) --------------------------------------------------------------
     def post(self, text, voice=False):
         """Accept a message and return at once (the reply and actions arrive in the state). Returns the id of
-        the conversation entry it became."""
+        the conversation entry it became. NotReady while the model is downloading or failed to load."""
+        self.ready_for(text)
         with self.commands:
-            self.loaded.wait(TURN_TIMEOUT_S)    # only during the first seconds after start-up
             entry = len(self.agent.snapshot()["transcript"])
             self.agent.submit(text, voice)      # ValueError for an empty or overlong message
         return entry
@@ -450,6 +476,8 @@ def make_app(console, port):
         value = body()
         try:
             entry = console.post(str(value.get("text", "")), bool(value.get("voice")))
+        except NotReady as error:
+            return jsonify({"error": str(error), "model": console.model_info}), 503
         except ValueError as error:
             return refused(error)
         return jsonify({"accepted": True, "entry": entry, "conversation": console.conversation_id}), 202

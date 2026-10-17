@@ -188,6 +188,49 @@ class ApiTests(unittest.TestCase):
         self.console.close()
         self.assertEqual(list(stream), [], "the stream ends when the console closes")
 
+    def test_messages_are_refused_at_once_while_the_model_downloads(self):
+        import time
+        self.make()
+        self.console.model_info.update(state="downloading", progress={"done_mb": 1500, "total_mb": 3416})
+        started = time.monotonic()
+        code, answer = self.post("/api/messages", {"text": "walk forward"})
+        self.assertLess(time.monotonic() - started, 1, "refused straight away, not after a wait")
+        self.assertEqual(code, 503)
+        self.assertIn("Still downloading the language model", answer["error"])
+        self.assertIn("44%, 1.5 of 3.4 GB", answer["error"])
+        self.assertEqual(answer["model"]["state"], "downloading")
+        self.assertEqual(self.entries(), [])
+        card = self.client.post("/api/command", json={"text": "walk forward"}, base_url=PAGE,
+                                headers={"Origin": PAGE}).get_json()
+        self.assertEqual((card["valid"], card["validation"]), (False, "Language model not ready"))
+
+    def test_stop_still_works_while_the_model_downloads(self):
+        self.make()
+        self.console.model_info.update(state="downloading", progress={"done_mb": 10, "total_mb": 3416})
+        code, _ = self.post("/api/messages", {"text": "stop"})
+        self.assertEqual(code, 202)
+        self.assertEqual(self.entries()[-1]["text"], "Okay, stopped.")
+
+    def test_a_model_that_failed_to_load_says_why(self):
+        self.make()
+        self.console.model_info.update(state="unavailable", error="Ollama is not installed.")
+        code, answer = self.post("/api/messages", {"text": "hello"})
+        self.assertEqual((code, answer["error"]), (503, "The language model isn't available: Ollama is not installed."))
+
+    def test_a_message_sent_while_the_model_loads_waits_for_it(self):
+        import threading
+        self.make(["Hi!"])
+        self.console.model_info["state"] = "loading"
+        self.console.loaded.clear()
+
+        def finish():
+            self.console.model_info["state"] = "ready"
+            self.console.loaded.set()
+        threading.Timer(.3, finish).start()
+        code, _ = self.post("/api/messages", {"text": "hello"})
+        self.assertEqual(code, 202)
+        self.assertTrue(wait_for(lambda: self.entries()[-1].get("text") == "Hi!", 10))
+
     def test_entries_mark_go2s_own_turns_and_every_outcome(self):
         rows = [{"role": "user", "content": "dance", "turn": {}},
                 {"role": "tool", "name": "acrobatic", "arguments": {"name": "front_flip"},

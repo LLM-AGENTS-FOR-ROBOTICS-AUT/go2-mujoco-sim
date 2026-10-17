@@ -58,7 +58,14 @@ POST /api/messages {"text": ""}        -> 400 {"error": "Say or type something f
 POST /api/arm {"armed": true} (sim)    -> 400 {"error": "Only the real robot needs arming; the simulation always moves."}
 POST /api/reset (real robot)           -> 400 {"error": "Reset is only available in the simulation."}
 GET  /api/camera.png (no look yet)     -> 404 {"error": "No camera frame yet: ask Go2 what it sees."}
+POST /api/messages while downloading   -> 503 {"error": "Still downloading the language model (first start only): 3%, 0.1 of 3.4 GB. Try again when it's ready; Stop works now.",
+                                               "model": {"state": "downloading", "progress": {"done_mb": 118, "total_mb": 3416}, "...": "..."}}
 ```
+
+While the model is downloading (first start only), or if it failed to load (`model.state: "unavailable"`),
+messages are refused at once with **503** and the reason, so the page can show it; nothing is queued.
+A message sent while the model is loading (the first seconds after start-up) waits for it instead.
+A stop phrase ("stop", "halt", ...) always goes through, as does `/api/stop`.
 
 ## The state object
 

@@ -118,6 +118,7 @@ class OllamaModel:
         self._verified = None
         self.directory = ROOT / "runtime" / ("model-" + uuid.uuid4().hex[:12])
         self.lock = threading.RLock()
+        self.fetching = threading.Lock()   # the download has its own lock: cancel (Stop) must never wait for it
         self.connection = None
 
     # ---- weights -------------------------------------------------------------
@@ -141,8 +142,11 @@ class OllamaModel:
         except ModelError:
             if not self.spec.get("download_url") or os.environ.get(self.spec["weights_env"]):
                 raise
-        with self.lock:
-            return download_weights(self.spec, progress=progress)
+        with self.fetching:
+            try:
+                return self._weights()          # another thread may have finished it meanwhile
+            except ModelError:
+                return download_weights(self.spec, progress=progress)
 
     def check(self):
         with self.lock:

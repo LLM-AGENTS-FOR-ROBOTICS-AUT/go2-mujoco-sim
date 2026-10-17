@@ -79,5 +79,31 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual((self.folder / "model.gguf").read_bytes(), BLOB)
 
 
+
+class DuringDownloadTests(unittest.TestCase):
+    def test_cancelling_never_waits_for_a_download(self):
+        """Stop cancels the model's reply; that must not wait for a 3.4 GB download to finish."""
+        import time
+        from go2 import llm
+        model = llm.OllamaModel("go2-ft-04")
+        gate, saved = threading.Event(), llm.download_weights
+        llm.download_weights = lambda spec, progress=None: gate.wait(10)
+
+        def missing():
+            raise ModelError("missing")
+        model._weights = missing
+        worker = threading.Thread(target=model.fetch, daemon=True)
+        try:
+            worker.start()
+            time.sleep(.2)                        # the download is under way
+            started = time.monotonic()
+            model.cancel()
+            self.assertLess(time.monotonic() - started, .5)
+        finally:
+            gate.set()
+            worker.join(5)
+            llm.download_weights = saved
+
+
 if __name__ == "__main__":
     unittest.main()
