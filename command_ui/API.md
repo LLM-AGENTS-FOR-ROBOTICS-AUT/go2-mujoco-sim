@@ -45,6 +45,7 @@ If server-sent events don't suit, poll `GET /api/state` (every 300 to 500 ms): s
 | `GET /api/speech?after=N` | | Go2's words phrase by phrase, held open until there's something new (see "Voice") |
 | `POST /api/tts` | `{"text": "...", "voice": "af_heart"}` | The phrase spoken by Go2, as a WAV file. **503** while the voice loads (use the browser's own voice) |
 | `POST /api/stt` | One sentence: 16 kHz mono float32 samples, raw (`application/octet-stream`) | `{"text": "walk forward one metre"}` (`""` for silence or noise). **503** while recognition loads |
+| `POST /api/feedback` | `{"entry": 12}`, then optionally `{"id": "...", "note": "..."}` | **201** `{"id", "path"}`: the turn behind reply entry 12 is saved for training (see "Bad reply"); the second call adds a note |
 | `POST /api/clear` | | The state, with an empty conversation and a new `conversation.id` |
 | `POST /api/reset` | | Simulation only: the robot back at its start. The state |
 | `POST /api/arm` | `{"armed": true}` or `{"armed": false}` | Real robot only: allow or forbid motion. The state |
@@ -133,7 +134,7 @@ show those as their own entries in the log.
 |---|---|---|
 | `user` | `text`, `voice` | What the user typed or said |
 | `call` | `turn`, `tool`, `arguments`, `outcome`, `message`, `steps` | A tool the model called (one reply can make several) |
-| `reply` | `turn`, `text`, `proactive` | What Go2 said. `proactive: true` (with `turn: null`) when Go2 spoke on its own |
+| `reply` | `turn`, `text`, `proactive`, `flaggable`, `flag` | What Go2 said. `proactive: true` (with `turn: null`) when Go2 spoke on its own. `flaggable`: the model wrote it, so it can be flagged as a bad reply; `flag`: the id once it has been |
 | `update` | `text` | A robot report: a request finished, was blocked, or failed |
 | `error` | `turn`, `text` | The model failed (for example it isn't loaded) |
 | `note` | `text` | Anything else, such as "Reply interrupted." |
@@ -310,6 +311,21 @@ as usual, and Stop still halts at once.
 `POST /api/interrupt`: the reply is dropped (a "Reply interrupted." note is added), while robot steps already
 started carry on. The new sentence then goes to `/api/messages` as usual. A robot update that arrives while
 the user is talking is held until they pause, and dropped if what they said is a new request.
+
+## Bad reply
+
+A reply entry with `flaggable: true` can be flagged: `POST /api/feedback {"entry": <its id>}` saves the turn
+behind it (the conversation before it, the message that started it, what Go2 did and where the robot was) as
+`feedback/<id>.json`, which is committed to the repository for the next fine-tuning run to redo (see
+`feedback/README.md`). The entry then has `flag` set. Ask what Go2 should have done and send it with the id:
+
+```json
+POST /api/feedback {"entry": 7}                                -> 201 {"id": "20261018-111503-4be2c1", "path": "feedback/20261018-111503-4be2c1.json"}
+POST /api/feedback {"id": "20261018-111503-4be2c1",
+                    "note": "It should have turned left first"} -> 200 {"id": "20261018-111503-4be2c1", "path": "feedback/20261018-111503-4be2c1.json"}
+POST /api/feedback {"entry": 6}  (not a reply)                 -> 400 {"error": "Pick one of Go2's replies."}
+POST /api/feedback {"entry": 9}  ("Okay, stopped.")            -> 400 {"error": "That reply can't be replayed (it wasn't made by the model)."}
+```
 
 ## The original endpoints
 

@@ -14,3 +14,6 @@ build/
 # LLM command console (command_ui/server.py)
 runtime/
 models/*.gguf
+
+# Flagged replies are committed (feedback/README.md); only their temporary files are not
+feedback/*.tmp

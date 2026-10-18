@@ -63,6 +63,9 @@ speech recognition or spoken replies, saving memory), `--check`.
 - A spoken reply and the movement start together: the robot waits (at most 1.2 s) until Go2's voice for the
   reply is ready, instead of moving half a second before it says anything.
 - **Stop**: the red Stop button (or Esc) halts the robot at once, without waiting for the model.
+- **Bad reply**: the small button after one of Go2's replies saves that turn in `feedback/` for the next
+  training run, with an optional note on what Go2 should have done. Commit and push those files
+  (`feedback/README.md`).
 
 Each command gets a card: **Tool** is what the model called, **Safety** says whether it went ahead
 (or why not: blocked by an obstacle, outside the limits, waiting for your confirmation), **Robot** is
