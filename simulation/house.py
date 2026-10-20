@@ -28,7 +28,8 @@ import random
 ROOM_TYPES = ("bedroom", "kitchen", "living_room", "bathroom", "hallway", "office")
 WALL_HEIGHT, WALL_THICK = 2.0, .05        # half thickness, as in the single room
 DOOR_MIN_WIDTH = .9                       # Go2 fits through with the executor's clearance margin
-DOOR_CLEAR = .9                           # no furniture this close to a doorway's centre, either side
+DOOR_CLEAR = 1.2                          # no furniture this close to a doorway's centre, either side: room
+                                          # for Go2 (0.7 m long) to step through and turn around
 START_CLEAR = .9                          # ... or to the robot's start
 
 # kind -> (detector label, footprint half extents (x, y) before yaw, big furniture, Google Scanned Object)
@@ -67,7 +68,7 @@ FURNISHING = {
     "bathroom": [("toilet", 1.), ("sink", 1.), ("plant", .2)],
     "office": [("desk", 1.), ("chair", 1.), ("laptop", .8), ("keyboard", .6), ("book", .6), ("backpack", .4),
                ("plant", .4), ("clock", .4)],
-    "hallway": [("plant", .5), ("backpack", .25), ("ball", .2)],
+    "hallway": [],                         # kept clear: every route between rooms runs through it
 }
 PORTABLE = {"teddy", "ball", "backpack", "book", "cup", "toy_dog", "toy_elephant"}
 UNLIKELY_SHARE = .1                        # portable things sometimes end up in an unlikely room
@@ -170,7 +171,7 @@ def furnish(rng, house, teddy_room=None):
         taken.append(footprint(item))
         return True
 
-    rooms = house["rooms"]
+    rooms = [r for r in house["rooms"] if r["type"] != "hallway"]      # hallways stay clear
     wishes = [(kind, room) for room in rooms for kind, chance in FURNISHING[room["type"]] if rng.random() < chance]
     wishes.sort(key=lambda w: not KINDS[w[0]][2])       # big furniture first, while the walls are free
     for kind, room in wishes:
