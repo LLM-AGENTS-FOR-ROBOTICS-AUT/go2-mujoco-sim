@@ -71,6 +71,7 @@ FURNISHING = {
     "hallway": [],                         # kept clear: every route between rooms runs through it
 }
 PORTABLE = {"teddy", "ball", "backpack", "book", "cup", "toy_dog", "toy_elephant"}
+LENGTHWISE = {"bed", "dining_table", "desk"}   # may also stand side-on to the wall, when head-on won't fit
 UNLIKELY_SHARE = .1                        # portable things sometimes end up in an unlikely room
 TEDDY_IN_BEDROOM = .85
 COLOURS = {"bed": (.9, .9, .92, 1), "refrigerator": (.88, .88, .9, 1), "oven": (.92, .92, .9, 1),
@@ -123,7 +124,10 @@ def _place(rng, house, room, kind, taken):
         if big:
             side = rng.choice("NSEW")
             yaw = {"N": 0., "S": math.pi, "E": -math.pi / 2, "W": math.pi / 2}[side]
-            ex, ey = (hy, hx) if side in "EW" else (hx, hy)
+            turned = kind in LENGTHWISE and rng.random() < .5
+            if turned:
+                yaw += math.pi / 2
+            ex, ey = (hy, hx) if (side in "EW") != turned else (hx, hy)
             if x1 - x0 < 2 * (ex + margin) or y1 - y0 < 2 * (ey + margin):
                 return None
             x = rng.uniform(x0 + margin + ex, x1 - margin - ex)
@@ -173,12 +177,9 @@ def furnish(rng, house, teddy_room=None):
 
     rooms = [r for r in house["rooms"] if r["type"] != "hallway"]      # hallways stay clear
     wishes = [(kind, room) for room in rooms for kind, chance in FURNISHING[room["type"]] if rng.random() < chance]
-    wishes.sort(key=lambda w: not KINDS[w[0]][2])       # big furniture first, while the walls are free
-    for kind, room in wishes:
-        if kind in PORTABLE and len(rooms) > 1 and rng.random() < UNLIKELY_SHARE:
-            room = rng.choice([r for r in rooms if r is not room])
+    for kind, room in [w for w in wishes if KINDS[w[0]][2]]:          # big furniture first, while walls are free
         add(kind, room)
-    if teddy_room is not None:
+    if teddy_room is not None:                     # then the teddy bear, before small things fill the floor
         homes = [r for r in rooms if r["name"] == teddy_room]
     else:
         bedrooms = [r for r in rooms if r["type"] == "bedroom"]
@@ -187,6 +188,10 @@ def furnish(rng, house, teddy_room=None):
     for room in homes + [r for r in rooms if r not in homes]:   # the next room if its first home is full
         if add("teddy", room):
             break
+    for kind, room in [w for w in wishes if not KINDS[w[0]][2]]:
+        if kind in PORTABLE and len(rooms) > 1 and rng.random() < UNLIKELY_SHARE:
+            room = rng.choice([r for r in rooms if r is not room])
+        add(kind, room)
     house["objects"] = objects
     return house
 
@@ -224,6 +229,195 @@ def house_demo():
              _door("front_door", ("hallway",), (-6., 0.), "y", 1.0, False)]
     house = {"scene": "house", "rooms": rooms, "doors": doors, "objects": [], "start": [-4.5, 0., 0.]}
     return furnish(random.Random(17), house, teddy_room="bedroom_2")     # fixed seed: the same every time
+
+
+# ---- random houses (training data and tests) -------------------------------------------------------------
+MIN_ROOM = 2.6                             # a room's narrowest side: space to turn around and to furnish
+CORNER = .4                                # wall kept either side of a doorway, so it never runs into a corner
+EXTRA_DOOR = .25                           # chance of a second route between rooms that already connect
+ROOM_ORDER = ["living_room", "bedroom", "kitchen", "bathroom", "bedroom", "office", "bedroom"]
+
+
+def _snap(v):
+    return round(round(v / GRID) * GRID, 2)
+
+
+def _split(rng, length, parts):
+    """[0, length] cut into `parts` spans of at least MIN_ROOM, at 10 cm steps."""
+    cuts = sorted(rng.uniform(0, length - parts * MIN_ROOM) for _ in range(parts - 1))
+    edges = [0.] + [_snap(c + (i + 1) * MIN_ROOM) for i, c in enumerate(cuts)] + [length]
+    return list(zip(edges, edges[1:]))
+
+
+def _corridor_layout(rng, n):
+    """A hallway through the middle with the other n - 1 rooms either side of it."""
+    north = rng.randint(1, n - 2)
+    length = _snap(max(north, n - 1 - north) * rng.uniform(3., 4.2))
+    half = _snap(rng.uniform(.8, 1.1))                     # a 1.6-2.2 m hallway
+    rects = [("hallway", (0., -half, length, half))]
+    for count, sign in ((north, 1), (n - 1 - north, -1)):
+        depth = _snap(rng.uniform(3., 4.5))
+        for a, b in _split(rng, length, count):
+            near, far = sign * half, sign * (half + depth)
+            rects.append((None, (a, min(near, far), b, max(near, far))))
+    return rects
+
+
+def _split_layout(rng, n):
+    """A rectangle split again and again across its longer side, until there are n rooms."""
+    rows = 1 if n <= 2 else 2
+    cols = -(-n // rows)
+    w, h = _snap(rng.uniform(3.2, 4.2) * cols), _snap(rng.uniform(3.2, 4.2) * rows)
+    if rng.random() < .5:
+        w, h = h, w
+    rects = [(0., 0., w, h)]
+    while len(rects) < n:
+        rng.shuffle(rects)
+        for k, (x0, y0, x1, y1) in enumerate(rects):
+            sizes = [(axis, size) for axis, size in (("x", x1 - x0), ("y", y1 - y0)) if size >= 2 * MIN_ROOM]
+            if not sizes:
+                continue
+            axis, size = max(sizes, key=lambda s: s[1])
+            if axis == "x":
+                cut = _snap(x0 + rng.uniform(MIN_ROOM, size - MIN_ROOM))
+                rects[k:k + 1] = [(x0, y0, cut, y1), (cut, y0, x1, y1)]
+            else:
+                cut = _snap(y0 + rng.uniform(MIN_ROOM, size - MIN_ROOM))
+                rects[k:k + 1] = [(x0, y0, x1, cut), (x0, cut, x1, y1)]
+            break
+        else:
+            return None                                    # nothing left to split: too small for n rooms
+    return [(None, r) for r in rects]
+
+
+def _name_rooms(rng, rects):
+    """Room types: the biggest room is the living room and the smallest a bathroom (from four rooms up)."""
+    others = sorted((r for t, r in rects if t is None), key=lambda r: -(r[2] - r[0]) * (r[3] - r[1]))
+    types = ROOM_ORDER[:len(others)]
+    middle = [t for t in types[1:] if t != "bathroom"]
+    rng.shuffle(middle)
+    types = types[:1] + middle + (["bathroom"] if "bathroom" in types else [])
+    rooms, bedrooms = [], 0
+    for kind, rect in [(t, r) for t, r in rects if t == "hallway"] + list(zip(types, others)):
+        if kind == "bedroom":
+            bedrooms += 1
+        name = f"bedroom_{bedrooms}" if kind == "bedroom" else kind
+        rooms.append({"name": name, "type": kind, "rect": [round(v, 2) for v in rect]})
+    return rooms
+
+
+def _shared_wall(a, b):
+    """Where rectangles a and b touch: (axis, line, lo, hi) of the wall they share, or None."""
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    if abs(ax1 - bx0) < 1e-6 or abs(bx1 - ax0) < 1e-6:
+        return "y", ax1 if abs(ax1 - bx0) < 1e-6 else ax0, max(ay0, by0), min(ay1, by1)
+    if abs(ay1 - by0) < 1e-6 or abs(by1 - ay0) < 1e-6:
+        return "x", ay1 if abs(ay1 - by0) < 1e-6 else ay0, max(ax0, bx0), min(ax1, bx1)
+    return None
+
+
+def _doorway(rng, axis, line, lo, hi):
+    """A door position and width on the wall [lo, hi] along `axis`, or None if the wall is too short."""
+    room = hi - lo - 2 * CORNER + 1e-6            # (1e-6: 1.7 m must not come out as 1.6999...)
+    if room < DOOR_MIN_WIDTH:
+        return None
+    width = min(_snap(rng.uniform(DOOR_MIN_WIDTH, 1.2)), math.floor(room * 10) / 10)
+    along = _snap(rng.uniform(lo + CORNER + width / 2, hi - CORNER - width / 2))
+    return ((along, line) if axis == "x" else (line, along)), width
+
+
+def _connect(rng, rooms):
+    """Doors: a random spanning tree of open doors from the first room (every room gets a route), a few
+    extra doors open or closed, and a closed front door on an outside wall. None if a room can't connect."""
+    walls = {}
+    for i, a in enumerate(rooms):
+        for j in range(i + 1, len(rooms)):
+            shared = _shared_wall(a["rect"], rooms[j]["rect"])
+            if shared and shared[3] - shared[2] + 1e-6 >= DOOR_MIN_WIDTH + 2 * CORNER:
+                walls[i, j] = walls[j, i] = shared
+    tree, seen, queue = set(), {0}, [0]
+    while queue:
+        i = queue.pop(0)
+        nearby = [j for j in range(len(rooms)) if (i, j) in walls]
+        rng.shuffle(nearby)
+        for j in nearby:
+            if j not in seen:
+                seen.add(j)
+                tree.add((min(i, j), max(i, j)))
+                queue.append(j)
+    if len(seen) < len(rooms):
+        return None
+    doors = []
+    for (i, j) in sorted({(min(p), max(p)) for p in walls}):
+        if (i, j) not in tree and rng.random() >= EXTRA_DOOR:
+            continue
+        axis, line, lo, hi = walls[i, j]
+        pos, width = _doorway(rng, axis, line, lo, hi)
+        doors.append(_door(f"door_{rooms[i]['name']}_{rooms[j]['name']}", (rooms[i]["name"], rooms[j]["name"]),
+                           pos, axis, width, (i, j) in tree or rng.random() < .5))
+    xs = [v for r in rooms for v in r["rect"][0::2]]
+    ys = [v for r in rooms for v in r["rect"][1::2]]
+
+    def on_edge(v, values):
+        return abs(v - min(values)) < 1e-6 or abs(v - max(values)) < 1e-6
+    for room in rooms:                    # the front door: the start room's outside wall if it has room for one
+        x0, y0, x1, y1 = room["rect"]
+        outside = [("x", y, x0, x1) for y in (y0, y1) if on_edge(y, ys)] + \
+                  [("y", x, y0, y1) for x in (x0, x1) if on_edge(x, xs)]
+        rng.shuffle(outside)
+        spots = [(axis, _doorway(rng, axis, line, lo, hi)) for axis, line, lo, hi in outside]
+        spots = [(axis, spot) for axis, spot in spots if spot]
+        if spots:
+            axis, (pos, width) = spots[0]
+            doors.append(_door("front_door", (room["name"],), pos, axis, width, False))
+            break
+    return doors
+
+
+def furnished(house):
+    """Every room has its main piece: a bed in each bedroom, a couch in the living room, a fridge in the
+    kitchen, a toilet in the bathroom, a desk in the office (the first entry of its FURNISHING list)."""
+    return all(any(o["room"] == room["name"] and o["kind"] == FURNISHING[room["type"]][0][0]
+                   for o in house["objects"])
+               for room in house["rooms"] if FURNISHING[room["type"]])
+
+
+def random_house(rng, n_rooms=None):
+    """A random, furnished house of 2-7 rooms (a hallway counts as one), drawn from `rng` (random.Random):
+    the same seed always gives the same house, so a failing case can be replayed. Go2 starts in the hallway
+    or the living room, and every room is reachable from there."""
+    n = n_rooms or rng.randint(2, 7)
+    for _ in range(100):
+        rects = _corridor_layout(rng, n) if n >= 4 and rng.random() < .6 else _split_layout(rng, n)
+        if rects is None:
+            continue
+        rooms = _name_rooms(rng, rects)
+        rooms.sort(key=lambda r: r["type"] not in ("hallway", "living_room"))     # the start room first
+        doors = _connect(rng, rooms)
+        if doors is None:
+            continue
+        xs = [v for r in rooms for v in r["rect"][0::2]]
+        ys = [v for r in rooms for v in r["rect"][1::2]]
+        cx, cy = _snap((min(xs) + max(xs)) / 2), _snap((min(ys) + max(ys)) / 2)   # centre the house on 0, 0
+        for room in rooms:
+            x0, y0, x1, y1 = room["rect"]
+            room["rect"] = [round(x0 - cx, 2), round(y0 - cy, 2), round(x1 - cx, 2), round(y1 - cy, 2)]
+        for door in doors:
+            door["pos"] = [round(door["pos"][0] - cx, 2), round(door["pos"][1] - cy, 2)]
+        x0, y0, x1, y1 = rooms[0]["rect"]
+        if rooms[0]["type"] == "hallway":                  # along the hallway, facing down it
+            along_x = x1 - x0 >= y1 - y0
+            start = [_snap(rng.uniform(x0 + 1, x1 - 1)), _snap((y0 + y1) / 2)] if along_x else \
+                    [_snap((x0 + x1) / 2), _snap(rng.uniform(y0 + 1, y1 - 1))]
+            yaw = rng.choice([0., math.pi]) if along_x else rng.choice([math.pi / 2, -math.pi / 2])
+        else:
+            start, yaw = [_snap((x0 + x1) / 2), _snap((y0 + y1) / 2)], _snap(rng.uniform(-math.pi, math.pi))
+        house = {"scene": "house", "rooms": rooms, "doors": doors, "objects": [], "start": start + [round(yaw, 2)]}
+        furnish(rng, house)
+        if furnished(house) and reachability(house)[0]:
+            return house
+    raise RuntimeError(f"no furnished {n}-room house with every room reachable in 100 tries")
 
 
 # ---- reachability ----------------------------------------------------------------------------------------
