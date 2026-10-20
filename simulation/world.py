@@ -131,9 +131,10 @@ def _size3(size):
 def build(scene: str = "room", world=None):
     """Return (model, objects) where objects maps body id -> WorldObject.
 
-    scene "procedural" builds the room and objects described by `world` (see random_world)."""
-    if scene not in ("room", "empty", "procedural"):
-        raise ValueError("scene must be 'room', 'empty' or 'procedural'")
+    scene "procedural" builds the room and objects described by `world` (see random_world); scene "house"
+    builds the multi-room house described by `world` (see house.py), or the demo house without one."""
+    if scene not in ("room", "empty", "procedural", "house"):
+        raise ValueError("scene must be 'room', 'empty', 'procedural' or 'house'")
     if scene == "procedural" and world is None:
         raise ValueError("procedural scenes need a world description")
     spec = mujoco.MjSpec.from_file(str(SCENE))
@@ -207,6 +208,9 @@ def build(scene: str = "room", world=None):
         _add_scanned_objects(spec, objects)
     if scene == "procedural":
         _add_procedural(spec, world, objects)
+    if scene == "house":
+        import house     # simulation/house.py, kept apart so the room scenes never change
+        house.build_house(spec, world if world is not None else house.house_demo(), objects)
     model = spec.compile()
     by_body = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name): item for name, item in objects}
     return model, by_body

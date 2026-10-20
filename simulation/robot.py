@@ -113,6 +113,9 @@ class SimGo2:
     period = .02
 
     def __init__(self, scene="room", world_spec=None):
+        if scene == "house" and world_spec is None:
+            import house
+            world_spec = house.house_demo()          # start in its hallway, not the single room's start
         self.model, self.objects = world.build(scene, world_spec)
         self.start_pose = tuple(world_spec["start"]) if world_spec else world.START_POSE
         self.data = mujoco.MjData(self.model)
