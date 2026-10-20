@@ -508,9 +508,15 @@ def reachability(house):
 
 
 # ---- building a house into MuJoCo ----------------------------------------------------------------------
-# Matte floor colour per room type: the camera can tell rooms apart, though Go2 shouldn't rely on it.
-FLOOR_RGBA = {"bedroom": (.6, .48, .36, 1), "living_room": (.55, .42, .3, 1), "hallway": (.66, .6, .5, 1),
-              "office": (.5, .45, .4, 1), "kitchen": (.78, .78, .74, 1), "bathroom": (.72, .8, .82, 1)}
+# Matte floor per room type, textured like the single room's so camera frames (and YOLO) see a real-looking
+# floor: wood boards, or small tiles in the kitchen and bathroom. Rooms differ in tone, though Go2 shouldn't
+# rely on it. type -> (colour 1, colour 2, joint colour, texture repeats: 2 gives the room's 0.5 m checks)
+FLOOR_LOOK = {"bedroom": ((.62, .5, .38), (.58, .46, .35), (.5, .4, .3), 2.),
+              "living_room": ((.55, .42, .3), (.51, .39, .28), (.44, .33, .24), 2.),
+              "hallway": ((.66, .58, .46), (.62, .55, .43), (.54, .47, .37), 2.),
+              "office": ((.5, .44, .38), (.47, .41, .35), (.4, .35, .3), 2.),
+              "kitchen": ((.82, .82, .79), (.76, .76, .73), (.6, .6, .58), 5.),
+              "bathroom": ((.78, .84, .86), (.72, .79, .82), (.58, .63, .66), 5.)}
 WALL_RGBA, DOOR_RGBA = (.86, .84, .8, 1), (.5, .34, .2, 1)
 
 
@@ -589,10 +595,15 @@ def build_house(spec, house, objects):
     spec.visual.headlight.ambient = (.45, .45, .45)     # same indoor light as the single room
     spec.visual.headlight.diffuse = (.5, .5, .5)
     materials = {}
-    for kind, rgba in FLOOR_RGBA.items():
+    for kind, (rgb1, rgb2, joints, repeat) in FLOOR_LOOK.items():
+        texture = spec.add_texture()
+        texture.name, texture.type, texture.builtin = f"floor_{kind}", mujoco.mjtTexture.mjTEXTURE_2D, mujoco.mjtBuiltin.mjBUILTIN_CHECKER
+        texture.rgb1, texture.rgb2, texture.width, texture.height = rgb1, rgb2, 512, 512
+        texture.mark, texture.markrgb = mujoco.mjtMark.mjMARK_EDGE, joints
         material = spec.add_material()
-        material.name, material.rgba, material.specular, material.shininess = f"floor_{kind}", rgba, .05, .05
-        material.reflectance = 0.
+        material.name, material.specular, material.shininess, material.reflectance = f"floor_{kind}", .05, .05, 0.
+        material.texuniform, material.texrepeat = True, (repeat, repeat)
+        material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
         materials[kind] = material.name
     xs = [v for room in house["rooms"] for v in room["rect"][0::2]]
     ys = [v for room in house["rooms"] for v in room["rect"][1::2]]
@@ -601,7 +612,7 @@ def build_house(spec, house, objects):
         body = spec.worldbody.add_body()
         body.name, body.pos = f"floor_{room['name']}", ((x0 + x1) / 2, (y0 + y1) / 2, .001)
         geom = body.add_geom()
-        geom.type, geom.size = mujoco.mjtGeom.mjGEOM_BOX, ((x1 - x0) / 2, (y1 - y0) / 2, .001)
+        geom.type, geom.size = mujoco.mjtGeom.mjGEOM_PLANE, ((x1 - x0) / 2, (y1 - y0) / 2, .1)
         geom.material, geom.contype, geom.conaffinity = materials[room["type"]], 0, 0
     ceiling = spec.worldbody.add_body()
     ceiling.name, ceiling.pos = "ceiling", ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, 2.4)

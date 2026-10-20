@@ -219,6 +219,25 @@ class HouseWalkingTests(unittest.TestCase):
                 self.assertEqual(house.room_at(self.demo, s.x, s.y), room)
                 self.assertIsNone(s.fault, "no collision or fall")
 
+    def test_yolo_mode_detects_objects_in_the_house(self):
+        try:
+            import ultralytics  # noqa: F401
+        except ImportError:
+            self.skipTest("ultralytics not installed")
+        if not (ROOT / "models/yolo11n-seg.pt").exists():
+            self.skipTest("YOLO weights not downloaded (requirements-vision.txt)")
+        self.sim.detector = "yolo"
+        try:
+            # Fixed views in the demo house: in front of the bathroom's toilet, and bedroom 2's corner.
+            for (x, y, yaw), label in (((.47, -3.05, -math.pi / 2), "toilet"), ((4.24, -2.48, .79), "clock")):
+                with self.subTest(label=label):
+                    self.sim.reset(x, y, yaw)
+                    self.executor.attach(self.sim)
+                    labels = {o["label"] for o in self.executor.look().get("objects", [])}
+                    self.assertIn(label, labels)
+        finally:
+            self.sim.detector = "truth"
+
     def test_look_sees_furniture_through_the_doorways(self):
         report = self.executor.look()
         labels = {o["label"] for o in report["objects"]}
