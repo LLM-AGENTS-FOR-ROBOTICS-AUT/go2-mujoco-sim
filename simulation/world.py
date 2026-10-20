@@ -95,29 +95,35 @@ def _obj_zmin(path):
     return zmin or 0.
 
 
+def _add_scanned(spec, short, name, x, y, yaw):
+    """Add one Google Scanned Object as body `name`; False if its files aren't downloaded."""
+    folder = GSO_DIR / short
+    if not (folder / "model.obj").exists():
+        return False
+    texture = spec.add_texture()
+    texture.name, texture.file, texture.type = f"{short}_tex", str(folder / "texture.png"), mujoco.mjtTexture.mjTEXTURE_2D
+    material = spec.add_material()
+    material.name = f"{short}_mat"
+    material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
+    material.specular, material.shininess = .3, .3
+    mesh = spec.add_mesh()
+    mesh.name, mesh.file = f"{short}_mesh", str(folder / "model.obj")
+    body = spec.worldbody.add_body()
+    body.name = name
+    body.pos = (x, y, -_obj_zmin(folder / "model.obj") + .002)
+    body.quat = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
+    geom = body.add_geom()
+    geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, mesh.name, material.name
+    geom.group = 0   # world group: rendered, seen by the LiDAR, solid (convex hull) to the robot
+    return True
+
+
 def _add_scanned_objects(spec, objects):
     if not GSO_DIR.is_dir():
         return   # run simulation/fetch_gso.py to add them
     for short, label, x, y, yaw in GSO_PLACEMENT:
-        folder = GSO_DIR / short
-        if not (folder / "model.obj").exists():
-            continue
-        texture = spec.add_texture()
-        texture.name, texture.file, texture.type = f"{short}_tex", str(folder / "texture.png"), mujoco.mjtTexture.mjTEXTURE_2D
-        material = spec.add_material()
-        material.name = f"{short}_mat"
-        material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
-        material.specular, material.shininess = .3, .3
-        mesh = spec.add_mesh()
-        mesh.name, mesh.file = f"{short}_mesh", str(folder / "model.obj")
-        body = spec.worldbody.add_body()
-        body.name = short
-        body.pos = (x, y, -_obj_zmin(folder / "model.obj") + .002)
-        body.quat = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
-        geom = body.add_geom()
-        geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, mesh.name, material.name
-        geom.group = 0   # world group: rendered, seen by the LiDAR, solid (convex hull) to the robot
-        objects.append((short, WorldObject(short, label, "")))
+        if _add_scanned(spec, short, short, x, y, yaw):
+            objects.append((short, WorldObject(short, label, "")))
 
 
 GEOM_TYPES = {"sphere": mujoco.mjtGeom.mjGEOM_SPHERE, "box": mujoco.mjtGeom.mjGEOM_BOX,
