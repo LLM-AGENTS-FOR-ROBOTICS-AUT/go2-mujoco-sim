@@ -87,6 +87,9 @@ if $AGENT; then
   "$UV" pip install --python "$ROOT/.venv/bin/python" --requirement "$ROOT/command_ui/requirements.txt"
   echo "Downloading the household objects for the simulated room..."
   "$ROOT/.venv/bin/python" "$ROOT/simulation/fetch_gso.py"
+  echo "Downloading the furniture for the simulated houses (~50 MB)..."
+  "$ROOT/.venv/bin/python" "$ROOT/simulation/fetch_furniture.py" || \
+    echo "The furniture wasn't downloaded; the houses use plain shapes instead."
   echo "Downloading the language model (3.4 GB, once)..."
   "$ROOT/.venv/bin/python" "$ROOT/command_ui/server.py" --fetch-model || \
     echo "The model wasn't downloaded now; the console downloads it on its first start."
