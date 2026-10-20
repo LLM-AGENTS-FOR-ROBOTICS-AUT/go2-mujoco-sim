@@ -100,6 +100,18 @@ class HouseDescriptionTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Go2 can't get into bedroom_2", problems)
 
+    def test_furniture_with_a_realistic_model_names_it_and_styles_take_turns(self):
+        chairs = set()
+        for seed in range(30):
+            for item in house.random_house(random.Random(seed))["objects"]:
+                if item["kind"] in house.MODELS:
+                    self.assertIn(item["model"], [m for m, *_ in house.MODELS[item["kind"]]])
+                    if item["kind"] == "chair":
+                        chairs.add(item["model"])
+                else:
+                    self.assertNotIn("model", item)
+        self.assertEqual(chairs, {m for m, *_ in house.MODELS["chair"]})
+
     def test_walls_are_merged_and_doorways_cut_out(self):
         demo = house.house_demo()
         pieces = house.wall_pieces(demo)
@@ -112,6 +124,48 @@ class HouseDescriptionTests(unittest.TestCase):
             along, across = door["pos"] if door["axis"] == "x" else door["pos"][::-1]
             covering = [p for p in pieces if p[0] == door["axis"] and abs(p[1] - across) < 1e-6 and p[2] < along < p[3]]
             self.assertFalse(covering, f"a wall covers {door['name']}")
+
+
+class FurnitureConverterTests(unittest.TestCase):
+    def test_a_gltf_model_becomes_a_z_up_obj_centred_on_the_floor(self):
+        import struct
+        import tempfile
+        import fetch_furniture as F
+        # One triangle standing up in glTF's Y-up frame, 2 m tall, and moved away from the origin.
+        blob = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 2, 0) + struct.pack("<6f", 0, 0, 1, 0, 0, 1) + \
+            struct.pack("<3H", 0, 1, 2)
+        gltf = {"scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0, "translation": [5, 7, 9]}],
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "indices": 2, "material": 0}]}],
+                "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+                "textures": [{"source": 0}], "images": [{"uri": "textures/t_diff_1k.jpg"}],
+                "buffers": [{"uri": "t.bin", "byteLength": len(blob)}],
+                "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                                {"buffer": 0, "byteOffset": 36, "byteLength": 24},
+                                {"buffer": 0, "byteOffset": 60, "byteLength": 6}],
+                "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                              {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"},
+                              {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "t.bin").write_bytes(blob)
+            (tmp / "textures").mkdir()
+            (tmp / "textures/t_diff_1k.png").write_bytes(b"png")
+            (tmp / "t.gltf").write_text(json.dumps(gltf))
+            saved, F.DEST = F.DEST, tmp / "out"
+            (F.DEST / "t").mkdir(parents=True)
+            try:
+                info = F.convert(tmp, "t")
+            finally:
+                F.DEST = saved
+            obj = (tmp / "out/t/part0.obj").read_text().split("\n")
+            copied = (tmp / "out/t/part0.png").read_bytes()
+        self.assertEqual(info, {"size": [1.0, 0.0, 2.0], "parts": [{"obj": "part0.obj", "texture": "part0.png"}]})
+        vertices = [tuple(float(v) for v in line.split()[1:]) for line in obj if line.startswith("v ")]
+        self.assertEqual(vertices, [(-.5, 0, 0), (.5, 0, 0), (-.5, 0, 2)], "up is z, centred, standing on z = 0")
+        uvs = [tuple(float(v) for v in line.split()[1:]) for line in obj if line.startswith("vt ")]
+        self.assertEqual(uvs, [(0, 1), (1, 1), (0, 0)], "v flipped: glTF's runs top-down, OBJ's bottom-up")
+        self.assertIn("f 1/1 2/2 3/3", obj)
+        self.assertEqual(copied, b"png")
 
 
 @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
@@ -136,6 +190,48 @@ class HouseMujocoTests(unittest.TestCase):
                 model, objects = world.build("house", h)
                 self.assertEqual(sum(item.label != "wall" and item.label != "door" for item in objects.values()),
                                  len(h["objects"]))
+
+    def test_without_the_furniture_download_houses_use_plain_shapes(self):
+        import tempfile
+        import world
+        saved = house.FURNITURE_DIR
+        with tempfile.TemporaryDirectory() as empty:
+            house.FURNITURE_DIR = Path(empty)
+            try:
+                model, _ = world.build("house")
+            finally:
+                house.FURNITURE_DIR = saved
+        self.assertFalse(any(name.startswith(tuple(m for ms in house.MODELS.values() for m, *_ in ms))
+                             for name in (model.mesh(i).name for i in range(model.nmesh))))
+        chair = model.body("chair_1").id
+        alphas = [model.geom_rgba[g][3] for g in range(model.ngeom) if model.geom_bodyid[g] == chair]
+        self.assertTrue(alphas and min(alphas) == 1.0, "the chair's plain shapes are fully visible")
+
+    @unittest.skipUnless((house.FURNITURE_DIR / "dining_chair_02/model.json").exists(),
+                         "furniture not downloaded (simulation/fetch_furniture.py)")
+    def test_realistic_furniture_looks_real_but_collides_and_is_seen_as_before(self):
+        import numpy as np
+        import world
+        model, _ = world.build("house")
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        for name in ("chair_1", "plant_1", "tv_1", "bed_1", "oven_1"):
+            with self.subTest(item=name):
+                body = model.body(name).id
+                geoms = [g for g in range(model.ngeom) if model.geom_bodyid[g] == body]
+                meshes = [g for g in geoms if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH]
+                shapes = [g for g in geoms if g not in meshes]
+                self.assertTrue(meshes, "the realistic model is drawn")
+                self.assertTrue(all(model.geom_contype[g] == 0 for g in meshes), "the model only looks")
+                faded = [g for g in shapes if model.geom_rgba[g][3] == house.FADED]
+                self.assertEqual(len(faded), len(shapes) - (1 if name == "tv_1" else 0), "the TV's stand stays")
+                self.assertTrue(all(model.geom_contype[g] for g in shapes), "the plain shapes are still the body")
+        self.assertGreater(house.FADED, 0, "rays (the LiDAR) skip fully transparent shapes, so never 0")
+        chair = next(o for o in house.house_demo()["objects"] if o["name"] == "chair_1")
+        hit = np.array([-1], dtype=np.int32)             # a ray in the LiDAR's geom groups, down onto the chair
+        mujoco.mj_ray(model, data, np.array([*chair["pos"], 1.5]), np.array([0., 0, -1]),
+                      np.array([1, 1, 1, 0, 0, 0], np.uint8), 1, -1, hit)
+        self.assertEqual(model.geom_bodyid[hit[0]], model.body("chair_1").id)
 
     def test_room_scenes_are_unchanged(self):
         import world
@@ -226,10 +322,14 @@ class HouseWalkingTests(unittest.TestCase):
             self.skipTest("ultralytics not installed")
         if not (ROOT / "models/yolo11n-seg.pt").exists():
             self.skipTest("YOLO weights not downloaded (requirements-vision.txt)")
+        # Fixed views in the demo house: in front of the bathroom's toilet, and bedroom 2's corner; with the
+        # realistic furniture downloaded, also the kitchen's potted plant and the living room's chair.
+        views = [((.47, -3.05, -math.pi / 2), "toilet"), ((4.24, -2.48, .79), "clock")]
+        if (house.FURNITURE_DIR / "dining_chair_02/model.json").exists():
+            views += [((2.11, 3.3, math.pi / 2), "potted plant"), ((-4.05, 3.9, -math.pi / 2), "chair")]
         self.sim.detector = "yolo"
         try:
-            # Fixed views in the demo house: in front of the bathroom's toilet, and bedroom 2's corner.
-            for (x, y, yaw), label in (((.47, -3.05, -math.pi / 2), "toilet"), ((4.24, -2.48, .79), "clock")):
+            for (x, y, yaw), label in views:
                 with self.subTest(label=label):
                     self.sim.reset(x, y, yaw)
                     self.executor.attach(self.sim)

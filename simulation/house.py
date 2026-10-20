@@ -22,8 +22,10 @@ so the console can make descriptions without loading the simulator.
 from __future__ import annotations
 
 import colorsys
+import json
 import math
 import random
+from pathlib import Path
 
 ROOM_TYPES = ("bedroom", "kitchen", "living_room", "bathroom", "hallway", "office")
 WALL_HEIGHT, WALL_THICK = 2.0, .05        # half thickness, as in the single room
@@ -83,6 +85,16 @@ COLOURS = {"bed": (.9, .9, .92, 1), "refrigerator": (.88, .88, .9, 1), "oven": (
            "laptop": (.5, .5, .55, 1), "keyboard": (.12, .12, .14, 1), "book": (.85, .1, .1, 1), "clock": (.85, .1, .1, 1),
            "toy_dog": (.55, .38, .22, 1), "toy_elephant": (.55, .55, .6, 1)}
 BALL_COLOURS = [(.85, .1, .1, 1), (.15, .3, .85, 1), (.2, .6, .25, 1), (.95, .8, .1, 1)]
+# Realistic furniture from simulation/fetch_furniture.py: kind -> [(model, lift, shown)]. A model is scaled to
+# its kind's footprint and drawn over the kind's plain shapes, which stay its physical body, faded so the
+# camera doesn't see them but the LiDAR still does: collisions and obstacle checks are as before. The first
+# `shown` plain shapes stay visible (the TV's stand) and `lift` raises the model onto them. Tables and couches
+# keep plain shapes: YOLO didn't recognise any of the CC0 models tried for them either.
+FURNITURE_DIR = Path(__file__).resolve().parents[1] / "_deps/furniture"
+MODELS = {"chair": [("dining_chair_02", 0., 0), ("painted_wooden_chair_01", 0., 0)],
+          "plant": [("potted_plant_02", 0., 0), ("potted_plant_01", 0., 0)],
+          "tv": [("Television_01", .5, 1)], "bed": [("GothicBed_01", 0., 0)], "oven": [("electric_stove", 0., 0)]}
+FADED = .01                                # opacity of the shapes under a model (0 would hide them from the LiDAR)
 
 
 def room_at(house, x, y):
@@ -157,7 +169,8 @@ def _place(rng, house, room, kind, taken):
 
 def furnish(rng, house, teddy_room=None):
     """Fill house["objects"] with furniture that fits each room type, mostly in likely places, plus one
-    teddy bear (in `teddy_room` when given). Each scanned object is used once; repeats are plain shapes."""
+    teddy bear (in `teddy_room` when given). Each scanned object is used once; repeats are plain shapes.
+    Kinds with realistic models name one, the styles taking turns."""
     objects, taken, used, counts = [], [], set(), {}
 
     def add(kind, room):
@@ -173,6 +186,8 @@ def furnish(rng, house, teddy_room=None):
                 "pos": [x, y], "yaw": yaw, "rgba": list(rgba)}
         if gso:
             item["gso"] = gso
+        if kind in MODELS:          # in turn rather than at random, so the houses themselves don't change
+            item["model"] = MODELS[kind][(counts[kind] - 1) % len(MODELS[kind])][0]
         objects.append(item)
         taken.append(footprint(item))
         return True
@@ -586,6 +601,43 @@ def _geoms(kind, rgba, W):
     return shapes[kind]
 
 
+def _add_model(spec, body, item, added):
+    """Draw item's realistic model on `body`, scaled to its kind's footprint. Returns how many of the kind's
+    plain shapes stay visible, or None when the model isn't downloaded (then plain shapes are used)."""
+    import mujoco
+    name = item.get("model")
+    entry = next((e for e in MODELS.get(item["kind"], []) if e[0] == name), None)
+    try:
+        info = json.loads((FURNITURE_DIR / name / "model.json").read_text())
+    except (OSError, TypeError, ValueError):
+        return None
+    if entry is None:
+        return None
+    _, lift, shown = entry
+    hx, hy = KINDS[item["kind"]][1]
+    scale = min(2 * hx / info["size"][0], 2 * hy / info["size"][1])
+    for i, part in enumerate(info["parts"]):
+        asset = f"{name}_{i}"
+        if asset not in added:                        # a model used twice shares its mesh, texture and material
+            added.add(asset)
+            mesh = spec.add_mesh()
+            mesh.name, mesh.file, mesh.scale = f"{asset}_mesh", str(FURNITURE_DIR / name / part["obj"]), (scale,) * 3
+            material = spec.add_material()
+            material.name, material.specular, material.shininess = f"{asset}_mat", .2, .2
+            if "texture" in part:
+                texture = spec.add_texture()
+                texture.name, texture.type = f"{asset}_tex", mujoco.mjtTexture.mjTEXTURE_2D
+                texture.file = str(FURNITURE_DIR / name / part["texture"])
+                material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
+            else:
+                material.rgba = part["rgba"]
+        geom = body.add_geom()
+        geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, f"{asset}_mesh", f"{asset}_mat"
+        geom.pos, geom.group = (0, 0, lift), 0
+        geom.contype = geom.conaffinity = 0           # only looks: the plain shapes are the body
+    return shown
+
+
 def build_house(spec, house, objects):
     """Add the walls, doors, floors and ceiling of `house` to a MuJoCo spec; append (body name, WorldObject)
     pairs to `objects` like world.build does for the room."""
@@ -641,6 +693,7 @@ def build_house(spec, house, objects):
         half = (door["width"] / 2, .03, WALL_HEIGHT / 2) if door["axis"] == "x" else (.03, door["width"] / 2, WALL_HEIGHT / 2)
         W._box(body, half, (0, 0, 0), DOOR_RGBA)
         objects.append((body.name, W.WorldObject(body.name, "door", "brown")))
+    added = set()
     for item in house["objects"]:
         (x, y), yaw = item["pos"], item["yaw"]
         if item.get("gso") and W._add_scanned(spec, item["gso"], item["name"], x, y, yaw):
@@ -649,10 +702,13 @@ def build_house(spec, house, objects):
             body = spec.worldbody.add_body()
             body.name, body.pos = item["name"], (x, y, 0)
             body.quat = (math.cos(yaw / 2), 0, 0, math.sin(yaw / 2))
-            for kind, size, pos, rgba in _geoms(item["kind"], tuple(item["rgba"]), W):
+            shown = _add_model(spec, body, item, added)
+            for i, (kind, size, pos, rgba) in enumerate(_geoms(item["kind"], tuple(item["rgba"]), W)):
                 geom = body.add_geom()
                 geom.type, geom.size, geom.pos, geom.rgba = W.GEOM_TYPES[kind], W._size3(size), pos, rgba
                 geom.friction = (.8, .02, .01)
+                if shown is not None and i >= shown:
+                    geom.rgba = list(rgba[:3]) + [FADED]
             r, g, b = item["rgba"][:3]
-            colour = W.colour_word(*colorsys.rgb_to_hsv(r, g, b))
+            colour = "" if shown is not None else W.colour_word(*colorsys.rgb_to_hsv(r, g, b))
         objects.append((item["name"], W.WorldObject(item["name"], item["label"], colour)))

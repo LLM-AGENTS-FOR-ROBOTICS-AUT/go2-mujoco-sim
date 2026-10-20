@@ -45,7 +45,8 @@ window ends the console. The first command waits a few seconds while the model l
 Options: `--mock` (scripted replies, no language model: checks the page and robot without the model
 file), `--scene empty`, `--scene house` (a furnished house: hallway, living room, kitchen, two bedrooms
 and a bathroom, with the teddy bear in bedroom 2) and `--scene house --seed N` (a random house of 2–7
-rooms, the same for the same N), `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
+rooms, the same for the same N). Houses have realistic chairs, plants, TVs, beds and stoves once setup has
+run `simulation/fetch_furniture.py`, and plain shapes without them. `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
 `--no-voice` (no speech recognition or spoken replies, saving memory), `--check`.
 
 ## Use
