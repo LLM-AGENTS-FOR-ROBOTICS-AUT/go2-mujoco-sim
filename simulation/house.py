@@ -226,6 +226,91 @@ def house_demo():
     return furnish(random.Random(17), house, teddy_room="bedroom_2")     # fixed seed: the same every time
 
 
+# ---- reachability ----------------------------------------------------------------------------------------
+ROBOT_RADIUS = .3                          # Go2's half width (0.2 m) plus a margin, for passing between things
+GRID = .1                                  # metres per cell
+
+
+def reachability(house):
+    """Check that Go2 can get from the start into every room and through every open doorway.
+
+    Floor plan on squared paper: walls, closed doors and furniture are marked on a 10 cm grid, grown by
+    ROBOT_RADIUS so a free cell is one the robot's centre can stand on, then a flood fill from the start
+    finds every cell Go2 can walk to. Returns (ok, problems), problems being plain sentences."""
+    from collections import deque
+
+    import numpy as np
+
+    problems = []
+    names = {room["name"] for room in house["rooms"]}
+    for door in house["doors"]:
+        if door["open"] and door["width"] < DOOR_MIN_WIDTH:
+            problems.append(f"{door['name']} is {door['width']:.2f} m wide; Go2 needs {DOOR_MIN_WIDTH} m")
+        if not set(door["rooms"]) <= names:
+            problems.append(f"{door['name']} joins a room that isn't in the house: {door['rooms']}")
+    xs = [v for room in house["rooms"] for v in room["rect"][0::2]]
+    ys = [v for room in house["rooms"] for v in room["rect"][1::2]]
+    x0, y0 = min(xs), min(ys)
+    nx, ny = int(round((max(xs) - x0) / GRID)) + 1, int(round((max(ys) - y0) / GRID)) + 1
+
+    def cell(x, y):
+        return int(round((x - x0) / GRID)), int(round((y - y0) / GRID))
+
+    blocked = np.zeros((nx, ny), bool)
+
+    def mark(bx0, by0, bx1, by1):
+        i0, j0 = cell(bx0, by0)
+        i1, j1 = cell(bx1, by1)
+        blocked[max(i0, 0):max(i1 + 1, 0), max(j0, 0):max(j1 + 1, 0)] = True
+
+    for axis, line, a, b, *_ in wall_pieces(house):
+        if axis == "x":
+            mark(a, line - WALL_THICK, b, line + WALL_THICK)
+        else:
+            mark(line - WALL_THICK, a, line + WALL_THICK, b)
+    for door in house["doors"]:
+        if door["open"]:
+            continue
+        (dx, dy), half = door["pos"], door["width"] / 2
+        if door["axis"] == "x":
+            mark(dx - half, dy - WALL_THICK, dx + half, dy + WALL_THICK)
+        else:
+            mark(dx - WALL_THICK, dy - half, dx + WALL_THICK, dy + half)
+    for item in house["objects"]:
+        mark(*footprint(item))
+    r = int(round(ROBOT_RADIUS / GRID))        # grow every obstacle by the robot's radius (a disc)
+    padded = np.pad(blocked, r)
+    grown = np.zeros_like(blocked)
+    for di in range(-r, r + 1):
+        for dj in range(-r, r + 1):
+            if di * di + dj * dj <= r * r:
+                grown |= padded[r + di:r + di + nx, r + dj:r + dj + ny]
+
+    start = cell(*house["start"][:2])
+    seen = np.zeros_like(grown)
+    if grown[start]:
+        problems.append("the start is too close to a wall or an object")
+    else:
+        seen[start] = True
+        queue = deque([start])
+        while queue:
+            i, j = queue.popleft()
+            for a, b in ((i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)):
+                if 0 <= a < nx and 0 <= b < ny and not grown[a, b] and not seen[a, b]:
+                    seen[a, b] = True
+                    queue.append((a, b))
+    for room in house["rooms"]:
+        rx0, ry0, rx1, ry1 = room["rect"]
+        i0, j0 = cell(rx0, ry0)
+        i1, j1 = cell(rx1, ry1)
+        if not seen[i0:i1 + 1, j0:j1 + 1].any():
+            problems.append(f"Go2 can't get into {room['name']}")
+    for door in house["doors"]:
+        if door["open"] and not seen[cell(*door["pos"])]:
+            problems.append(f"Go2 can't get through {door['name']}")
+    return not problems, problems
+
+
 # ---- building a house into MuJoCo ----------------------------------------------------------------------
 # Matte floor colour per room type: the camera can tell rooms apart, though Go2 shouldn't rely on it.
 FLOOR_RGBA = {"bedroom": (.6, .48, .36, 1), "living_room": (.55, .42, .3, 1), "hallway": (.66, .6, .5, 1),
