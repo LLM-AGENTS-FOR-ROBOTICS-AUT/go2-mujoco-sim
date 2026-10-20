@@ -28,8 +28,10 @@ import random
 ROOM_TYPES = ("bedroom", "kitchen", "living_room", "bathroom", "hallway", "office")
 WALL_HEIGHT, WALL_THICK = 2.0, .05        # half thickness, as in the single room
 DOOR_MIN_WIDTH = .9                       # Go2 fits through with the executor's clearance margin
-DOOR_CLEAR = 1.2                          # no furniture this close to a doorway's centre, either side: room
-                                          # for Go2 (0.7 m long) to step through and turn around
+# No furniture this close to a doorway's centre, either side. All of Go2 is in a room once its centre is
+# 0.5 m past the wall (0.05 m wall + 0.36 m half length); its nose is then 0.86 m in, and the executor
+# keeps about 0.4 m clear ahead at walking pace (Executor._margin): 1.25 m, plus room to turn around.
+DOOR_CLEAR = 1.4
 START_CLEAR = .9                          # ... or to the robot's start
 
 # kind -> (detector label, footprint half extents (x, y) before yaw, big furniture, Google Scanned Object)

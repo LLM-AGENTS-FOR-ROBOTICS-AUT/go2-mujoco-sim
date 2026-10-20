@@ -146,7 +146,7 @@ scripts/setup-ubuntu.sh    Full Unitree SDK2/DDS installer
 scripts/run-simulator.sh   Ubuntu simulator launcher
 command_ui/                LLM command console: web page, server, launchers
 go2/                       LLM agent, tools and limits, safety executor, robot adapters
-simulation/                Room simulation for the console: world, sport-mode robot, LiDAR, camera
+simulation/                Room and house simulation for the console: world, sport-mode robot, LiDAR, camera
 models/                    Model catalog and checksums (weights shared separately)
 tests/                     Unit tests: python -m unittest discover -s tests -t .
 ```
