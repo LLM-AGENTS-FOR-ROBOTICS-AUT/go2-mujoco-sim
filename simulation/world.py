@@ -83,16 +83,20 @@ GSO_PLACEMENT = [("teddy_bear", "teddy bear", .5, -2.8, .8), ("backpack", "backp
                  ("toy_elephant", "elephant", -3.3, -3.2, .4), ("toy_horse", "horse", 3.4, 3.3, -2.), ("alarm_clock", "clock", -2.0, -1.6, 1.9),
                  ("fire_truck", "truck", 1.3, -.35, 1.2), ("laptop", "laptop", -3.2, 1.6, .3), ("keyboard", "keyboard", -.5, -3.35, 0.),
                  ("book", "book", 2.6, -3.0, .7)]
+# Scanned objects that weren't scanned standing up: the turn (quaternion) that stands them on the floor.
+# The teddy bear was scanned lying on its back, head towards +y: a quarter turn about x stands it on its feet.
+GSO_UPRIGHT = {"teddy_bear": (np.cos(np.pi / 4), np.sin(np.pi / 4), 0., 0.)}
 
 
-def _obj_zmin(path):
-    zmin = None
+def _obj_zmin(path, quat=(1., 0., 0., 0.)):
+    """The lowest point of an OBJ mesh once turned by `quat`: how far to raise it to stand on the floor."""
     with open(path) as f:
-        for line in f:
-            if line.startswith("v "):
-                z = float(line.split()[3])
-                zmin = z if zmin is None or z < zmin else zmin
-    return zmin or 0.
+        points = np.array([line.split()[1:4] for line in f if line.startswith("v ")], dtype=float)
+    if not len(points):
+        return 0.
+    turn = np.zeros(9)
+    mujoco.mju_quat2Mat(turn, np.array(quat, dtype=float))
+    return float((points @ turn.reshape(3, 3).T)[:, 2].min())
 
 
 def _add_scanned(spec, short, name, x, y, yaw):
@@ -108,12 +112,14 @@ def _add_scanned(spec, short, name, x, y, yaw):
     material.specular, material.shininess = .3, .3
     mesh = spec.add_mesh()
     mesh.name, mesh.file = f"{short}_mesh", str(folder / "model.obj")
+    upright = GSO_UPRIGHT.get(short, (1., 0., 0., 0.))
     body = spec.worldbody.add_body()
     body.name = name
-    body.pos = (x, y, -_obj_zmin(folder / "model.obj") + .002)
+    body.pos = (x, y, -_obj_zmin(folder / "model.obj", upright) + .002)
     body.quat = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
     geom = body.add_geom()
     geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, mesh.name, material.name
+    geom.quat = upright
     geom.group = 0   # world group: rendered, seen by the LiDAR, solid (convex hull) to the robot
     return True
 
