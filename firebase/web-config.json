@@ -1,0 +1,9 @@
+{
+  "apiKey": "AIzaSyDGWoN2zilj2qqGJW13EFUlM_Clpp-vlio",
+  "authDomain": "go2-feedback.firebaseapp.com",
+  "projectId": "go2-feedback",
+  "storageBucket": "go2-feedback.firebasestorage.app",
+  "messagingSenderId": "763296459211",
+  "appId": "1:763296459211:web:365f9a9078aaec8dbdae4e",
+  "collection": "bad_replies"
+}
