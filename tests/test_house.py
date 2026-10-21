@@ -167,6 +167,37 @@ class FurnitureConverterTests(unittest.TestCase):
         self.assertIn("f 1/1 2/2 3/3", obj)
         self.assertEqual(copied, b"png")
 
+    def test_a_glb_model_converts_like_its_gltf(self):
+        import struct
+        import tempfile
+        import fetch_furniture as F
+        # The same triangle as one .glb file, plain-coloured: a header, then a JSON chunk and a binary chunk.
+        blob = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 2, 0) + struct.pack("<3H", 0, 1, 2) + b"\0\0"
+        gltf = {"scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "material": 0}]}],
+                "materials": [{"pbrMetallicRoughness": {"baseColorFactor": [.5, .25, 1, 1]}}],
+                "buffers": [{"byteLength": len(blob)}],
+                "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                                {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+                "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                              {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]}
+        text = json.dumps(gltf).encode()
+        text += b" " * (-len(text) % 4)
+        chunks = struct.pack("<I4s", len(text), b"JSON") + text + struct.pack("<I4s", len(blob), b"BIN\0") + blob
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "g.glb").write_bytes(struct.pack("<4sII", b"glTF", 2, 12 + len(chunks)) + chunks)
+            saved, F.DEST = F.DEST, tmp / "out"
+            (F.DEST / "g").mkdir(parents=True)
+            try:
+                info = F.convert(tmp, "g")
+            finally:
+                F.DEST = saved
+            obj = (tmp / "out/g/part0.obj").read_text().split("\n")
+        self.assertEqual(info, {"size": [1.0, 0.0, 2.0], "parts": [{"obj": "part0.obj", "rgba": [.5, .25, 1, 1]}]})
+        vertices = [tuple(float(v) for v in line.split()[1:]) for line in obj if line.startswith("v ")]
+        self.assertEqual(vertices, [(-.5, 0, 0), (.5, 0, 0), (-.5, 0, 2)])
+
 
 @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
 class HouseMujocoTests(unittest.TestCase):
@@ -215,7 +246,7 @@ class HouseMujocoTests(unittest.TestCase):
         model, _ = world.build("house")
         data = mujoco.MjData(model)
         mujoco.mj_forward(model, data)
-        for name in ("chair_1", "plant_1", "tv_1", "bed_1", "oven_1"):
+        for name in ("chair_1", "plant_1", "tv_1", "bed_1", "oven_1", "couch_1"):
             with self.subTest(item=name):
                 body = model.body(name).id
                 geoms = [g for g in range(model.ngeom) if model.geom_bodyid[g] == body]

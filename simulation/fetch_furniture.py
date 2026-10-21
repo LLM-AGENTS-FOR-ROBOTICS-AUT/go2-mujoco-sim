@@ -1,10 +1,11 @@
 """Download the realistic furniture used in the houses (house.py) and convert it for MuJoCo (~50 MB).
 
-Source: Poly Haven (polyhaven.com), CC0: free for any use, no attribution required (we credit it anyway in
-THIRD_PARTY_NOTICES.md). Every file is pinned by URL and MD5 (the checksum Poly Haven publishes); a file
-that doesn't match is refused. Each glTF model becomes one OBJ mesh per texture, turned Z-up, centred on
-x, y = 0 and standing on z = 0, plus model.json with its size. Without these files the houses use plain
-shapes instead. The setup scripts run this with --agent / -Agent:
+Sources: Poly Haven (polyhaven.com), CC0: free for any use, no attribution required; and a few CC-BY 4.0
+Sketchfab models through Objaverse (allenai/objaverse on Hugging Face), which require their authors'
+credit (CREDITS; THIRD_PARTY_NOTICES.md repeats it). Every file is pinned by URL and MD5; a file that
+doesn't match is refused. Each glTF or GLB model becomes one OBJ mesh per texture or colour, turned Z-up,
+centred on x, y = 0 and standing on z = 0, plus model.json with its size and credit. Without these files
+the houses use plain shapes instead. The setup scripts run this with --agent / -Agent:
 
   .venv/bin/python simulation/fetch_furniture.py
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import struct
 import sys
 import urllib.request
 from pathlib import Path
@@ -20,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 DEST = Path(__file__).resolve().parents[1] / "_deps/furniture"
+OBJAVERSE = "https://huggingface.co/datasets/allenai/objaverse/resolve/556637099bf4fa79ea7b239d0d9c328b8a2e9ac8"
 # model -> [(file, url, md5)]: the 1k glTF, its geometry and its colour textures (as PNG, which MuJoCo loads)
 MODELS = {
     "dining_chair_02": [
@@ -49,16 +52,26 @@ MODELS = {
         ('Television_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/Television_01/Television_01.bin', 'd28775c3746a6e7b0afa5fd217acbc44'),
         ('textures/Television_01_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/Television_01/Television_01_diff_1k.png', 'baab6cbd6c6a3f34c2044d32222bd4bf'),
     ],
-    "GothicBed_01": [
-        ('GothicBed_01.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/GothicBed_01/GothicBed_01_1k.gltf', '0635fcafb5d406ed9b10655a91f1eabb'),
-        ('GothicBed_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/GothicBed_01/GothicBed_01.bin', '6311b36b274a2062e20083631acddd18'),
-        ('textures/GothicBed_01_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/GothicBed_01/GothicBed_01_diff_1k.png', '52e9484fe23fedac7d3555dcab7fdf3a'),
-    ],
     "electric_stove": [
         ('electric_stove.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/electric_stove/electric_stove_1k.gltf', '1ec96abe416e022f792ace742d33947a'),
         ('electric_stove.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/electric_stove/electric_stove.bin', '9846b43c4af868f79a95635fb9bd354d'),
         ('textures/electric_stove_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/electric_stove/electric_stove_diff_1k.png', '272ec5a130b3fc231264a38e12e068db'),
     ],
+    # Objaverse, at a pinned dataset commit. Poly Haven's sofas are antique styles YOLO calls "bed" or "bench",
+    # and its carved Gothic bed was taken for people, horses and birds.
+    "couch_starstarbird": [
+        ('couch_starstarbird.glb', f'{OBJAVERSE}/glbs/000-072/d90e4353ae7047e0b4f37abc8bc58468.glb', '76fa663c5aad4ffb81a582d7927042b5'),
+    ],
+    "bed_tharadelamo": [
+        ('bed_tharadelamo.glb', f'{OBJAVERSE}/glbs/000-099/fc9cbf532b6045969b9f7eeac339afd2.glb', '68ca972a85153e7b1a25232ca22c79ab'),
+    ],
+}
+# Models that aren't Poly Haven's CC0 ones: licence, author, page. CC-BY requires this credit.
+CREDITS = {
+    "couch_starstarbird": ("CC-BY 4.0", "StarStarbird",
+                           "https://sketchfab.com/3d-models/couch-d90e4353ae7047e0b4f37abc8bc58468"),
+    "bed_tharadelamo": ("CC-BY 4.0", "tharadelamo",
+                        "https://sketchfab.com/3d-models/fc9cbf532b6045969b9f7eeac339afd2"),
 }
 COMPONENTS = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
 WIDTHS = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
@@ -99,10 +112,22 @@ def _local(node):
     return matrix
 
 
+def _load(folder, name):
+    """The glTF JSON and its binary buffer: from name.gltf and its .bin, or from a single name.glb (a
+    12-byte header, then a JSON chunk and a binary chunk, each with an 8-byte length-and-type header)."""
+    glb = folder / f"{name}.glb"
+    if glb.exists():
+        data = glb.read_bytes()
+        (json_length,) = struct.unpack_from("<I", data, 12)
+        (bin_length,) = struct.unpack_from("<I", data, 20 + json_length)
+        return json.loads(data[20:20 + json_length]), data[28 + json_length:28 + json_length + bin_length]
+    gltf = json.loads((folder / f"{name}.gltf").read_text())
+    return gltf, (folder / gltf["buffers"][0]["uri"]).read_bytes()
+
+
 def convert(folder, name):
     """glTF -> one OBJ per colour texture (Z-up, centred, on the floor) and model.json describing them."""
-    gltf = json.loads((folder / f"{name}.gltf").read_text())
-    blob = (folder / gltf["buffers"][0]["uri"]).read_bytes()
+    gltf, blob = _load(folder, name)
     groups = {}                                        # texture (or colour) -> [(positions, uvs, triangles)]
 
     def visit(index, parent):
@@ -166,7 +191,8 @@ def main():
             for path, url, md5 in files:
                 _fetch(source / path, url, md5)
             info = convert(source, name)
-            info.update(model=name, license="CC0 1.0 (Poly Haven)", url=f"https://polyhaven.com/a/{name}", md5=pinned)
+            licence, author, page = CREDITS.get(name, ("CC0 1.0", "Poly Haven", f"https://polyhaven.com/a/{name}"))
+            info.update(model=name, license=licence, author=author, url=page, md5=pinned)
             described.write_text(json.dumps(info, indent=1))
             shutil.rmtree(source)                              # the originals aren't needed once converted
         size = sum(p.stat().st_size for p in (DEST / name).rglob("*") if p.is_file())

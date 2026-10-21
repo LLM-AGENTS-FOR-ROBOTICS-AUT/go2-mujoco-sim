@@ -28,7 +28,11 @@ import random
 from pathlib import Path
 
 ROOM_TYPES = ("bedroom", "kitchen", "living_room", "bathroom", "hallway", "office")
-WALL_HEIGHT, WALL_THICK = 2.0, .05        # half thickness, as in the single room
+WALL_THICK = .05                          # half thickness, as in the single room
+# Walls reach the ceiling (unlike the single room's 2 m walls under a 2.4 m ceiling), so the camera never
+# sees sky over them: in YOLO mode that strip was taken for birds and people. Doorways are 2 m tall, with
+# wall above them.
+CEILING, WALL_HEIGHT, DOOR_HEIGHT = 2.4, 2.4, 2.0
 DOOR_MIN_WIDTH = .9                       # Go2 fits through with the executor's clearance margin
 # No furniture this close to a doorway's centre, either side. All of Go2 is in a room once its centre is
 # 0.5 m past the wall (0.05 m wall + 0.36 m half length); its nose is then 0.86 m in, and the executor
@@ -85,15 +89,20 @@ COLOURS = {"bed": (.9, .9, .92, 1), "refrigerator": (.88, .88, .9, 1), "oven": (
            "laptop": (.5, .5, .55, 1), "keyboard": (.12, .12, .14, 1), "book": (.85, .1, .1, 1), "clock": (.85, .1, .1, 1),
            "toy_dog": (.55, .38, .22, 1), "toy_elephant": (.55, .55, .6, 1)}
 BALL_COLOURS = [(.85, .1, .1, 1), (.15, .3, .85, 1), (.2, .6, .25, 1), (.95, .8, .1, 1)]
-# Realistic furniture from simulation/fetch_furniture.py: kind -> [(model, lift, shown)]. A model is scaled to
+# Realistic furniture from simulation/fetch_furniture.py: kind -> [(model, lift, shown, turn)]. A model is
+# turned by `turn` quarter turns (anticlockwise) so its back faces local +y like the plain shapes, scaled to
 # its kind's footprint and drawn over the kind's plain shapes, which stay its physical body, faded so the
 # camera doesn't see them but the LiDAR still does: collisions and obstacle checks are as before. The first
-# `shown` plain shapes stay visible (the TV's stand) and `lift` raises the model onto them. Tables and couches
-# keep plain shapes: YOLO didn't recognise any of the CC0 models tried for them either.
+# `shown` plain shapes stay visible (the TV's stand) and `lift` raises the model onto them. Tables, sinks and
+# fridges keep plain shapes: from Go2's low camera YOLO named no table or sink model tried, and the best
+# fridge needs a JPEG texture, which MuJoCo can't load.
 FURNITURE_DIR = Path(__file__).resolve().parents[1] / "_deps/furniture"
-MODELS = {"chair": [("dining_chair_02", 0., 0), ("painted_wooden_chair_01", 0., 0)],
-          "plant": [("potted_plant_02", 0., 0), ("potted_plant_01", 0., 0)],
-          "tv": [("Television_01", .5, 1)], "bed": [("GothicBed_01", 0., 0)], "oven": [("electric_stove", 0., 0)]}
+MODELS = {"chair": [("dining_chair_02", 0., 0, 0), ("painted_wooden_chair_01", 0., 0, 0)],
+          "couch": [("couch_starstarbird", 0., 0, 0)],
+          "plant": [("potted_plant_02", 0., 0, 0), ("potted_plant_01", 0., 0, 0)],
+          "tv": [("Television_01", .5, 1, 0)],
+          "bed": [("bed_tharadelamo", 0., 0, -1)],        # its headboard is at -x as downloaded
+          "oven": [("electric_stove", 0., 0, 0)]}
 FADED = .01                                # opacity of the shapes under a model (0 would hide them from the LiDAR)
 
 
@@ -613,9 +622,11 @@ def _add_model(spec, body, item, added):
         return None
     if entry is None:
         return None
-    _, lift, shown = entry
+    _, lift, shown, turn = entry
     hx, hy = KINDS[item["kind"]][1]
-    scale = min(2 * hx / info["size"][0], 2 * hy / info["size"][1])
+    sx, sy = info["size"][:2] if turn % 2 == 0 else info["size"][1::-1]    # a quarter turn swaps its sides
+    scale = min(2 * hx / sx, 2 * hy / sy)
+    angle = turn * math.pi / 2
     for i, part in enumerate(info["parts"]):
         asset = f"{name}_{i}"
         if asset not in added:                        # a model used twice shares its mesh, texture and material
@@ -634,6 +645,7 @@ def _add_model(spec, body, item, added):
         geom = body.add_geom()
         geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, f"{asset}_mesh", f"{asset}_mat"
         geom.pos, geom.group = (0, 0, lift), 0
+        geom.quat = (math.cos(angle / 2), 0, 0, math.sin(angle / 2))
         geom.contype = geom.conaffinity = 0           # only looks: the plain shapes are the body
     return shown
 
@@ -667,7 +679,7 @@ def build_house(spec, house, objects):
         geom.type, geom.size = mujoco.mjtGeom.mjGEOM_PLANE, ((x1 - x0) / 2, (y1 - y0) / 2, .1)
         geom.material, geom.contype, geom.conaffinity = materials[room["type"]], 0, 0
     ceiling = spec.worldbody.add_body()
-    ceiling.name, ceiling.pos = "ceiling", ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, 2.4)
+    ceiling.name, ceiling.pos = "ceiling", ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, CEILING)
     geom = ceiling.add_geom()
     geom.type, geom.rgba = mujoco.mjtGeom.mjGEOM_BOX, (.93, .93, .9, 1)
     geom.size = ((max(xs) - min(xs)) / 2 + .1, (max(ys) - min(ys)) / 2 + .1, .02)
@@ -686,12 +698,18 @@ def build_house(spec, house, objects):
         W._box(body, size, (0, 0, 0), WALL_RGBA)
         objects.append((body.name, W.WorldObject(body.name, "wall", "white")))
     for door in house["doors"]:
+        (dx, dy), half_w = door["pos"], door["width"] / 2
+        along_x = door["axis"] == "x"
+        above = spec.worldbody.add_body()       # the wall over the doorway, up to the ceiling
+        above.name, above.pos = f"{door['name']}_lintel", (dx, dy, (DOOR_HEIGHT + WALL_HEIGHT) / 2)
+        lintel = (WALL_HEIGHT - DOOR_HEIGHT) / 2
+        W._box(above, (half_w, WALL_THICK, lintel) if along_x else (WALL_THICK, half_w, lintel), (0, 0, 0), WALL_RGBA)
+        objects.append((above.name, W.WorldObject(above.name, "wall", "white")))
         if door["open"]:
             continue
         body = spec.worldbody.add_body()  # a closed door fills its gap (Go2 can't open doors)
-        body.name, body.pos = door["name"], (door["pos"][0], door["pos"][1], WALL_HEIGHT / 2)
-        half = (door["width"] / 2, .03, WALL_HEIGHT / 2) if door["axis"] == "x" else (.03, door["width"] / 2, WALL_HEIGHT / 2)
-        W._box(body, half, (0, 0, 0), DOOR_RGBA)
+        body.name, body.pos = door["name"], (dx, dy, DOOR_HEIGHT / 2)
+        W._box(body, (half_w, .03, DOOR_HEIGHT / 2) if along_x else (.03, half_w, DOOR_HEIGHT / 2), (0, 0, 0), DOOR_RGBA)
         objects.append((body.name, W.WorldObject(body.name, "door", "brown")))
     added = set()
     for item in house["objects"]:
