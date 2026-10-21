@@ -2,8 +2,8 @@
 
 Sources: Poly Haven (polyhaven.com), CC0: free for any use, no attribution required; and a few CC-BY 4.0
 Sketchfab models through Objaverse (allenai/objaverse on Hugging Face), which require their authors'
-credit (CREDITS; THIRD_PARTY_NOTICES.md repeats it). Every file is pinned by URL and MD5; a file that
-doesn't match is refused. Each glTF or GLB model becomes one OBJ mesh per texture or colour, turned Z-up,
+credit (CREDITS; THIRD_PARTY_NOTICES.md repeats it). Every file is pinned by URL and SHA-256, like the
+repository's other downloads; a file that doesn't match is refused. Each glTF or GLB model becomes one OBJ mesh per texture or colour, turned Z-up,
 centred on x, y = 0 and standing on z = 0, plus model.json with its size and credit. Without these files
 the houses use plain shapes instead. The setup scripts run this with --agent / -Agent:
 
@@ -23,47 +23,47 @@ import numpy as np
 
 DEST = Path(__file__).resolve().parents[1] / "_deps/furniture"
 OBJAVERSE = "https://huggingface.co/datasets/allenai/objaverse/resolve/556637099bf4fa79ea7b239d0d9c328b8a2e9ac8"
-# model -> [(file, url, md5)]: the 1k glTF, its geometry and its colour textures (as PNG, which MuJoCo loads)
+# model -> [(file, url, sha256)]: the 1k glTF, its geometry and its colour textures (as PNG, which MuJoCo loads)
 MODELS = {
     "dining_chair_02": [
-        ('dining_chair_02.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/dining_chair_02/dining_chair_02_1k.gltf', '5aff75016e0943e84161de89dcc3ceb8'),
-        ('dining_chair_02.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/dining_chair_02/dining_chair_02.bin', 'b7f8a91c0a5249d02de7885f3b242c4e'),
-        ('textures/dining_chair_02_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/dining_chair_02/dining_chair_02_diff_1k.png', '1076dcfaa4d061177f180b97480c7938'),
+        ('dining_chair_02.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/dining_chair_02/dining_chair_02_1k.gltf', '88352a44a17319846f61fe03ce75c79fb1849aa508b6a262366c149c1bbd06b8'),
+        ('dining_chair_02.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/dining_chair_02/dining_chair_02.bin', 'c7f1ef858f73815176d2ab304472a69ccf6097e971e5258eb924a75f841d4af5'),
+        ('textures/dining_chair_02_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/dining_chair_02/dining_chair_02_diff_1k.png', '27adbae3ca17f1247f1840f24e3d519514894d7ba67883eb806b553569494c21'),
     ],
     "painted_wooden_chair_01": [
-        ('painted_wooden_chair_01.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/painted_wooden_chair_01/painted_wooden_chair_01_1k.gltf', '28e739db9799cdadf820ead2b486d463'),
-        ('painted_wooden_chair_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/painted_wooden_chair_01/painted_wooden_chair_01.bin', '7fd011acaef4730770108a7932191768'),
-        ('textures/painted_wooden_chair_01_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/painted_wooden_chair_01/painted_wooden_chair_01_diff_1k.png', 'cc3035abae2c6929e12b7fe17c74676c'),
+        ('painted_wooden_chair_01.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/painted_wooden_chair_01/painted_wooden_chair_01_1k.gltf', '34f55ebe1851b89c045dc62d4461c848de3b93c0668e752a2b5f6cbed2d91a5e'),
+        ('painted_wooden_chair_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/painted_wooden_chair_01/painted_wooden_chair_01.bin', 'eaf952048db1e770c45898049b8abe28deb83d3dbbaad81d5e7e43e22a322295'),
+        ('textures/painted_wooden_chair_01_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/painted_wooden_chair_01/painted_wooden_chair_01_diff_1k.png', '47490b6013e5874121c995a9829449b3f9b730220b8f57eb023fee716d9c5b3d'),
     ],
     "potted_plant_02": [
-        ('potted_plant_02.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/potted_plant_02/potted_plant_02_1k.gltf', '9999d7e6c51018a85551840e1bdae656'),
-        ('potted_plant_02.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/potted_plant_02/potted_plant_02.bin', 'cdbd4619b2596c9c469ad34676085fa8'),
-        ('textures/potted_plant_02_leaves_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_02/potted_plant_02_leaves_diff_1k.png', 'e40343a5d93db54caba5469b59cff76a'),
-        ('textures/potted_plant_02_pot_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_02/potted_plant_02_pot_diff_1k.png', '550416d1c00b0ce2c8eba7de8aa5975d'),
+        ('potted_plant_02.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/potted_plant_02/potted_plant_02_1k.gltf', 'c533dcce0d1aa4379eb7db04601a04983f8df2422b28578de922655a416e64a9'),
+        ('potted_plant_02.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/potted_plant_02/potted_plant_02.bin', '9c9812482c78a59789ed32fa842b4cbd9365e09c900c31ebb998e5efe627fe97'),
+        ('textures/potted_plant_02_leaves_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_02/potted_plant_02_leaves_diff_1k.png', 'c664ad56c2117d82ea3b6907d0e6554f1d627da05e0f3e28f71e31bea98c667f'),
+        ('textures/potted_plant_02_pot_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_02/potted_plant_02_pot_diff_1k.png', '8988e4ce4d985162e5753b9864eb0971c72532d6f1e9914a513b04570a5b3449'),
     ],
     "potted_plant_01": [
-        ('potted_plant_01.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/potted_plant_01/potted_plant_01_1k.gltf', '199e9e3d68f5447142db4066d60ae3f0'),
-        ('potted_plant_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/potted_plant_01/potted_plant_01.bin', '18377bd8d99b20a8d5fc5cf03cbf94b2'),
-        ('textures/potted_plant_01_leaves_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_01/potted_plant_01_leaves_diff_1k.png', 'a1e100797a055cb55dbbff2aa9095aaf'),
-        ('textures/potted_plant_01_pot_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_01/potted_plant_01_pot_diff_1k.png', '83a8851050896c27c531863b02c8894a'),
+        ('potted_plant_01.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/potted_plant_01/potted_plant_01_1k.gltf', '23b30294407684b02f14800d6685bd8938da5d2111e17753ac8dd3c37d8c88a0'),
+        ('potted_plant_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/potted_plant_01/potted_plant_01.bin', 'a8dd1f7ce75f50dc25bbedc20809da02ee4193815c155b883a329925fa5548f7'),
+        ('textures/potted_plant_01_leaves_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_01/potted_plant_01_leaves_diff_1k.png', '83d339ea0c13609fff151afd778d5625bc42eacf5e60454eedabf0b571b0bbaf'),
+        ('textures/potted_plant_01_pot_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/potted_plant_01/potted_plant_01_pot_diff_1k.png', 'db986d79c9af9d10463ba3c8400bfaa7d2271e0a94cd0607b07e29e7053be3a8'),
     ],
     "Television_01": [
-        ('Television_01.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/Television_01/Television_01_1k.gltf', '9456aa7effd3cb41a0e753d74293b1c3'),
-        ('Television_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/Television_01/Television_01.bin', 'd28775c3746a6e7b0afa5fd217acbc44'),
-        ('textures/Television_01_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/Television_01/Television_01_diff_1k.png', 'baab6cbd6c6a3f34c2044d32222bd4bf'),
+        ('Television_01.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/Television_01/Television_01_1k.gltf', 'ef4376366ea956519c1a1d06146a8e8cc2bb0fcbd5c6b9f919a54ce31d05d530'),
+        ('Television_01.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/Television_01/Television_01.bin', 'fc32dd3e6722cfa093910d8b5b4e6173b0c92a13d58b55b8e9c6007a9218b0a0'),
+        ('textures/Television_01_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/Television_01/Television_01_diff_1k.png', '4c4f5ce5bf0e5c67a6c7a373274861fb3c5da73b7e096635e5ab267be3ea3528'),
     ],
     "electric_stove": [
-        ('electric_stove.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/electric_stove/electric_stove_1k.gltf', '1ec96abe416e022f792ace742d33947a'),
-        ('electric_stove.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/electric_stove/electric_stove.bin', '9846b43c4af868f79a95635fb9bd354d'),
-        ('textures/electric_stove_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/electric_stove/electric_stove_diff_1k.png', '272ec5a130b3fc231264a38e12e068db'),
+        ('electric_stove.gltf', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/electric_stove/electric_stove_1k.gltf', '3be4d1b9ec0ead3c41ea8ef09d61e3b7611b69cbeea26a40ea87355acb0b3c55'),
+        ('electric_stove.bin', 'https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/electric_stove/electric_stove.bin', '66f210539346b8f339b7519664ad6fa9b74d0932d8445b6b7e40eabcb40cd4f9'),
+        ('textures/electric_stove_diff_1k.png', 'https://dl.polyhaven.org/file/ph-assets/Models/png/1k/electric_stove/electric_stove_diff_1k.png', '49eeb4590e1b66f4b4bc23787932db25d2216ea851f219de42701cf5e38fe48b'),
     ],
     # Objaverse, at a pinned dataset commit. Poly Haven's sofas are antique styles YOLO calls "bed" or "bench",
     # and its carved Gothic bed was taken for people, horses and birds.
     "couch_starstarbird": [
-        ('couch_starstarbird.glb', f'{OBJAVERSE}/glbs/000-072/d90e4353ae7047e0b4f37abc8bc58468.glb', '76fa663c5aad4ffb81a582d7927042b5'),
+        ('couch_starstarbird.glb', f'{OBJAVERSE}/glbs/000-072/d90e4353ae7047e0b4f37abc8bc58468.glb', '9e366736149477800f04c7cfaa7e3a2529ac04000a0336b6f4ab84b3e096c669'),
     ],
     "bed_tharadelamo": [
-        ('bed_tharadelamo.glb', f'{OBJAVERSE}/glbs/000-099/fc9cbf532b6045969b9f7eeac339afd2.glb', '68ca972a85153e7b1a25232ca22c79ab'),
+        ('bed_tharadelamo.glb', f'{OBJAVERSE}/glbs/000-099/fc9cbf532b6045969b9f7eeac339afd2.glb', '5d0682406b751601754be00da984acad525ca4234acdedf3bf6e61ce98438b40'),
     ],
 }
 # Models that aren't Poly Haven's CC0 ones: licence, author, page. CC-BY requires this credit.
@@ -77,15 +77,15 @@ COMPONENTS = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32
 WIDTHS = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
 
 
-def _fetch(path, url, md5):
-    """Download `url` to `path` unless a file with the pinned MD5 is already there."""
-    if path.exists() and hashlib.md5(path.read_bytes()).hexdigest() == md5:
+def _fetch(path, url, sha256):
+    """Download `url` to `path` unless a file with the pinned SHA-256 is already there."""
+    if path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() == sha256:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "go2-mujoco-sim"})
     with urllib.request.urlopen(request, timeout=120) as response:
         data = response.read()
-    if hashlib.md5(data).hexdigest() != md5:
+    if hashlib.sha256(data).hexdigest() != sha256:
         raise SystemExit(f"{path.name}: download doesn't match its pinned checksum; refusing it")
     path.write_bytes(data)
 
@@ -183,16 +183,16 @@ def convert(folder, name):
 def main():
     for name, files in MODELS.items():
         described = DEST / name / "model.json"
-        pinned = [md5 for _, _, md5 in files]
-        if described.exists() and json.loads(described.read_text()).get("md5") == pinned:
+        pinned = [sha256 for _, _, sha256 in files]
+        if described.exists() and json.loads(described.read_text()).get("sha256") == pinned:
             info = json.loads(described.read_text())          # converted from exactly these files already
         else:
             source = DEST / name / "source"
-            for path, url, md5 in files:
-                _fetch(source / path, url, md5)
+            for path, url, sha256 in files:
+                _fetch(source / path, url, sha256)
             info = convert(source, name)
             licence, author, page = CREDITS.get(name, ("CC0 1.0", "Poly Haven", f"https://polyhaven.com/a/{name}"))
-            info.update(model=name, license=licence, author=author, url=page, md5=pinned)
+            info.update(model=name, license=licence, author=author, url=page, sha256=pinned)
             described.write_text(json.dumps(info, indent=1))
             shutil.rmtree(source)                              # the originals aren't needed once converted
         size = sum(p.stat().st_size for p in (DEST / name).rglob("*") if p.is_file())

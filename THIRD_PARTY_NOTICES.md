@@ -52,7 +52,7 @@ the final walking setup.
   and **"Stylized lowpoly bed" by tharadelamo**
   (<https://sketchfab.com/3d-models/fc9cbf532b6045969b9f7eeac339afd2>), downloaded through Objaverse
   (allenai/objaverse on Hugging Face, at a pinned commit) and converted to OBJ meshes.
-  `simulation/fetch_furniture.py` downloads them all (pinned by URL and MD5) into `_deps/furniture` and
+  `simulation/fetch_furniture.py` downloads them all (pinned by URL and SHA-256) into `_deps/furniture` and
   converts them for MuJoCo.
 - Sensor mount positions for the simulated L1 LiDAR and front camera follow Unitree's `go2_description`
   URDF (unitree_ros, BSD 3-Clause). The room and the houses' layouts are original.
