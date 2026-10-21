@@ -45,7 +45,7 @@ import numpy as np  # noqa: E402
 from flask import Flask, Response, abort, jsonify, request, send_from_directory  # noqa: E402
 
 from go2 import perception as P  # noqa: E402
-from go2 import procs  # noqa: E402
+from go2 import feedback_upload, procs  # noqa: E402
 from go2.adapters.base import AdapterError  # noqa: E402
 from go2.adapters.sim import SimAdapter  # noqa: E402
 from go2.agent import Agent, is_stop, robot_state_line  # noqa: E402
@@ -85,9 +85,10 @@ class SpokenReply:
 
 # ---- the robot, the executor and the agent ----------------------------------------------------------------
 class Console:
-    def __init__(self, model, adapter, robot_info=None, voice=False, feedback=FEEDBACK):
+    def __init__(self, model, adapter, robot_info=None, voice=False, feedback=FEEDBACK, uploader=None):
         self.model, self.adapter = model, adapter
         self.feedback = Path(feedback)
+        self.uploader = uploader                # a copy of each flag in Firebase (go2/feedback_upload.py), or None
         self.robot_info = robot_info or {}       # {"scene": "room"} or {"interface": "en7"}, shown in the state
         self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task))
         self.agent = Agent(model, self.executor)
@@ -397,6 +398,8 @@ class Console:
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(record, indent=1, default=str))
         temporary.replace(path)
+        if self.uploader:
+            self.uploader.submit(record["id"])
 
     def _flag_answer(self, flag_id):
         path = self.feedback / f"{flag_id}.json"
@@ -489,7 +492,7 @@ class Console:
             self.preparing.notify_all()
         self.agent.close()
         self.executor.close()
-        for stop in (self.adapter.close, getattr(self.model, "unload", None)):
+        for stop in (self.adapter.close, getattr(self.model, "unload", None), getattr(self.uploader, "close", None)):
             try:
                 if stop:
                     stop()
@@ -870,6 +873,17 @@ def check(args):
                                  if spec.get("download_url") else "see command_ui/README.md (model file and Ollama)"}))
 
 
+def start_uploader(args):
+    """Copy flagged replies to Firebase (on by default). Not for --mock: scripted replies aren't the model's."""
+    if args.mock or args.no_upload or not feedback_upload.enabled_by_env():
+        return None
+    try:
+        return feedback_upload.FeedbackUploader(FEEDBACK).start()
+    except (OSError, ValueError, KeyError) as error:
+        print(f"Firebase upload is off: {error}")
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", choices=list(CATALOG["models"]), default=CATALOG["default"])
@@ -882,6 +896,8 @@ def main():
     parser.add_argument("--port", type=int, default=5050 if sys.platform == "darwin" else 5000)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--no-voice", action="store_true", help="don't load speech recognition or Go2's voice")
+    parser.add_argument("--no-upload", action="store_true",
+                        help="keep flagged replies on this computer only (no Firebase copy; feedback/README.md)")
     parser.add_argument("--check", action="store_true", help="check the simulator and model, then exit")
     parser.add_argument("--fetch-model", action="store_true", help="download the model now (once), then exit")
     args = parser.parse_args()
@@ -903,7 +919,7 @@ def main():
     except AdapterError as error:
         sys.exit(f"Could not start the robot: {error}")
     console = Console(model, adapter, {"interface": args.robot} if args.robot else {"scene": args.scene},
-                      voice=not args.no_voice)
+                      voice=not args.no_voice, uploader=start_uploader(args))
     if args.robot and args.arm:
         console.executor.set_armed(True)
         print("The real Go2 is ARMED: it will move when told to. Press Stop on the page to halt it.")

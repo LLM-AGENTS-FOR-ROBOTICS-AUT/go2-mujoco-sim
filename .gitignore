@@ -17,3 +17,6 @@ models/*.gguf
 
 # Flagged replies are committed (feedback/README.md); only their temporary files are not
 feedback/*.tmp
+
+# Firebase CLI cache (firebase/README.md)
+firebase/.firebase/

@@ -8,6 +8,15 @@ Commit these files and push them, so they reach the next fine-tuning run. The tr
 flagged turn: it puts the simulated robot back where it was, restores the conversation before it, has the
 teacher model answer the same message again (reading the note), and trains on the new turn.
 
+The console also uploads a copy of each flag to the project's Firebase database (`go2-feedback`, collection
+`bad_replies`) as soon as it is saved, so it reaches the training run even if it isn't committed yet. Keep committing
+the files anyway: git stays the record. The document `bad_replies/<id>` holds the file's exact text in `record`,
+plus `id`, `created`, `model`, `prompt_style`, `kind` and `note` to browse by. A note added later updates the same
+document. Uploads are on by default and run in the background; when offline they are retried, and the next console
+start sends anything missing (including flags pulled from git). Turn them off with `--no-upload` or
+`GO2_FEEDBACK_UPLOAD=0`; `--mock` never uploads. Only the project's owners can read the database, in the Firebase
+console. Setup and the security rules: [`firebase/README.md`](../firebase/README.md).
+
 A file holds:
 
 | Field | What it is |
