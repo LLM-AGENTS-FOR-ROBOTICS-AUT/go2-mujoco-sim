@@ -54,6 +54,7 @@
   .notepanel .nbtns{display:flex;gap:8px;margin-top:8px;}
   .notepanel .nbtns button{padding:6px 14px;border-radius:8px;font-size:13.5px;cursor:pointer;background:var(--panel2);color:var(--white);border:1px solid var(--border);}
   .notepanel .nbtns button:hover{border-color:var(--teal);}
+  .notepanel .uploadinfo{margin-top:5px;color:var(--mute);line-height:1.45;}
   .confirm{display:flex;gap:8px;margin-top:9px;}
   .confirm button{padding:6px 16px;border-radius:8px;cursor:pointer;font-size:14px;border:1px solid;}
   .yes{background:rgba(47,191,113,.18);color:var(--green);border-color:rgba(47,191,113,.5);}
@@ -113,8 +114,15 @@
   <div class="main">
     <div id="banners"></div>
     <div id="log" aria-live="polite" aria-label="Conversation"></div>
+    <div class="notepanel" id="uploadPanel" role="alertdialog" aria-labelledby="uploadTitle" hidden>
+      <div id="uploadTitle"><strong>This will be sent to the team's training server (Firebase).</strong></div>
+      <div class="uploadinfo">It holds the whole conversation so far (everything you typed or said and all of Go2's replies),
+        where the robot was, and your note if you add one. Before sending, check that nothing private is in it:
+        names, addresses, phone numbers, passwords or anything else personal.</div>
+      <div class="nbtns"><button id="uploadSend" type="button">Send for training</button><button id="uploadCancel" type="button">Cancel</button></div>
+    </div>
     <div class="notepanel" id="notePanel" hidden>
-      <div><strong>Saved for the next training run.</strong> What should Go2 have done? (optional)</div>
+      <div><strong id="noteTitle">Saved for the next training run.</strong> What should Go2 have done? (optional)</div>
       <textarea id="noteText" rows="2" placeholder="e.g. It should have turned left first, then walked to the ball"></textarea>
       <div class="nbtns"><button id="noteSave" type="button">Save note</button><button id="noteSkip" type="button">Skip</button></div>
     </div>
@@ -254,7 +262,8 @@ function callHtml(e,showConfirm){
 function flagHtml(e){
   if(e.flag) return '<span class="flagged">saved for training</span>';
   if(!e.flaggable) return '';
-  return `<button class="flagbtn" type="button" data-flag="${e.id}" title="Save this turn so the next training run learns the right reply">Bad reply</button>`;
+  const where=uploadOn?'Send this turn to the team\'s training server':'Save this turn';
+  return `<button class="flagbtn" type="button" data-flag="${e.id}" title="${where} so the next training run learns the right reply">Bad reply</button>`;
 }
 function renderLog(conv){
   if(conv.id!==lastConvId){lastConvId=conv.id;}
@@ -293,10 +302,11 @@ function renderLog(conv){
 }
 
 // ---- main render ----
-let s_thinking=false;
+let s_thinking=false, uploadOn=false;
 function render(s){
   if(s.revision===lastRevision) return; lastRevision=s.revision;
   s_thinking=!!(s.agent&&s.agent.thinking);
+  uploadOn=!!(s.feedback&&s.feedback.upload);
   overallBadge(s); renderBanners(s); renderSide(s); renderLog(s.conversation||{entries:[]});
   // disable Send while thinking; Stop always on
   txt.disabled=s_thinking;
@@ -338,19 +348,31 @@ $('disarm').onclick=()=>fetch('/api/arm',{method:'POST',headers:{'Content-Type':
 // delegated clicks: chips, Yes/No
 document.addEventListener('click',e=>{const el=e.target.closest('[data-send]');if(el){send(el.dataset.send);}});
 // ---- "Bad reply": the turn behind a reply is saved in feedback/ for the next training run to redo ----
-let flagId=null;
+// When the console uploads flags (state.feedback.upload), nothing is saved until the user has read what
+// leaves this computer and pressed "Send for training".
+let flagId=null, pendingFlag=null;
 async function feedback(value){
   const r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
   const j=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(j.error||'Could not save that.');
   return j;
 }
-document.addEventListener('click',async e=>{
+async function flagReply(entry){
+  const b=document.querySelector(`[data-flag="${entry}"]`);   // the log may have been redrawn since the click
+  if(b) b.disabled=true;
+  try{
+    flagId=(await feedback({entry:Number(entry)})).id;
+    $('noteTitle').textContent=uploadOn?'Sent for the next training run; a note is sent too.':'Saved for the next training run.';
+    $('noteText').value='';$('notePanel').hidden=false;$('noteText').focus();
+  }catch(err){flashError(err.message);if(b)b.disabled=false;}
+}
+document.addEventListener('click',e=>{
   const b=e.target.closest('[data-flag]');if(!b)return;
-  b.disabled=true;
-  try{flagId=(await feedback({entry:Number(b.dataset.flag)})).id;$('noteText').value='';$('notePanel').hidden=false;$('noteText').focus();}
-  catch(err){flashError(err.message);b.disabled=false;}
+  if(!uploadOn){flagReply(b.dataset.flag);return;}
+  pendingFlag=b.dataset.flag;$('notePanel').hidden=true;$('uploadPanel').hidden=false;$('uploadCancel').focus();
 });
+$('uploadSend').onclick=()=>{$('uploadPanel').hidden=true;if(pendingFlag!==null)flagReply(pendingFlag);pendingFlag=null;};
+$('uploadCancel').onclick=()=>{$('uploadPanel').hidden=true;pendingFlag=null;};
 $('noteSave').onclick=async()=>{
   const note=$('noteText').value.trim();
   try{if(flagId&&note)await feedback({id:flagId,note});$('notePanel').hidden=true;flagId=null;}

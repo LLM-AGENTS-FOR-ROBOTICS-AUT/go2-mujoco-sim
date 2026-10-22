@@ -460,7 +460,9 @@ class Console:
                 "actions": {"current": executor["current"], "queued": executor["queue"],
                             "recent": executor["recent"]},
                 "conversation": {"id": self.conversation_id, "entries": conversation_entries(agent["transcript"], tasks)},
-                "camera": camera}
+                "camera": camera,
+                # flags leave this computer (Firebase): the page warns before sending one
+                "feedback": {"upload": self.uploader is not None}}
 
     def state(self):
         """The snapshot plus a revision number that goes up whenever anything in it changed."""

@@ -67,7 +67,10 @@ only, no Firebase copy), `--check`.
 - **Bad reply**: the small button after one of Go2's replies saves that turn in `feedback/` for the next
   training run, with an optional note on what Go2 should have done. Commit and push those files
   (`feedback/README.md`). A copy is also uploaded to the project's Firebase database
-  in the background, so it reaches training even before it's committed.
+  in the background, so it reaches training even before it's committed. Because of that, the page first
+  shows what will be sent (the whole conversation so far, where the robot was, and the note) and asks you
+  to check there's nothing private in it; nothing is saved or sent until you press **Send for training**.
+  With `--no-upload` (or `--mock`) flags stay on this computer and there's no warning.
 
 Each command gets a card: **Tool** is what the model called, **Safety** says whether it went ahead
 (or why not: blocked by an obstacle, outside the limits, waiting for your confirmation), **Robot** is

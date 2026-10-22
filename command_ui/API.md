@@ -102,7 +102,8 @@ A stop phrase ("stop", "halt", ...) always goes through, as does `/api/stop`.
   "recent": []
  },
  "conversation": {"id": 0, "entries": ["... see below"]},
- "camera": null
+ "camera": null,
+ "feedback": {"upload": true}
 }
 ```
 
@@ -122,6 +123,7 @@ A stop phrase ("stop", "halt", ...) always goes through, as does `/api/stop`.
 | `actions` | What the robot is doing (`current`), what's waiting (`queued`, in order) and the last 8 finished (`recent`): steps, described below |
 | `conversation` | `id` changes when the conversation is cleared (start a fresh log); `entries` are below |
 | `camera` | Set after Go2 has looked: see "Camera" |
+| `feedback.upload` | Flagged replies are also sent to the project's Firebase server, so **warn before flagging one** (see "Bad reply"). False with `--mock`, `--no-upload` or `GO2_FEEDBACK_UPLOAD=0`, or when the upload couldn't start: flags then stay on this computer. |
 
 ## Conversation entries
 
@@ -317,7 +319,12 @@ the user is talking is held until they pause, and dropped if what they said is a
 A reply entry with `flaggable: true` can be flagged: `POST /api/feedback {"entry": <its id>}` saves the turn
 behind it (the conversation before it, the message that started it, what Go2 did and where the robot was) as
 `feedback/<id>.json`, which is committed to the repository for the next fine-tuning run to redo (see
-`feedback/README.md`). The entry then has `flag` set. Ask what Go2 should have done and send it with the id:
+`feedback/README.md`). The entry then has `flag` set. Ask what Go2 should have done and send it with the id.
+
+When `feedback.upload` is true, each flag and its note are also uploaded to the project's Firebase server as
+soon as they're saved. The page shows what will leave the computer (the whole conversation so far, where the
+robot was, and the note) and asks the user to check there's nothing private in it, and only posts the flag
+after they confirm; a page built on this API should do the same.
 
 ```json
 POST /api/feedback {"entry": 7}                                -> 201 {"id": "20261018-111503-4be2c1", "path": "feedback/20261018-111503-4be2c1.json"}

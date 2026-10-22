@@ -98,10 +98,10 @@ class ConsoleTests(unittest.TestCase):
 class ApiTests(unittest.TestCase):
     """The richer API for a new page (command_ui/API.md)."""
 
-    def make(self, responses=(), **robot):
+    def make(self, responses=(), uploader=None, **robot):
         self.robot = FakeRobot(**robot)
         self.robot.connect()
-        self.console = server.Console(ScriptedModel(list(responses)), self.robot, {"scene": "test"})
+        self.console = server.Console(ScriptedModel(list(responses)), self.robot, {"scene": "test"}, uploader=uploader)
         self.client = server.make_app(self.console, 5050).test_client()
 
     def tearDown(self):
@@ -121,7 +121,9 @@ class ApiTests(unittest.TestCase):
     def test_state_describes_the_robot_the_model_and_the_conversation(self):
         self.make()
         state = self.get("/api/state")
-        self.assertEqual(set(state), {"revision", "robot", "model", "voice", "agent", "actions", "conversation", "camera"})
+        self.assertEqual(set(state), {"revision", "robot", "model", "voice", "agent", "actions", "conversation", "camera",
+                                      "feedback"})
+        self.assertEqual(state["feedback"], {"upload": False}, "no uploader: flags stay on this computer")
         robot = state["robot"]
         self.assertEqual((robot["kind"], robot["connected"], robot["requires_arming"], robot["armed"], robot["scene"]),
                          ("fake", True, False, False, "test"))
@@ -131,6 +133,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(state["conversation"], {"id": 0, "entries": []})
         self.assertIsNone(state["camera"])
         self.assertEqual(self.get("/api/state")["revision"], state["revision"], "nothing changed, same revision")
+
+    def test_state_says_when_flags_are_uploaded(self):
+        class Uploader:              # stands in for go2.feedback_upload.FeedbackUploader
+            def submit(self, flag_id):
+                pass
+
+            def close(self):
+                pass
+        self.make(uploader=Uploader())
+        self.assertEqual(self.get("/api/state")["feedback"], {"upload": True}, "the page warns before sending")
 
     def test_a_message_returns_at_once_and_its_steps_update_live(self):
         self.make([("Walking forward.", [("move", {"direction": "forward", "distance_m": 1})])])
