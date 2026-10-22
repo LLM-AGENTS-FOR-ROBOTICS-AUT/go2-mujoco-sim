@@ -1,0 +1,37 @@
+rules_version = '2';
+
+// Flagged replies from the command console (go2/feedback_upload.py, feedback/README.md).
+// Consoles sign in anonymously and may only create flags and update the note on flags they created.
+// Nobody can read or delete through the API; the project's owners read the flags in the Firebase console.
+// Everything not matched below is denied.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /bad_replies/{flagId} {
+      function fields() {
+        return ['id', 'created', 'model', 'prompt_style', 'kind', 'note', 'record', 'record_sha256', 'uid', 'updated'];
+      }
+
+      function valid(data) {
+        return data.keys().hasOnly(fields()) && data.keys().hasAll(fields())
+          && flagId.matches('[0-9]{8}-[0-9]{6}-[0-9a-f]{6}')
+          && data.id == flagId
+          && data.uid == request.auth.uid
+          && data.record is string && data.record.size() <= 900000
+          && data.record_sha256 is string && data.record_sha256.size() == 64
+          && data.note is string && data.note.size() <= 2000
+          && data.created is string && data.created.size() <= 40
+          && data.model is string && data.model.size() <= 200
+          && data.prompt_style is string && data.prompt_style.size() <= 50
+          && data.kind is string && data.kind.size() <= 50
+          && data.updated is timestamp;
+      }
+
+      allow create: if request.auth != null && valid(request.resource.data);
+      allow update: if request.auth != null
+        && resource.data.uid == request.auth.uid
+        && valid(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['note', 'record', 'record_sha256', 'updated']);
+      allow read, delete: if false;
+    }
+  }
+}

@@ -47,7 +47,8 @@ file), `--scene empty`, `--scene house` (a furnished house: hallway, living room
 and a bathroom, with the teddy bear in bedroom 2) and `--scene house --seed N` (a random house of 2–7
 rooms, the same for the same N). Houses have realistic chairs, plants, TVs, beds and stoves once setup has
 run `simulation/fetch_furniture.py`, and plain shapes without them. `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
-`--no-voice` (no speech recognition or spoken replies, saving memory), `--check`.
+`--no-voice` (no speech recognition or spoken replies, saving memory), `--no-upload` (keep flagged replies on
+this computer only, no Firebase copy), `--check`.
 
 ## Use
 
@@ -68,7 +69,8 @@ run `simulation/fetch_furniture.py`, and plain shapes without them. `--headless`
 - **Stop**: the red Stop button (or Esc) halts the robot at once, without waiting for the model.
 - **Bad reply**: the small button after one of Go2's replies saves that turn in `feedback/` for the next
   training run, with an optional note on what Go2 should have done. Commit and push those files
-  (`feedback/README.md`).
+  (`feedback/README.md`). A copy is also uploaded to the project's Firebase database
+  in the background, so it reaches training even before it's committed.
 
 Each command gets a card: **Tool** is what the model called, **Safety** says whether it went ahead
 (or why not: blocked by an obstacle, outside the limits, waiting for your confirmation), **Robot** is
