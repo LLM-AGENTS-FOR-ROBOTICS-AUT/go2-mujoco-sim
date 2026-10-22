@@ -43,9 +43,12 @@ The MuJoCo window opens with the Go2 in the room, then the page: <http://127.0.0
 window ends the console. The first command waits a few seconds while the model loads.
 
 Options: `--mock` (scripted replies, no language model: checks the page and robot without the model
-file), `--scene empty`, `--headless` (no MuJoCo window), `--port N`, `--no-browser`, `--no-voice` (no
-speech recognition or spoken replies, saving memory), `--no-upload` (keep flagged replies on this computer
-only, no Firebase copy), `--check`.
+file), `--scene empty`, `--scene house` (a furnished house: hallway, living room, kitchen, two bedrooms
+and a bathroom, with the teddy bear in bedroom 2) and `--scene house --seed N` (a random house of 2–7
+rooms, the same for the same N). Houses have realistic chairs, plants, TVs, beds and stoves once setup has
+run `simulation/fetch_furniture.py`, and plain shapes without them. `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
+`--no-voice` (no speech recognition or spoken replies, saving memory), `--no-upload` (keep flagged replies on
+this computer only, no Firebase copy), `--check`.
 
 ## Use
 
@@ -103,7 +106,7 @@ Use the name of the network interface cabled to the robot. Follow the safety rul
 | `../go2/executor.py` | Runs tool calls safely: clearance checks, queueing, stopping |
 | `../go2/llm.py` | The private Ollama process and tool-calling chat |
 | `../go2/adapters/` | The robot: `sim.py` (room simulation process) and `go2_sdk.py` (real Go2) |
-| `../simulation/` | The room: world, simulated robot (sport mode over the walking policy), LiDAR and camera |
+| `../simulation/` | The room: world, simulated robot (sport mode over the walking policy), LiDAR and camera; `house.py`: multi-room houses |
 | `../models/` | The model catalog and checksums (the weights themselves are shared separately) |
 
 ## Troubleshooting

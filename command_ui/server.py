@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import select
 import shutil
@@ -833,7 +834,11 @@ def connect_robot(args):
         from go2.adapters.go2_sdk import Go2Adapter
         adapter = Go2Adapter(args.robot)
     else:
-        adapter = SimAdapter(scene=args.scene, headless=args.headless)
+        world = None                                    # the demo house, for --scene house on its own
+        if args.scene == "house" and args.seed is not None:
+            from simulation.house import random_house
+            world = random_house(random.Random(args.seed))
+        adapter = SimAdapter(scene=args.scene, headless=args.headless, world=world)
     adapter.connect()
     return adapter
 
@@ -890,7 +895,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", choices=list(CATALOG["models"]), default=CATALOG["default"])
     parser.add_argument("--mock", action="store_true", help="scripted replies instead of the language model")
-    parser.add_argument("--scene", choices=["room", "empty"], default="room")
+    parser.add_argument("--scene", choices=["room", "empty", "house"], default="room",
+                        help="house: the multi-room demo house")
+    parser.add_argument("--seed", type=int, help="with --scene house: a random house from this seed instead")
     parser.add_argument("--headless", action="store_true", help="simulate without the MuJoCo window")
     parser.add_argument("--robot", metavar="INTERFACE", help="drive the real Go2 on this network interface")
     parser.add_argument("--arm", action="store_true", help="with --robot: allow the real robot to move")
@@ -903,6 +910,8 @@ def main():
     parser.add_argument("--check", action="store_true", help="check the simulator and model, then exit")
     parser.add_argument("--fetch-model", action="store_true", help="download the model now (once), then exit")
     args = parser.parse_args()
+    if args.seed is not None and args.scene != "house":
+        parser.error("--seed needs --scene house")
     if args.check:
         return check(args)
     if args.fetch_model:

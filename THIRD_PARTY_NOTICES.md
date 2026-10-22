@@ -44,8 +44,18 @@ the final walking setup.
   **CC-BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>), via
   <https://github.com/kevinzakka/mujoco_scanned_objects> (MJCF files MIT) at commit `6ff8d275`.
   `simulation/fetch_gso.py` downloads them into `_deps/gso`; the meshes are used unmodified.
+- The simulated houses' realistic chairs, potted plants, TV and stove come from **Poly Haven**
+  (<https://polyhaven.com>), **CC0 1.0** (public domain, no attribution required; credited here anyway):
+  `dining_chair_02`, `painted_wooden_chair_01`, `potted_plant_01`, `potted_plant_02`, `Television_01` and
+  `electric_stove`. Two models are **CC-BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>):
+  **"Couch" by StarStarbird** (<https://sketchfab.com/3d-models/couch-d90e4353ae7047e0b4f37abc8bc58468>)
+  and **"Stylized lowpoly bed" by tharadelamo**
+  (<https://sketchfab.com/3d-models/fc9cbf532b6045969b9f7eeac339afd2>), downloaded through Objaverse
+  (allenai/objaverse on Hugging Face, at a pinned commit) and converted to OBJ meshes.
+  `simulation/fetch_furniture.py` downloads them all (pinned by URL and MD5) into `_deps/furniture` and
+  converts them for MuJoCo.
 - Sensor mount positions for the simulated L1 LiDAR and front camera follow Unitree's `go2_description`
-  URDF (unitree_ros, BSD 3-Clause). The room itself is original.
+  URDF (unitree_ros, BSD 3-Clause). The room and the houses' layouts are original.
 - Speech recognition: OpenAI's Whisper large-v3-turbo weights (MIT), downloaded from Hugging Face on first
   use at pinned revisions: `mlx-community/whisper-large-v3-turbo` for mlx-whisper (MIT) on Apple Silicon,
   `dropbox-dash/faster-whisper-large-v3-turbo` for faster-whisper (MIT) elsewhere. The original page's

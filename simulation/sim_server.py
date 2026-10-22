@@ -236,8 +236,8 @@ def serve(server, token):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scene", choices=("room", "empty", "procedural"), default="room")
-    parser.add_argument("--world", help="JSON world description for --scene procedural")
+    parser.add_argument("--scene", choices=("room", "empty", "procedural", "house"), default="room")
+    parser.add_argument("--world", help="JSON world description for --scene procedural or house")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--status-file", required=True, help="JSON written when ready: port, pid, token")
     parser.add_argument("--seconds", type=float, default=0, help="exit after this long (tests)")

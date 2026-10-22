@@ -98,6 +98,9 @@ if ($Agent) {
     Write-Host "Downloading the household objects for the simulated room..."
     & $venvPython (Join-Path $root "simulation\fetch_gso.py")
     if ($LASTEXITCODE -ne 0) { throw "Could not download the room's objects." }
+    Write-Host "Downloading the furniture for the simulated houses (~50 MB)..."
+    & $venvPython (Join-Path $root "simulation\fetch_furniture.py")
+    if ($LASTEXITCODE -ne 0) { Write-Host "The furniture wasn't downloaded; the houses use plain shapes instead." }
     Write-Host "Downloading the language model (3.4 GB, once)..."
     & $venvPython (Join-Path $root "command_ui\server.py") --fetch-model
     if ($LASTEXITCODE -ne 0) { Write-Host "The model wasn't downloaded now; the console downloads it on its first start." }

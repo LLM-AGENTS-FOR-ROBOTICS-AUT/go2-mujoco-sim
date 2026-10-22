@@ -95,29 +95,35 @@ def _obj_zmin(path):
     return zmin or 0.
 
 
+def _add_scanned(spec, short, name, x, y, yaw):
+    """Add one Google Scanned Object as body `name`; False if its files aren't downloaded."""
+    folder = GSO_DIR / short
+    if not (folder / "model.obj").exists():
+        return False
+    texture = spec.add_texture()
+    texture.name, texture.file, texture.type = f"{short}_tex", str(folder / "texture.png"), mujoco.mjtTexture.mjTEXTURE_2D
+    material = spec.add_material()
+    material.name = f"{short}_mat"
+    material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
+    material.specular, material.shininess = .3, .3
+    mesh = spec.add_mesh()
+    mesh.name, mesh.file = f"{short}_mesh", str(folder / "model.obj")
+    body = spec.worldbody.add_body()
+    body.name = name
+    body.pos = (x, y, -_obj_zmin(folder / "model.obj") + .002)
+    body.quat = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
+    geom = body.add_geom()
+    geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, mesh.name, material.name
+    geom.group = 0   # world group: rendered, seen by the LiDAR, solid (convex hull) to the robot
+    return True
+
+
 def _add_scanned_objects(spec, objects):
     if not GSO_DIR.is_dir():
         return   # run simulation/fetch_gso.py to add them
     for short, label, x, y, yaw in GSO_PLACEMENT:
-        folder = GSO_DIR / short
-        if not (folder / "model.obj").exists():
-            continue
-        texture = spec.add_texture()
-        texture.name, texture.file, texture.type = f"{short}_tex", str(folder / "texture.png"), mujoco.mjtTexture.mjTEXTURE_2D
-        material = spec.add_material()
-        material.name = f"{short}_mat"
-        material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
-        material.specular, material.shininess = .3, .3
-        mesh = spec.add_mesh()
-        mesh.name, mesh.file = f"{short}_mesh", str(folder / "model.obj")
-        body = spec.worldbody.add_body()
-        body.name = short
-        body.pos = (x, y, -_obj_zmin(folder / "model.obj") + .002)
-        body.quat = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
-        geom = body.add_geom()
-        geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, mesh.name, material.name
-        geom.group = 0   # world group: rendered, seen by the LiDAR, solid (convex hull) to the robot
-        objects.append((short, WorldObject(short, label, "")))
+        if _add_scanned(spec, short, short, x, y, yaw):
+            objects.append((short, WorldObject(short, label, "")))
 
 
 GEOM_TYPES = {"sphere": mujoco.mjtGeom.mjGEOM_SPHERE, "box": mujoco.mjtGeom.mjGEOM_BOX,
@@ -131,9 +137,10 @@ def _size3(size):
 def build(scene: str = "room", world=None):
     """Return (model, objects) where objects maps body id -> WorldObject.
 
-    scene "procedural" builds the room and objects described by `world` (see random_world)."""
-    if scene not in ("room", "empty", "procedural"):
-        raise ValueError("scene must be 'room', 'empty' or 'procedural'")
+    scene "procedural" builds the room and objects described by `world` (see random_world); scene "house"
+    builds the multi-room house described by `world` (see house.py), or the demo house without one."""
+    if scene not in ("room", "empty", "procedural", "house"):
+        raise ValueError("scene must be 'room', 'empty', 'procedural' or 'house'")
     if scene == "procedural" and world is None:
         raise ValueError("procedural scenes need a world description")
     spec = mujoco.MjSpec.from_file(str(SCENE))
@@ -207,6 +214,9 @@ def build(scene: str = "room", world=None):
         _add_scanned_objects(spec, objects)
     if scene == "procedural":
         _add_procedural(spec, world, objects)
+    if scene == "house":
+        import house     # simulation/house.py, kept apart so the room scenes never change
+        house.build_house(spec, world if world is not None else house.house_demo(), objects)
     model = spec.compile()
     by_body = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name): item for name, item in objects}
     return model, by_body
