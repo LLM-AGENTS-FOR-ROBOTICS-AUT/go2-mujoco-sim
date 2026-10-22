@@ -264,6 +264,24 @@ class HouseMujocoTests(unittest.TestCase):
                       np.array([1, 1, 1, 0, 0, 0], np.uint8), 1, -1, hit)
         self.assertEqual(model.geom_bodyid[hit[0]], model.body("chair_1").id)
 
+    @unittest.skipUnless((ROOT / "_deps/gso/teddy_bear/model.obj").exists(),
+                         "scanned objects not downloaded (simulation/fetch_gso.py)")
+    def test_the_teddy_bear_stands_upright_on_the_floor(self):
+        import world
+        for scene in ("room", "house"):
+            with self.subTest(scene=scene):
+                model, objects = world.build(scene)
+                data = mujoco.MjData(model)
+                mujoco.mj_forward(model, data)
+                teddy = next(body for body, item in objects.items() if item.label == "teddy bear")
+                g = next(g for g in range(model.ngeom)
+                         if model.geom_bodyid[g] == teddy and model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH)
+                mesh = model.geom_dataid[g]
+                points = model.mesh_vert[model.mesh_vertadr[mesh]:model.mesh_vertadr[mesh] + model.mesh_vertnum[mesh]]
+                z = (data.geom_xpos[g] + points @ data.geom_xmat[g].reshape(3, 3).T)[:, 2]
+                self.assertAlmostEqual(z.min(), 0, delta=.01, msg="on the floor")
+                self.assertGreater(z.max(), .3, "standing up, not lying on its back (0.12 m tall)")
+
     def test_room_scenes_are_unchanged(self):
         import world
         _, objects = world.build("room")
