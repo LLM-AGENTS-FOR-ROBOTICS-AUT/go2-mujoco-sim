@@ -199,6 +199,11 @@ class ConsoleVoiceTests(unittest.TestCase):
     def test_the_page_gets_the_audio_made_while_the_model_wrote(self):
         self.make(WALK)
         self.post("/api/messages", {"text": "walk forward one metre", "voice": True})
+
+        def phrases():
+            return [i.get("text") for i in self.client.get("/api/speech?after=0", base_url=PAGE).get_json()["items"]]
+        # Like the page, ask for the phrase's audio once the phrase has reached it.
+        self.assertTrue(wait_for(lambda: "Walking forward one metre now!" in phrases(), 10))
         code, response = self.post("/api/tts", {"text": "Walking forward one metre now!"})
         self.assertEqual((code, response.mimetype), (200, "audio/wav"))
         self.assertEqual(response.data, b"RIFFWalking forward one metre now!")

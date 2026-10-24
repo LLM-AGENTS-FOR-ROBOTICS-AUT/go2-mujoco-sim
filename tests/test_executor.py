@@ -24,6 +24,8 @@ class ExecutorTests(unittest.TestCase):
             self.robot.close()
 
     def attach(self, **kwargs):
+        if self.robot:
+            self.robot.close()         # a test that attaches a second robot: tearDown only closes the last
         self.robot = FakeRobot(**kwargs)
         self.robot.connect()
         self.executor.attach(self.robot)
@@ -112,7 +114,7 @@ class ExecutorTests(unittest.TestCase):
         self.finished(4)
         done = self.executor.status_report()["done_so_far"]
         self.assertEqual(done["actions"], 4)
-        self.assertAlmostEqual(done["walked_m"], 1.5, delta=.3)        # 1 m, then blocked short of the box
+        self.assertAlmostEqual(done["walked_m"], 1.7, delta=.15)       # 1 m, then blocked about 0.7 m on
         self.assertAlmostEqual(done["turned_deg"], 180, delta=12)
         self.assertEqual(done["recent"][0], "move forward 1 m at 0.20 m/s: completed")
         self.assertTrue(done["recent"][-1].startswith("move forward 2 m at 0.40 m/s: blocked after"), done["recent"][-1])

@@ -330,9 +330,10 @@ def download_weights(spec, folder=None, progress=None, block=1 << 20):
     if part.stat().st_size != total:
         raise ModelError("The model download is incomplete; start again to resume it.")
     with part.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != spec["weights_sha256"]:
-            part.unlink()
-            raise ModelError("The downloaded model failed its checksum and was deleted; start again to retry.")
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if digest != spec["weights_sha256"]:
+        part.unlink()              # once closed: Windows can't delete a file that is still open
+        raise ModelError("The downloaded model failed its checksum and was deleted; start again to retry.")
     part.replace(target)
     return target.resolve()
 

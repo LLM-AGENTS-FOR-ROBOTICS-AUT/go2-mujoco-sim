@@ -17,7 +17,7 @@ except ImportError:
 
 from go2.executor import Executor  # noqa: E402
 from go2.tools import resolve  # noqa: E402
-from tests.fakes import wait_for  # noqa: E402
+from tests.fakes import needs_camera, wait_for  # noqa: E402
 
 
 @unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")
@@ -61,7 +61,7 @@ class SimulationTests(unittest.TestCase):
     def test_top_speed_move_reaches_four_metres(self):
         task = self.run_tool("move", {"direction": "forward", "distance_m": 4})   # 0.8 m/s, open path
         self.assertEqual(task.status, "completed")
-        self.assertAlmostEqual(task.detail["moved_m"], 4, delta=.12)
+        self.assertAlmostEqual(task.detail["moved_m"], 4, delta=.125)   # 12 cm either way, in whole centimetres
 
     def test_wall_stops_motion_without_contact(self):
         task = self.run_tool("move", {"direction": "backward", "distance_m": 2})   # west wall is ~1.4 m behind
@@ -83,6 +83,7 @@ class SimulationTests(unittest.TestCase):
         result = self.run_tool("acrobatic", {"name": "front_flip"})
         self.assertEqual(result["status"], "rejected")
 
+    @needs_camera
     def test_look_finds_the_red_ball(self):
         report = self.executor.look()
         balls = [o for o in report["objects"] if o["label"] == "sports ball" and o["color"] == "red"]
@@ -93,6 +94,7 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(balls[0]["distance_source"], "lidar")
         self.assertIsNotNone(report["free_space_m"]["front"])
 
+    @needs_camera
     def test_yolo_mode_detects_scanned_objects(self):
         try:
             import ultralytics  # noqa: F401
@@ -110,11 +112,13 @@ class SimulationTests(unittest.TestCase):
         self.assertTrue(labels & {"chair", "backpack", "dog", "bowl", "sports ball", "truck"}, labels)
         self.assertTrue(any(o["distance_m"] for o in report["objects"]))
 
+    @needs_camera
     def test_approach_stops_at_the_requested_gap(self):
         task = self.run_tool("approach", {"target": "red ball", "stop_distance_m": .5}, timeout=90)
         self.assertEqual(task.status, "completed", task.detail)
         self.assertAlmostEqual(task.detail["final_gap_m"], .5, delta=.2)
 
+    @needs_camera
     def test_approach_walks_toward_an_object_it_cannot_range_yet(self):
         looks = [0]
 
