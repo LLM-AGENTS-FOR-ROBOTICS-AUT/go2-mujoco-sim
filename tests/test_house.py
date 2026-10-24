@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "simulation"))
 
 import house  # noqa: E402  (plain Python: no simulator needed)
+from tests.fakes import needs_camera  # noqa: E402
 
 try:
     import mujoco  # noqa: F401
@@ -364,6 +365,7 @@ class HouseWalkingTests(unittest.TestCase):
                 self.assertEqual(house.room_at(self.demo, s.x, s.y), room)
                 self.assertIsNone(s.fault, "no collision or fall")
 
+    @needs_camera
     def test_yolo_mode_detects_objects_in_the_house(self):
         try:
             import ultralytics  # noqa: F401
@@ -387,6 +389,7 @@ class HouseWalkingTests(unittest.TestCase):
         finally:
             self.sim.detector = "truth"
 
+    @needs_camera
     def test_look_sees_furniture_through_the_doorways(self):
         report = self.executor.look()
         labels = {o["label"] for o in report["objects"]}

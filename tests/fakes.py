@@ -1,7 +1,11 @@
-"""Test doubles: a kinematic robot with box obstacles, and a scripted chat model."""
+"""Test doubles: a kinematic robot with box obstacles, and a scripted chat model; and a check that skips camera
+tests where MuJoCo can't render."""
 from __future__ import annotations
 
+import functools
 import math
+import subprocess
+import sys
 import threading
 import time
 
@@ -189,3 +193,32 @@ def wait_for(predicate, timeout=10.0, interval=.02):
             return True
         time.sleep(interval)
     return False
+
+
+RENDER_PROBE = ("import mujoco; r = mujoco.Renderer(mujoco.MjModel.from_xml_string('<mujoco/>'), 16, 16); "
+                "r.render(); r.close()")
+
+
+@functools.cache
+def render_problem():
+    """Why MuJoCo can't render offscreen on this machine, or None. GitHub's hosted runners have no GPU, so the
+    simulated camera can't render there. Checked in a separate process, like the simulator's own rendering."""
+    try:
+        done = subprocess.run([sys.executable, "-c", RENDER_PROBE], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"MuJoCo can't render offscreen here ({error})"
+    if done.returncode:
+        lines = done.stderr.strip().splitlines() or [f"exit code {done.returncode}"]
+        return f"MuJoCo can't render offscreen here ({lines[-1]})"
+    return None
+
+
+def needs_camera(test):
+    """Skip a test that uses the simulated camera where MuJoCo can't render, instead of failing it."""
+    @functools.wraps(test)
+    def run(self, *args, **kwargs):
+        problem = render_problem()
+        if problem:
+            self.skipTest(problem)
+        return test(self, *args, **kwargs)
+    return run
