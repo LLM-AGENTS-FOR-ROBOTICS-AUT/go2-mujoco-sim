@@ -18,6 +18,8 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from .object_memory import ObjectMemory
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -93,7 +95,7 @@ class Task:
 
 
 class Executor:
-    def __init__(self, on_event=None):
+    def __init__(self, on_event=None, memory_path=None):
         self.adapter = None
         self.on_event = on_event or (lambda task: None)
         self.lock = threading.RLock()
@@ -110,6 +112,7 @@ class Executor:
         self.start_pose = None
         self.cloud = P.CloudBuffer()
         self.last_detections = []
+        self.object_memory = ObjectMemory(memory_path)
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
         self._next_id = 0
         self.detection_filter = None  # optional f(detections) -> detections (training-data noise)
@@ -398,6 +401,9 @@ class Executor:
         except AdapterError as error:
             result["camera_error"] = str(error)
         result["note"] = "objects come from the front camera (about 120° wide); free_space_m is the free distance from the body on each side, 'clear' meaning nothing within 5 m"
+        result["remembered_objects"] = [
+            dict(item) for item in self.object_memory.objects
+        ]
         return result
 
     # ---- worker ----------------------------------------------------------------------
@@ -739,10 +745,22 @@ class Executor:
         for d in detections:
             if d.x_m is None:
                 continue
+
             wx, wy = pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m
             kept = [m for m in kept if not (m[0].label == d.label and math.hypot(m[1] - wx, m[2] - wy) < .6)]
             kept.append((d, wx, wy, now))
+
+            self.object_memory.remember(
+                label=d.label,
+                x=wx,
+                y=wy,
+                color=d.color,
+                confidence=d.confidence,
+            )
+            
         self.memory = kept[-60:]
+
+        
 
     @staticmethod
     def _score(det, words):
@@ -818,19 +836,81 @@ class Executor:
                 best, best_key = (det, pose), key
         return best, closest
 
+
+
     def _recall(self, target):
-        """A recently seen object that fits the words, by its remembered position in the room."""
-        now = time.monotonic()
-        for d, wx, wy, t in reversed(self.memory):
-            if d.id == target and now - t <= MEMORY_S:
-                return d, wx, wy
+        """Recall an object from persistent memory first,
+        then fall back to recent in-memory detections.
+        """
         words = self._words(target)
-        candidates = [(self._score(d, words), -abs(now - t), d, wx, wy) for d, wx, wy, t in self.memory if now - t <= MEMORY_S]
-        candidates = [c for c in candidates if c[0][0] and not c[0][1]]
+        candidates = self.object_memory.recall(target)
+
+        if candidates:
+            best = None
+            best_score = -1
+
+            for item in candidates:
+                from types import SimpleNamespace
+
+                det = SimpleNamespace(
+                    id=item.get("id", item.get("label", "")),
+                    label=item.get("label", ""),
+                    color=item.get("color"),
+                )
+
+                score, mismatch = self._score(det, words)
+
+                if score and not mismatch and score > best_score:
+                    best = item
+                    best_score = score
+
+            if best is not None:
+                return (
+                    SimpleNamespace(
+                        id=best.get("id", best.get("label", "")),
+                        label=best.get("label", ""),
+                        color=best.get("color"),
+                    ),
+                    best["x"],
+                    best["y"],
+                )
+
+        # Fall back to the original short-term memory.
+        now = time.monotonic()
+
+        for det, wx, wy, timestamp in reversed(self.memory):
+            if det.id == target and now - timestamp <= MEMORY_S:
+                return det, wx, wy
+
+        candidates = [
+            (
+                self._score(det, words),
+                -abs(now - timestamp),
+                det,
+                wx,
+                wy,
+            )
+            for det, wx, wy, timestamp in self.memory
+            if now - timestamp <= MEMORY_S
+        ]
+
+        candidates = [
+            item for item in candidates
+            if item[0][0] and not item[0][1]
+        ]
+
         if not candidates:
             return None
-        _, _, det, wx, wy = max(candidates, key=lambda c: (c[0][0], c[1]))
+
+        _, _, det, wx, wy = max(
+            candidates,
+            key=lambda item: (item[0][0], item[1]),
+        )
         return det, wx, wy
+
+
+            
+
 
     def _turn_by(self, task, cancel, angle):
         rate = L.default_turn_rate(abs(angle))
