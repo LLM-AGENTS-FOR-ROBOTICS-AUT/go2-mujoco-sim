@@ -1,7 +1,10 @@
 name: Viewer setup
 
 on:
+  # Other branches are checked through their pull request, so a push to one runs this once, not twice.
+  # A branch without a pull request can still be run from the Actions tab.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
