@@ -18,6 +18,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from .object_memory import ObjectMemory
 
 import numpy as np
 
@@ -93,7 +94,7 @@ class Task:
 
 
 class Executor:
-    def __init__(self, on_event=None):
+    def __init__(self, on_event=None, memory_path=None):
         self.adapter = None
         self.on_event = on_event or (lambda task: None)
         self.lock = threading.RLock()
@@ -110,6 +111,7 @@ class Executor:
         self.start_pose = None
         self.cloud = P.CloudBuffer()
         self.last_detections = []
+        self.object_memory = ObjectMemory(memory_path)
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
         self._next_id = 0
         self.detection_filter = None  # optional f(detections) -> detections (training-data noise)
@@ -739,10 +741,22 @@ class Executor:
         for d in detections:
             if d.x_m is None:
                 continue
+
             wx, wy = pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m
             kept = [m for m in kept if not (m[0].label == d.label and math.hypot(m[1] - wx, m[2] - wy) < .6)]
             kept.append((d, wx, wy, now))
+
+            self.object_memory.remember(
+                label=d.label,
+                x=wx,
+                y=wy,
+                color=d.color,
+                confidence=d.confidence,
+            )
+            
         self.memory = kept[-60:]
+
+        
 
     @staticmethod
     def _score(det, words):
