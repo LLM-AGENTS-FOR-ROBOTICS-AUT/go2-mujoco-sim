@@ -2,6 +2,7 @@
 """Persistent storage for objects remembered by the Go2 robot."""
 
 import json
+import time
 from pathlib import Path
 
 
@@ -53,12 +54,15 @@ class ObjectMemory:
 
     def remember(self, label, x, y, color=None, confidence=1.0):
         """Add or update an object's remembered position."""
+
         item = {
             "label": str(label),
             "x": float(x),
             "y": float(y),
             "color": color,
             "confidence": float(confidence),
+            "last_seen": time.time(),
+            "times_seen": 1,
         }
 
         for index, old in enumerate(self.objects):
@@ -66,6 +70,8 @@ class ObjectMemory:
                 old.get("label") == item["label"]
                 and old.get("color") == item["color"]
             ):
+                item["last_seen"] = time.time()
+                item["times_seen"] = old.get("times_seen", 1) + 1
                 self.objects[index] = item
                 self.save()
                 return

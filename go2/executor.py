@@ -401,6 +401,9 @@ class Executor:
         except AdapterError as error:
             result["camera_error"] = str(error)
         result["note"] = "objects come from the front camera (about 120° wide); free_space_m is the free distance from the body on each side, 'clear' meaning nothing within 5 m"
+        result["remembered_objects"] = [
+            dict(item) for item in self.object_memory.objects
+        ]
         return result
 
     # ---- worker ----------------------------------------------------------------------
