@@ -11,7 +11,8 @@ from go2.adapters.base import AdapterError, RobotAdapter, RobotState
 
 
 class FakeRobot(RobotAdapter):
-    """Integrates commanded body velocities at 100 Hz with acceleration limits and a 0.5 s dead-man."""
+    """Integrates commanded body velocities about 100 times a second, over the time that actually passed, with
+    acceleration limits and a 0.5 s dead-man."""
     kind, label = "fake", "Fake robot"
 
     def __init__(self, obstacles=(), requires_arming=False, unsupported=(), posture="standing", height=.3,
@@ -47,8 +48,10 @@ class FakeRobot(RobotAdapter):
         return self._connected
 
     def _loop(self):
-        dt = .01
-        while not self._closed.wait(dt):
+        last = time.monotonic()
+        while not self._closed.wait(.01):
+            now = time.monotonic()
+            dt, last = min(now - last, .1), now   # the time that really passed: a busy machine wakes this late
             with self.lock:
                 if self.last_move is not None and time.monotonic() - self.last_move > .5:
                     self.cmd[:] = 0

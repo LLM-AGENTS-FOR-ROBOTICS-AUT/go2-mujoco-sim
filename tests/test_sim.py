@@ -61,7 +61,7 @@ class SimulationTests(unittest.TestCase):
     def test_top_speed_move_reaches_four_metres(self):
         task = self.run_tool("move", {"direction": "forward", "distance_m": 4})   # 0.8 m/s, open path
         self.assertEqual(task.status, "completed")
-        self.assertAlmostEqual(task.detail["moved_m"], 4, delta=.12)
+        self.assertAlmostEqual(task.detail["moved_m"], 4, delta=.125)   # 12 cm either way, in whole centimetres
 
     def test_wall_stops_motion_without_contact(self):
         task = self.run_tool("move", {"direction": "backward", "distance_m": 2})   # west wall is ~1.4 m behind
