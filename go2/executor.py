@@ -843,7 +843,7 @@ class Executor:
         then fall back to recent in-memory detections.
         """
         words = self._words(target)
-        candidates = self.object_memory.recall(target)
+        candidates = self.object_memory.objects
 
         if candidates:
             best = None

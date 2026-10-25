@@ -91,7 +91,10 @@ class Console:
         self.feedback = Path(feedback)
         self.uploader = uploader                # a copy of each flag in Firebase (go2/feedback_upload.py), or None
         self.robot_info = robot_info or {}       # {"scene": "room"} or {"interface": "en7"}, shown in the state
-        self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task))
+        self.executor = Executor(
+            on_event=lambda task: self.agent.on_task_event(task),
+            memory_path=ROOT / "runtime" / "object_memory.json",
+        )
         self.agent = Agent(model, self.executor)
         self.agent.robot_line = lambda: robot_state_line(self.adapter, self.executor)
         self.agent.robot_snapshot = self._robot_snapshot

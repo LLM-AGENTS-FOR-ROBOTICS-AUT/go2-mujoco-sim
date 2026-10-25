@@ -10,16 +10,18 @@ class ObjectMemory:
     """Save and load remembered object positions using a JSON file."""
 
     def __init__(self, path=None):
-        if path is None:
-            path = Path(__file__).resolve().parent / "object_memory.json"
-
-        self.path = Path(path)
+        self.path = Path(path) if path is not None else None
         self.objects = []
 
-        self.load()
+        if self.path is not None:
+            self.load()
 
     def load(self):
         """Load saved objects, or start empty if no save exists."""
+        if self.path is None:
+            self.objects = []
+            return
+
         if not self.path.exists():
             self.objects = []
             return
@@ -41,6 +43,9 @@ class ObjectMemory:
 
     def save(self):
         """Write remembered objects to disk."""
+        if self.path is None:
+            return
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         temporary_path = self.path.with_suffix(
@@ -66,10 +71,14 @@ class ObjectMemory:
         }
 
         for index, old in enumerate(self.objects):
-            if (
-                old.get("label") == item["label"]
-                and old.get("color") == item["color"]
-            ):
+            same_label = old.get("label") == item["label"]
+            same_color = old.get("color") == item["color"]
+
+            dx = old.get("x", 0.0) - item["x"]
+            dy = old.get("y", 0.0) - item["y"]
+            distance = (dx ** 2 + dy ** 2) ** 0.5
+
+            if same_label and same_color and distance < 0.6:
                 item["last_seen"] = time.time()
                 item["times_seen"] = old.get("times_seen", 1) + 1
                 self.objects[index] = item
