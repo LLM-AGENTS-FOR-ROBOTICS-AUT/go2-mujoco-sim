@@ -212,6 +212,15 @@ class SimAdapter(RobotAdapter):
                            camera_pos=np.array(result["camera_pos"]), camera_rot=np.array(result["camera_rot"]),
                            state=self._state(result["state"]))
 
+    def walker(self, name, path=None, speed=.5, loop=False):
+        """Simulation only (tests, demos): walk a person ("walker_red" / "walker_blue") along path [[x, y], ...]
+        in world metres at `speed` m/s, or park them out of sight with no path."""
+        return self._rpc("walker", timeout=3.0, name=name, path=path, speed=speed, loop=loop)
+
+    def walkers(self):
+        """Where each walking person is, [x, y] in world metres (None while parked)."""
+        return self._rpc("walkers")
+
     def reset(self, x=None, y=None, yaw=None):
         pose = {} if x is None else {"x": x, "y": y or 0., "yaw": yaw or 0.}
         self._rpc("reset", timeout=3.0, **pose)

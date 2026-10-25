@@ -26,7 +26,8 @@ import numpy as np  # noqa: E402
 
 from robot import SimGo2  # noqa: E402
 from sensors import Camera, Lidar, camera_pose_in_base  # noqa: E402
-from world import CAMERA_HEIGHT, CAMERA_WIDTH  # noqa: E402
+from world import CAMERA_HEIGHT, CAMERA_WIDTH, WALKER_PARK, WALKERS  # noqa: E402
+import mujoco  # noqa: E402
 
 DEADMAN_S = .5
 SPORT = {  # RPC sport name -> SimGo2 call
@@ -39,9 +40,54 @@ SPORT = {  # RPC sport name -> SimGo2 call
 }
 
 
+class Walker:
+    """A person (world.WALKERS) walking a polyline at a steady speed, or parked out of sight under the floor."""
+
+    def __init__(self, sim, name, index):
+        body = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_BODY, name)
+        self.mocap = int(sim.model.body_mocapid[body])
+        self.park = np.array(WALKER_PARK) + (2. * index, 0., 0.)
+        self.path = None
+
+    def walk(self, data, path, speed, loop):
+        self.path = np.asarray(path, dtype=float).reshape(-1, 2)
+        if len(self.path) < 1 or not np.isfinite(self.path).all():
+            raise ValueError("path needs at least one [x, y] point")
+        self.speed, self.loop, self.s = max(0., float(speed)), bool(loop), 0.
+        if self.loop and len(self.path) > 1:
+            self.path = np.vstack([self.path, self.path[:1]])
+        self.step(data, 0.)
+
+    def hide(self, data):
+        self.path = None
+        data.mocap_pos[self.mocap] = self.park
+
+    def step(self, data, dt):
+        if self.path is None:
+            return
+        legs = np.diff(self.path, axis=0)
+        lengths = np.hypot(legs[:, 0], legs[:, 1])
+        total = float(lengths.sum())
+        self.s += self.speed * dt
+        if total < 1e-6:
+            x, y, heading = *self.path[0], 0.
+        else:
+            s = self.s % total if self.loop else min(self.s, total)
+            i = min(int(np.searchsorted(np.cumsum(lengths), s, side="right")), len(legs) - 1)
+            into = s - (np.cumsum(lengths)[i] - lengths[i])
+            x, y = self.path[i] + legs[i] * (into / max(lengths[i], 1e-9))
+            heading = float(np.arctan2(legs[i][1], legs[i][0]))
+        data.mocap_pos[self.mocap] = (x, y, 0.)
+        data.mocap_quat[self.mocap] = (np.cos(heading / 2), 0., 0., np.sin(heading / 2))
+
+    def where(self, data):
+        return None if self.path is None else [round(float(v), 3) for v in data.mocap_pos[self.mocap][:2]]
+
+
 class Server:
     def __init__(self, scene, headless, world_spec=None):
         self.sim = SimGo2(scene, world_spec)
+        self.walkers = {name: Walker(self.sim, name, i) for i, (name, _) in enumerate(WALKERS)}
         self.headless = headless
         self.lidar = Lidar(self.sim.model)
         self.cameras = {}   # resolution -> Camera; GL contexts are thread-bound: only the render thread touches them
@@ -81,9 +127,24 @@ class Server:
                     "count": len(points), "frame": "base", "state": state}
         if name == "camera":
             return self.capture(args.get("full", False))
+        if name == "walkers":
+            with sim.lock:
+                return {n: w.where(sim.data) for n, w in self.walkers.items()}
+        if name == "walker":
+            walker = self.walkers.get(args.get("name"))
+            if walker is None:
+                return {"ok": False, "error": f"no walker {args.get('name')!r}; there are {sorted(self.walkers)}"}
+            with sim.lock:
+                if args.get("path") is None:
+                    walker.hide(sim.data)
+                else:
+                    walker.walk(sim.data, args["path"], args.get("speed", .5), args.get("loop", False))
+                return {"ok": True, "at": walker.where(sim.data)}
         if name == "reset":
             with sim.lock:
                 self.last_move = None
+                for walker in self.walkers.values():
+                    walker.path = None          # mj_resetData parks them again
                 if "x" in args:
                     sim.reset((float(args["x"]), float(args.get("y", 0.)), float(args.get("yaw", 0.))))
                 else:
@@ -145,6 +206,8 @@ class Server:
             if self.last_move is not None and time.monotonic() - self.last_move > DEADMAN_S:
                 self.sim.StopMove()
                 self.last_move = None
+            for walker in self.walkers.values():
+                walker.step(self.sim.data, self.sim.period)
             self.sim.step()
 
     def run(self, ready):

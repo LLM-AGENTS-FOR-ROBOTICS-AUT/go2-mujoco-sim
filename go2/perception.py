@@ -43,9 +43,15 @@ class Detection:
     y_m: float | None
     distance_source: str        # "lidar", "ground_plane" or "unknown"
     confidence: float
+    # Internal only (not shown to the model, whose look results stay as trained): a person's shirt colour, used
+    # to tell people apart while following, and where the object is in the image as [left, top, right, bottom].
+    clothing: str | None = None
+    box: list | None = None
 
     def public(self):
         value = asdict(self)
+        value.pop("clothing")
+        value.pop("box")
         for key in ("distance_m", "x_m", "y_m"):
             if value[key] is not None:
                 value[key] = round(value[key], 2)
@@ -312,10 +318,18 @@ def fuse(masks, rgb, cloud_base, intrinsics, camera_pos, camera_rot, roll, pitch
                 if math.hypot(gx, gy) <= GROUND_PLANE_MAX_M:
                     x, y, distance, source = gx, gy, math.hypot(gx, gy), "ground_plane"
                 bearing = math.degrees(math.atan2(gy, gx))
+        clothing = None
+        if item.label == "person":
+            top, bottom = rows.min(), rows.max()
+            torso = (rows >= top + .2 * (bottom - top)) & (rows <= top + .55 * (bottom - top))
+            clothing = color_name(rgb[rows[torso], cols[torso]])
+        h, w = item.mask.shape
+        box = [round(cols.min() / w, 4), round(rows.min() / h, 4), round((cols.max() + 1) / w, 4),
+               round((rows.max() + 1) / h, 4)]
         detections.append(Detection(
             id=f"obj{n + 1}", label=item.label, color=None if item.label in NO_COLOR else color_name(rgb[item.mask]),
             distance_m=distance, bearing_deg=bearing, x_m=x, y_m=y, distance_source=source,
-            confidence=float(item.score)))
+            confidence=float(item.score), clothing=clothing, box=box))
     return sorted(detections, key=lambda d: (d.distance_m is None, d.distance_m or 0))
 
 

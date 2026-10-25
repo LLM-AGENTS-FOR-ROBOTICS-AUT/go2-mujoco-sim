@@ -73,6 +73,7 @@
   .cambox{position:relative;width:100%;border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-top:8px;}
   .cambox img{display:block;width:100%;}
   .cambox .bx{position:absolute;border:1.5px solid var(--teal);border-radius:3px;}
+  .cambox .bx.tracked{border:2.5px solid #f5a524;}.cambox .bx.tracked span{background:#f5a524;}
   .cambox .bx span{position:absolute;top:-16px;left:0;font-size:10px;background:var(--teal);color:#06231d;padding:0 4px;border-radius:3px;white-space:nowrap;}
   .btns{display:flex;flex-direction:column;gap:8px;}
   .btns button{border-radius:9px;padding:11px;font-size:15px;font-weight:600;cursor:pointer;border:1px solid;display:flex;align-items:center;justify-content:center;gap:8px;}
@@ -205,7 +206,8 @@ function renderSide(s){
   $('modelLabel').textContent=ml;
   // actions
   const a=s.actions||{};
-  $('aCurrent').textContent=a.current?a.current.summary:'—';
+  const fol=a.current&&a.current.following;
+  $('aCurrent').textContent=fol?(`Following: ${fol.target} at ${fol.set_m} m`+(fol.gap_m!=null?` (now ${fol.gap_m} m)`:'')+(fol.state!=='following'?` — ${fol.state}`:'')):(a.current?a.current.summary:'—');
   $('aQueued').textContent=(a.queued&&a.queued.length)?('Next: '+a.queued.map(q=>q.summary).join('; ')):'';
   // camera
   if(s.camera&&s.camera.url){renderCamera(s.camera);$('cameraCard').hidden=false;} else $('cameraCard').hidden=true;
@@ -218,7 +220,7 @@ function renderCamera(cam){
   let html=`<img src="${esc(cam.url)}" alt="Camera view from Go2">`;
   for(const b of (cam.boxes||[])){
     const[l,t,rr,bb]=b.box;
-    html+=`<div class="bx" style="left:${(l*100).toFixed(1)}%;top:${(t*100).toFixed(1)}%;width:${((rr-l)*100).toFixed(1)}%;height:${((bb-t)*100).toFixed(1)}%"><span>${esc(b.label)}</span></div>`;
+    html+=`<div class="bx${b.tracked?' tracked':''}" style="left:${(l*100).toFixed(1)}%;top:${(t*100).toFixed(1)}%;width:${((rr-l)*100).toFixed(1)}%;height:${((bb-t)*100).toFixed(1)}%"><span>${esc(b.label)}</span></div>`;
   }
   box.innerHTML=html;
 }

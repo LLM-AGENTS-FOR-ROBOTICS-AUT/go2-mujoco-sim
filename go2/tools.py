@@ -7,6 +7,7 @@ it can correct itself or explain the problem to the user.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 
 from . import limits as L
@@ -37,7 +38,7 @@ class ToolError(ValueError):
 
 @dataclass
 class Command:
-    kind: str                    # velocity | sport | wait | goto | approach | stop | look | status
+    kind: str                    # velocity | sport | wait | goto | approach | follow | stop | look | status
     tool: str
     args: dict
     params: dict = field(default_factory=dict)
@@ -75,6 +76,13 @@ TOOLS = [
     _fn("approach", "Walk up to an object your camera can see, named like 'red ball' or by its id from look. "
         "Stops stop_distance_m in front of it (default 0.5 m; 0.3 m is as close as you can safely get).",
         {"target": {"type": "string"}, "stop_distance_m": {"type": "number", "description": "0.3 to 3 m"}}, ["target"]),
+    _fn("follow", "Follow a person you can see, keeping distance_m between you and them (default 1.2 m, 0.8 to "
+        "3). target is who: 'me' or 'the person' for the nearest person, or by clothing like 'the person in "
+        "red'. It ends by itself after duration_s (default 60, at most 120), when you lose sight of them, or "
+        "on stop. You only follow people, never objects, and never switch to someone else.",
+        {"target": {"type": "string", "description": "default 'me'"},
+         "distance_m": {"type": "number", "description": "0.8 to 3 m"},
+         "duration_s": {"type": "number", "description": "seconds, up to 120"}}),
     _fn("look", "See what is around you: objects in front of you with distance and direction, plus the free "
         "space on every side. To check behind or beside you, turn and look again."),
     _fn("posture", "Change posture. stand = balanced and ready to walk; stand_up = stiff locked stand; "
@@ -102,9 +110,12 @@ TOOLS = [
         "have done."),
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+# Tools the fine-tuned models haven't been trained on yet (#16). They are left out of the compact prompt so it
+# stays exactly as trained; use --mock or a full-prompt model (e.g. go2-ft-04@full) to try them.
+UNTRAINED = {"follow"}
 # Fine-tuned models know the tools by heart: declare names only (~270 prompt tokens instead of ~1,450).
 COMPACT_TOOLS = [{"type": "function", "function": {"name": t["function"]["name"], "parameters": {"type": "object", "properties": {}}}}
-                 for t in TOOLS]
+                 for t in TOOLS if t["function"]["name"] not in UNTRAINED]
 
 
 def _number(args, key, low, high, unit, *, required=False):
@@ -302,6 +313,39 @@ def _approach(args):
                     summary=f"approach the {target.strip()}")]
 
 
+PEOPLE = {"me", "person", "people", "man", "woman", "guy", "girl", "boy", "lady", "kid", "child", "him", "her",
+          "them", "someone", "somebody", "user", "owner", "human"}
+CLOTHES = {"in", "with", "wearing", "shirt", "tshirt", "t", "top", "jumper", "hoodie", "jacket", "sweater", "coat",
+           "dress", "clothes", "the", "a", "an", "that", "this", "one", "over", "there", "nearest", "closest"}
+COLOURS = {"red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown", "white", "grey", "gray",
+           "black"}
+
+
+def _follow(args):
+    _exact("follow", args, ("target", "distance_m", "duration_s"))
+    target = args.get("target")
+    if target is None or (isinstance(target, str) and not target.strip()):
+        target = "me"
+    if not isinstance(target, str):
+        raise ToolError("target must say who to follow, e.g. 'me' or 'the person in red'")
+    words = re.findall(r"[a-z]+", target.lower())
+    colours = [w for w in words if w in COLOURS]
+    other = [w for w in words if w not in PEOPLE and w not in CLOTHES and w not in COLOURS]
+    if other or len(set(colours)) > 1:
+        raise ToolError(f"follow only follows people ('me', 'the person in red'), not {target!r}; "
+                        "to walk up to an object use approach")
+    lo, hi = L.FOLLOW_DISTANCE_M
+    distance = _number(args, "distance_m", lo, hi, "m")
+    distance = L.DEFAULT_FOLLOW_DISTANCE_M if distance is None else distance
+    duration = _number(args, "duration_s", 1, L.MAX_FOLLOW_S, "s")
+    duration = L.DEFAULT_FOLLOW_S if duration is None else duration
+    colour = {"gray": "grey"}.get(colours[0], colours[0]) if colours else None
+    who = "you" if words in ([], ["me"]) else target.strip()
+    return [Command("follow", "follow", args, {"target": target.strip(), "color": colour, "distance": distance,
+                                               "duration": duration},
+                    summary=f"follow {who} at {distance:g} m for up to {duration:g} s")]
+
+
 def _posture(args):
     _exact("posture", args, ("name",))
     name = _choice(args, "name", list(POSTURES), required=True)
@@ -370,7 +414,8 @@ def _simple(kind):
     return build
 
 
-RESOLVERS = {"move": _move, "turn": _turn, "go_to": _go_to, "approach": _approach, "posture": _posture,
+RESOLVERS = {"move": _move, "turn": _turn, "go_to": _go_to, "approach": _approach, "follow": _follow,
+             "posture": _posture,
              "trick": _trick, "acrobatic": _acrobatic, "body": _body, "wait": _wait,
              "stop": _simple("stop"), "look": _simple("look"), "get_status": _simple("get_status")}
 

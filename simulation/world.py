@@ -63,6 +63,24 @@ def _person(shirt, skin):
             ("box", (.12, .2, .3), (0, 0, 1.15), shirt), ("sphere", (.11,), (0, 0, 1.6), skin)]
 
 
+# People who can walk (#15, follow-me): mocap bodies parked under the floor until sim_server's walker op gives
+# them a path. Listed as "person" for the camera, like the standing person in the room.
+WALKERS = [("walker_red", "red"), ("walker_blue", "blue")]
+WALKER_PARK = (0., 0., -5.)
+
+
+def _add_walkers(spec, objects):
+    shirts = {"red": RED, "blue": BLUE}
+    for i, (name, colour) in enumerate(WALKERS):
+        body = spec.worldbody.add_body()
+        body.name, body.mocap = name, True
+        body.pos = (WALKER_PARK[0] + 2 * i, WALKER_PARK[1], WALKER_PARK[2])
+        for kind, size, pos, rgba in _person(shirts[colour], SKIN):
+            geom = body.add_geom()
+            geom.type, geom.size, geom.pos, geom.rgba = GEOM_TYPES[kind], _size3(size), pos, rgba
+        objects.append((name, WorldObject(name, "person", colour)))
+
+
 ROOM_OBJECTS = [
     (WorldObject("ball_red", "sports ball", "red"), (0.6, 1.3), 0, [("sphere", (.12,), (0, 0, .12), RED)]),
     (WorldObject("ball_blue", "sports ball", "blue"), (-0.8, -2.6), 0, [("sphere", (.12,), (0, 0, .12), BLUE)]),
@@ -231,6 +249,8 @@ def build(scene: str = "room", world=None):
     if scene == "hazards":
         import hazards   # simulation/hazards.py: platform, ledge, stairs down and a glass pane (#22)
         hazards.build_hazards(spec, objects, WorldObject)
+    if scene in ("room", "empty"):
+        _add_walkers(spec, objects)   # not in houses or the procedural training rooms, which stay as they were
     model = spec.compile()
     by_body = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name): item for name, item in objects}
     return model, by_body
