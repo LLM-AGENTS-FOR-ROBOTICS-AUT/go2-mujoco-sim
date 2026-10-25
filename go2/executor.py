@@ -25,6 +25,7 @@ import numpy as np
 
 from . import limits as L
 from . import perception as P
+from .room_map import OccupancyGrid
 from .adapters.base import AdapterError, LOW_POSTURES
 from .tools import Command
 
@@ -111,6 +112,7 @@ class Executor:
         self.armed = False
         self.start_pose = None
         self.cloud = P.CloudBuffer()
+        self.room_map = OccupancyGrid()
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
@@ -362,6 +364,17 @@ class Executor:
         points, state = self.adapter.lidar()
         level = P.base_to_level(points, state.roll, state.pitch)
         self.cloud.add(state.stamp, level, (state.x, state.y, state.yaw), state.height)
+
+        floor_cloud = self.cloud.level((state.x, state.y, state.yaw))
+        if len(floor_cloud):
+            obstacle_points = P.obstacles(floor_cloud)
+            if len(obstacle_points):
+                world_points = P.level_to_odom(
+                    obstacle_points,
+                    (state.x, state.y, state.yaw),
+                )
+                self.room_map.mark_obstacles(obstacle_points[:, :2])
+
         return state
 
     def look(self):
