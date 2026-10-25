@@ -79,5 +79,14 @@ class ObjectMemoryTests(unittest.TestCase):
         self.assertEqual(result[2], 2.0)
 
 
+    def test_save_false_delays_disk_write(self):
+        memory = ObjectMemory(self.memory_path)
+
+        memory.remember("chair", 1.0, 2.0, save=False)
+        self.assertFalse(self.memory_path.exists())
+
+        memory.save()
+        self.assertTrue(self.memory_path.exists())
+
 if __name__ == "__main__":
     unittest.main()
