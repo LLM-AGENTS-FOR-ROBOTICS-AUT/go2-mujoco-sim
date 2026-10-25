@@ -116,6 +116,9 @@ class SimGo2:
         if scene == "house" and world_spec is None:
             import house
             world_spec = house.house_demo()          # start in its hallway, not the single room's start
+        if scene == "hazards" and world_spec is None:
+            import hazards
+            world_spec = hazards.spec()              # start on the platform
         self.model, self.objects = world.build(scene, world_spec)
         self.start_pose = tuple(world_spec["start"]) if world_spec else world.START_POSE
         self.data = mujoco.MjData(self.model)
@@ -134,7 +137,9 @@ class SimGo2:
         with self.lock:
             x, y, yaw = pose or self.start_pose
             mujoco.mj_resetData(self.model, self.data)
-            self.data.qpos[self.base_q:self.base_q + 7] = (x, y, .35, np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
+            mujoco.mj_forward(self.model, self.data)
+            z = .35 + self._ground_z(x, y, 5.)    # standing height above whatever is under the start (a platform)
+            self.data.qpos[self.base_q:self.base_q + 7] = (x, y, z, np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
             self.data.qpos[self.qadr] = STAND
             mujoco.mj_forward(self.model, self.data)
             for _ in range(100):
@@ -468,6 +473,23 @@ class SimGo2:
             self.euler = (0., 0., 0.)
             self.mode = "animating"
 
+    GROUND_GROUPS = np.array([1, 1, 1, 0, 0, 0], dtype=np.uint8)    # what the LiDAR sees; glass (group 4) isn't ground
+
+    def _ground_z(self, x, y, top):
+        """World z of the first surface below (x, y, top) that isn't part of the robot; 0 if there is none."""
+        root = self.model.body_rootid
+        robot = root[self.model.jnt_bodyid[np.flatnonzero(self.model.jnt_type == int(mujoco.mjtJoint.mjJNT_FREE))[0]]]
+        origin, down, geom = np.array([x, y, top], float), np.array([0., 0., -1.]), np.zeros(1, np.int32)
+        for _ in range(20):
+            dist = mujoco.mj_ray(self.model, self.data, origin, down, self.GROUND_GROUPS, 1, -1, geom)
+            if geom[0] < 0:
+                return 0.
+            origin = origin + down * dist
+            if root[self.model.geom_bodyid[geom[0]]] != robot:
+                return float(origin[2])
+            origin[2] -= 1e-4                                  # past one of the robot's own geoms, keep looking
+        return 0.
+
     def _tilt(self):
         return self.metrics()["tilt_deg"]
 
@@ -477,7 +499,9 @@ class SimGo2:
         yaw = float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
         c, s = np.cos(yaw), np.sin(yaw)
         vx, vy = self.data.qvel[da:da + 2]
-        return dict(x=float(self.data.qpos[qa]), y=float(self.data.qpos[qa + 1]), height=float(self.data.qpos[qa + 2]),
+        bx, by, bz = (float(v) for v in self.data.qpos[qa:qa + 3])
+        height = bz - self._ground_z(bx, by, bz)            # above the ground under the robot, as on the real Go2
+        return dict(x=bx, y=by, height=height,
                     yaw=yaw, roll=float(np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))),
                     pitch=float(np.arcsin(np.clip(2 * (w * y - z * x), -1, 1))),
                     tilt_deg=float(np.degrees(np.arccos(np.clip(1 - 2 * (x * x + y * y), -1, 1)))),

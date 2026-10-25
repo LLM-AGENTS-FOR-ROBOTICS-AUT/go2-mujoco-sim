@@ -895,8 +895,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", choices=list(CATALOG["models"]), default=CATALOG["default"])
     parser.add_argument("--mock", action="store_true", help="scripted replies instead of the language model")
-    parser.add_argument("--scene", choices=["room", "empty", "house"], default="room",
-                        help="house: the multi-room demo house")
+    parser.add_argument("--scene", choices=["room", "empty", "house", "hazards"], default="room",
+                        help="house: the multi-room demo house; hazards: a platform with a ledge, stairs down and glass")
     parser.add_argument("--seed", type=int, help="with --scene house: a random house from this seed instead")
     parser.add_argument("--headless", action="store_true", help="simulate without the MuJoCo window")
     parser.add_argument("--robot", metavar="INTERFACE", help="drive the real Go2 on this network interface")

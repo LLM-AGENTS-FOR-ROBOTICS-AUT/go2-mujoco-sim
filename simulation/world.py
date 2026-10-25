@@ -148,9 +148,10 @@ def build(scene: str = "room", world=None):
     """Return (model, objects) where objects maps body id -> WorldObject.
 
     scene "procedural" builds the room and objects described by `world` (see random_world); scene "house"
-    builds the multi-room house described by `world` (see house.py), or the demo house without one."""
-    if scene not in ("room", "empty", "procedural", "house"):
-        raise ValueError("scene must be 'room', 'empty', 'procedural' or 'house'")
+    builds the multi-room house described by `world` (see house.py), or the demo house without one; scene "hazards"
+    builds the ledge, stairs and glass test platform (see hazards.py)."""
+    if scene not in ("room", "empty", "procedural", "house", "hazards"):
+        raise ValueError("scene must be 'room', 'empty', 'procedural', 'house' or 'hazards'")
     if scene == "procedural" and world is None:
         raise ValueError("procedural scenes need a world description")
     spec = mujoco.MjSpec.from_file(str(SCENE))
@@ -227,6 +228,9 @@ def build(scene: str = "room", world=None):
     if scene == "house":
         import house     # simulation/house.py, kept apart so the room scenes never change
         house.build_house(spec, world if world is not None else house.house_demo(), objects)
+    if scene == "hazards":
+        import hazards   # simulation/hazards.py: platform, ledge, stairs down and a glass pane (#22)
+        hazards.build_hazards(spec, objects, WorldObject)
     model = spec.compile()
     by_body = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name): item for name, item in objects}
     return model, by_body
