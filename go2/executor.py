@@ -26,6 +26,7 @@ import numpy as np
 from . import limits as L
 from . import perception as P
 from .room_map import OccupancyGrid
+from .path_planner import astar
 from .adapters.base import AdapterError, LOW_POSTURES
 from .tools import Command
 

@@ -31,6 +31,12 @@ class OccupancyGrid:
 
         return row, col
 
+    def cell_to_world(self, row, col):
+        """Convert grid indices to world coordinates in metres."""
+        x = (col - self.size // 2 + 0.5) * self.resolution
+        y = (row - self.size // 2 + 0.5) * self.resolution
+        return x, y 
+
     def mark_obstacles(self, points):
         """Mark observed obstacle points as occupied.
 
