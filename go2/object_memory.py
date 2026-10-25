@@ -57,7 +57,7 @@ class ObjectMemory:
 
         temporary_path.replace(self.path)
 
-    def remember(self, label, x, y, color=None, confidence=1.0):
+    def remember(self, label, x, y, color=None, confidence=1.0, save=True):
         """Add or update an object's remembered position."""
 
         item = {
@@ -82,11 +82,13 @@ class ObjectMemory:
                 item["last_seen"] = time.time()
                 item["times_seen"] = old.get("times_seen", 1) + 1
                 self.objects[index] = item
-                self.save()
+                if save:
+                    self.save()
                 return
 
         self.objects.append(item)
-        self.save()
+        if save:
+           self.save()
 
     def recall(self, label):
         """Return saved objects matching a label."""

@@ -756,9 +756,11 @@ class Executor:
                 y=wy,
                 color=d.color,
                 confidence=d.confidence,
+                save=False,
             )
             
         self.memory = kept[-60:]
+        self.object_memory.save()
 
         
 
