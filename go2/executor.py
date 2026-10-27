@@ -1117,6 +1117,8 @@ class Executor:
         last_xy, walked, gaps = (s.x, s.y), 0., []
         blocked_since, lost = None, 0
         was_seen = True
+        stall = F.StallWatch()
+        sent_vx = 0.
         while True:
             self._check(cancel)
             tick = time.monotonic()
@@ -1128,6 +1130,17 @@ class Executor:
             last_xy = (s.x, s.y)
             with self._cloud_lock:
                 cloud = self.cloud.level((s.x, s.y, s.yaw))
+            cloud = self._with_bumps(cloud, s)       # spots it bumped into recently count as obstacles
+            if stall.update(tick, sent_vx, s.vx, s.x, s.y):
+                self._safe_stop()
+                self._remember_bump(s, 1., 0.)
+                backed = self._back_off(1., 0., cancel)
+                task.detail.update(followed_s=round(tick - began), walked_m=round(walked, 1))
+                error = _blocked(task, STALLED, 0., walked, "ahead")
+                task.detail["blocked"]["stall"] = True
+                if backed:
+                    task.detail["blocked"]["backed_off_m"] = round(backed, 2)
+                raise error
             with feed.lock:
                 tx, ty = tracker.predict(tick)
                 unseen = tick - tracker.seen
@@ -1166,14 +1179,17 @@ class Executor:
                 vx = min(vx, cap) if cap >= .05 else 0.
             else:
                 blocked_since = None
-                if vx < 0 and P.clearance_along(cloud, -1., 0.) < self._margin(-vx):
+                behind = min(P.clearance_along(cloud, -1., 0.), P.observed_along(cloud, -1., 0.))
+                if vx < 0 and behind < self._margin(-vx):
                     vx = 0.
             if wz and P.turn_clearance(cloud) < .03:
                 wz = 0.
             if blocked_since is not None and tick - blocked_since > F.BLOCKED_GIVE_UP_S:
                 task.detail.update(followed_s=round(tick - began), walked_m=round(walked, 1))
-                raise _blocked(task, "path is blocked", clear, walked, "ahead")
+                why = "drop ahead" if P.drop_along(cloud, 1., 0.) <= clear + 1e-9 else "path is blocked"
+                raise _blocked(task, why, clear, walked, "ahead")
             adapter.move(vx, 0., wz)
+            sent_vx = vx
             task.detail["following"] = {"target": who, "set_m": set_gap, "state": state,
                                         "gap_m": round(gap, 2) if seen else None}
             time.sleep(max(0., F.TICK_S - (time.monotonic() - tick)))

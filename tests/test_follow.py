@@ -230,6 +230,51 @@ class FollowExecutorTests(unittest.TestCase):
             time.sleep(.05)
         self.assertGreater(closest, .2)
 
+    def test_a_camera_faster_than_the_lidar_doesnt_make_it_trail(self):
+        # People are placed by the LiDAR, refreshed 10 times a second; with frames every 10 ms most frames
+        # repeat the last scan. Those repeats must not drag the speed estimate down.
+        person = FakePerson([(2, 0), (12, 0)], speed=.5, delay=1.)
+        robot = FakeRobot(people=[person], camera=True)
+        robot.camera_period = .01
+        robot.connect()
+        self.robot = robot
+        def fused(*a, **k):
+            scans = self.executor.cloud.scans
+            return robot.seen_people(at=scans[-1][0] if scans else None)
+        self.patch = mock.patch.object(P, "fuse", fused)
+        self.patch.start()
+        self.executor.attach(robot)
+        self.follow(duration_s=14)
+        gaps, deadline = [], time.monotonic() + 16
+        while not self.events and time.monotonic() < deadline:
+            time.sleep(.25)
+            gaps.append(self.gap(person))
+        task = self.finished()
+        self.assertEqual(task.status, "completed", task.detail)
+        settled = gaps[len(gaps) // 2:]
+        self.assertLess(max(abs(g - 1.2) for g in settled), .4, f"gaps {[round(g, 2) for g in settled]}")
+
+    def test_glass_between_them_is_caught_by_the_stall_check(self):
+        person = FakePerson([(2.5, 0), (8, 0)], speed=.5, delay=.5)
+        robot = self.attach([person], glass=[(1.6, 1.65, -1, 1)])
+        self.follow()
+        task = self.finished(25)
+        self.assertEqual(task.status, "blocked", task.detail)
+        self.assertTrue(task.detail["blocked"].get("stall"))
+        self.assertIsNotNone(robot.contact_at)
+        self.assertLess(robot.x + .36, 1.6 - .05, "backed away from the glass")
+        self.assertEqual(len(self.executor.bumps), 1)
+
+    def test_doesnt_back_into_space_it_cant_see(self):
+        person = FakePerson([(3, 0), (.9, 0)], speed=.6)          # walks up close to the robot
+        robot = self.attach([person], blind_behind=True)
+        self.follow(duration_s=7)
+        lowest = 0.
+        while not self.events:
+            lowest = min(lowest, robot.x)
+            time.sleep(.05)
+        self.assertGreater(lowest, -.03, "never reversed into the unseen space behind it")
+
     def test_needs_a_camera(self):
         self.robot = FakeRobot()
         self.robot.connect()
@@ -287,6 +332,24 @@ class FollowSimulationTests(unittest.TestCase):
         self.executor.submit(resolve("follow", {"duration_s": 60}), "g", 1)
         gaps, began = [], time.monotonic()
         while not self.events and time.monotonic() - began < 75:
+            time.sleep(.5)
+            if time.monotonic() - began > 8:
+                gaps.append(self.true_gap(sim))
+        task = self.events[-1]
+        self.assertEqual(task.status, "completed", task.detail)
+        self.assertLess(max(abs(g - 1.2) for g in gaps), .4, f"gaps {min(gaps):.2f}..{max(gaps):.2f}")
+        self.assertIsNone(sim.state().fault, "no collision or fall")
+        sim.walker("walker_red")
+
+    @needs_camera
+    def test_follows_through_the_furnished_room(self):
+        # The room scene, with the standing person in green further off: a clear path east past the furniture.
+        sim = self.sim("room")
+        sim.reset(-2.5, 0, 0)
+        sim.walker("walker_red", [[-1.1, 0], [.4, 0], [.4, .7]], speed=.4)
+        self.executor.submit(resolve("follow", {"duration_s": 20}), "g", 1)
+        gaps, began = [], time.monotonic()
+        while not self.events and time.monotonic() - began < 30:
             time.sleep(.5)
             if time.monotonic() - began > 8:
                 gaps.append(self.true_gap(sim))

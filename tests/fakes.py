@@ -31,6 +31,7 @@ class FakeRobot(RobotAdapter):
         self._moving_since = None
         self.people = list(people)         # FakePerson: walk paths, seen by the LiDAR and (patched fuse) the camera
         self.has_camera = camera
+        self.camera_period = .05           # seconds per frame; less than the LiDAR's 0.1 s means repeated scans
         self.requires_arming = requires_arming
         self.obstacles = list(obstacles)   # (xmin, xmax, ymin, ymax) boxes in odom, 0.6 m tall
         self.unsupported = set(unsupported)
@@ -189,15 +190,17 @@ class FakeRobot(RobotAdapter):
     def camera(self):
         if not self.has_camera:
             raise AdapterError("fake robot has no camera")
-        time.sleep(.05)                        # a frame takes a while, as on the real thing
+        time.sleep(self.camera_period)         # a frame takes a while, as on the real thing
         return CameraFrame(rgb=np.zeros((4, 4, 3), np.uint8), masks=[], intrinsics={}, camera_pos=np.zeros(3),
                            camera_rot=np.eye(3), state=self.state())
 
-    def seen_people(self, hfov_deg=120., max_m=6.):
+    def seen_people(self, hfov_deg=120., max_m=6., at=None):
         """What a camera + LiDAR fusion would report: Detections of the people in front, in the level frame
-        (used in place of perception.fuse in tests; FakeRobot renders no images)."""
+        (used in place of perception.fuse in tests; FakeRobot renders no images). `at`: where people were at
+        that time (the newest LiDAR scan's), as the real fusion places them; default now."""
         from go2.perception import Detection
-        s, now, out = self.state(), time.monotonic(), []
+        s, out = self.state(), []
+        now = time.monotonic() if at is None else at
         c, sn = math.cos(s.yaw), math.sin(s.yaw)
         for i, person in enumerate(self.people):
             px, py = person.at(now)

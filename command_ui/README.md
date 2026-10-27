@@ -53,9 +53,12 @@ ledge and stall protection. `--headless` (no MuJoCo window), `--port N`, `--no-b
 this computer only, no Firebase copy), `--check`.
 
 **Follow-me (simulator only).** "Follow me" or "follow the person in red" walks after a person the camera
-can see, keeping 1.2 m (0.8–3 m) behind them for up to 60 s (at most 120 s); "stop" ends it at once. It never
-switches to someone else: when two people are too close to tell apart it waits, and when it loses sight of
-the person it stops, turns to where they were, and gives up after 8 s. go2-ft-04 hasn't been trained on
+can see, keeping 1.2 m (0.8–3 m) behind them; "stop" ends it at once. Following always ends by itself: after
+60 s unless asked for longer (at most 120 s), so a robot nobody is watching doesn't walk on indefinitely. Ask
+again to keep going. It never switches to someone else: when two people are too close to tell apart it waits,
+and when it loses sight of the person it stops, turns to where they were, and gives up after 8 s. The same
+safety checks as other moves apply: it stops before drops, and if something the LiDAR can't see stops it, it
+backs off and ends. go2-ft-04 hasn't been trained on
 `follow` yet (#16) and doesn't see it in its compact prompt, so try it with `--mock` or a full-prompt model
 (`go2-ft-04@full`). In the simulator, two people (`walker_red`, `walker_blue`) can be made to walk with
 `SimAdapter.walker(name, [[x, y], ...], speed)`; they are parked out of sight otherwise.

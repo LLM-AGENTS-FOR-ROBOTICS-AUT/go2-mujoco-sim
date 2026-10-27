@@ -105,6 +105,7 @@ class PersonFeed(threading.Thread):
         self.stamp = 0.
         self.error = None
         self.tracker = None
+        self.last_scan = None     # stamp of the newest LiDAR scan behind the last tracker update
 
     def stop(self):
         self.done.set()
@@ -126,6 +127,7 @@ class PersonFeed(threading.Thread):
             pose = (s.x, s.y, s.yaw)
             with ex._cloud_lock:
                 local = ex.cloud.level(pose)
+                newest = ex.cloud.scans[-1][0] if ex.cloud.scans else None
             cloud_base = local[:0]
             if len(local):
                 local[:, 2] -= s.height
@@ -142,9 +144,15 @@ class PersonFeed(threading.Thread):
             with self.lock:
                 self.people, self.stamp, self.error = people, now, None
                 self.frames += 1
-                if self.tracker is not None:
-                    i = self.tracker.update(now, [p[:3] for p in people])
+                # People's positions come from the LiDAR, which the follow loop refreshes 10 times a second. A
+                # camera that runs faster (54 frames a second on a GPU) sees the same scan several times; feeding
+                # those repeats to the tracker drags its speed estimate down between scans, so the robot trails
+                # behind. Only a frame with a new scan updates it, timed by that scan.
+                fresh = newest is None or newest != self.last_scan
+                if self.tracker is not None and fresh:
+                    i = self.tracker.update(newest if newest is not None else now, [p[:3] for p in people])
                     tracked = None if i is None else people[i][3]
+                    self.last_scan = newest
             boxes = [{"label": d.label, "score": round(d.confidence, 2), "box": d.box,
                       **({"tracked": True} if d is tracked else {})} for d in detections if d.box]
             with ex.lock:
@@ -165,6 +173,40 @@ class PersonFeed(threading.Thread):
                     return True
             time.sleep(.02)
         return False
+
+
+class StallWatch:
+    """The executor's stall check (#22) for following, which sends its own velocity commands: walking forward
+    at a commanded speed but hardly moving means something the LiDAR can't see (glass, thin legs) is in the way.
+    It starts once the robot has got going, or STALL_START_S after it was asked to if it never does."""
+    MIN_VX, WINDOW_S, FRACTION, GRACE_S, START_S = .12, .4, 1 / 3, .5, 1.1
+
+    def __init__(self):
+        self.asked = None          # when the current forward walk was first commanded
+        self.watching = False
+        self.samples = []          # (t, commanded, measured, x, y)
+
+    def update(self, t, commanded, measured, x, y):
+        """True when the robot has stalled."""
+        if commanded < self.MIN_VX:
+            self.asked, self.watching, self.samples = None, False, []
+            return False
+        if self.asked is None:
+            self.asked = t
+        if not self.watching:
+            going = measured >= commanded / 2 and t - self.asked >= self.GRACE_S
+            if not (going or t - self.asked >= self.START_S):
+                return False
+            self.watching = True
+        self.samples.append((t, commanded, measured, x, y))
+        while len(self.samples) > 1 and t - self.samples[1][0] >= self.WINDOW_S:
+            self.samples.pop(0)
+        t0, _, _, x0, y0 = self.samples[0]
+        if t - t0 < self.WINDOW_S:
+            return False
+        want = sum(r[1] for r in self.samples) / len(self.samples) * self.FRACTION
+        got = sum(r[2] for r in self.samples) / len(self.samples)
+        return got < want and math.hypot(x - x0, y - y0) < want * (t - t0)
 
 
 def max_safe_speed(clear):
