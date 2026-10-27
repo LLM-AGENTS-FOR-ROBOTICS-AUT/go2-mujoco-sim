@@ -737,7 +737,7 @@ class Executor:
             error = _blocked(task, STALLED, 0., progress, toward)
             task.detail["blocked"]["stall"] = True
             if backed:
-                task.detail["blocked"]["backed_off_m"] = round(backed, 2)
+                task.detail["blocked"]["backed_off_m"] = round(float(backed), 2)
             raise error
         if outcome == "timeout":
             task.status = "failed"

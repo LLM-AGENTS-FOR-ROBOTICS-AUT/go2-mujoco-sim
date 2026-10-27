@@ -201,7 +201,8 @@ class StallAndLedgeExecutorTests(unittest.TestCase):
         task = self.finished()
         self.assertEqual(task.status, "blocked", task.detail)
         self.assertTrue(task.detail["blocked"].get("stall"))
-        self.assertLess(task.finished - began, 3.5)
+        stopped = min(t for t in robot.stop_times if t > began)       # before backing off
+        self.assertLess(stopped - began, 2.5, "the stall check started even though it never got going")
 
     def test_bump_spots_are_forgotten_after_a_while(self):
         self.attach(glass=[(1.2, 1.25, -1, 1)])
