@@ -23,15 +23,21 @@ from types import SimpleNamespace
 import numpy as np
 
 from . import limits as L
-from .object_memory import ObjectMemory
 from . import perception as P
-from .room_map import OccupancyGrid
-from .path_planner import astar
 from .adapters.base import AdapterError, LOW_POSTURES
+from .object_memory import ObjectMemory
+from .path_planner import astar, simplify
+from .room_map import OccupancyGrid
 from .tools import Command
 
 DECEL_LINEAR, DECEL_ANGULAR = 1.6, 4.0      # m/s², rad/s² used for braking lead
 STALE_S = .5
+# go_to keeps waypoints this far from mapped obstacles: the body's turning circle (0.40 m) plus a cell, so it can
+# turn at each waypoint; in a tighter space it tries the second value, where it can still walk but may not turn.
+ROUTE_CLEARANCE_M = (.5, .42)
+UNKNOWN_COST = 3.           # unmapped cells may be planned through, but known free space is preferred
+MAX_REPLANS = 3             # go_to plans again this many times when blocked by something new
+MAX_DETOUR = 2.5            # a route may be at most this many times the straight distance (+ 2 m)
 TICK_S = .05
 # A motion that can start right away is held back from the model for up to this long, so that the tool
 # result can say "blocked" when the safety check refuses it instead of "queued".
@@ -365,17 +371,11 @@ class Executor:
         points, state = self.adapter.lidar()
         level = P.base_to_level(points, state.roll, state.pitch)
         self.cloud.add(state.stamp, level, (state.x, state.y, state.yaw), state.height)
-
-        floor_cloud = self.cloud.level((state.x, state.y, state.yaw))
-        if len(floor_cloud):
-            obstacle_points = P.obstacles(floor_cloud)
-            if len(obstacle_points):
-                world_points = P.level_to_odom(
-                    obstacle_points,
-                    (state.x, state.y, state.yaw),
-                )
-                self.room_map.mark_obstacles(obstacle_points[:, :2])
-
+        if len(level):
+            # The room map is in odometry coordinates, so a box stays where it is when the robot turns.
+            world = P.level_to_odom(level, (state.x, state.y, state.yaw))
+            world[:, 2] += state.height                  # height above the floor, as in the cloud
+            self.room_map.mark_scan((state.x, state.y), world)
         return state
 
     def look(self):
@@ -719,15 +719,60 @@ class Executor:
             c, sn = math.cos(s.yaw), math.sin(s.yaw)
             tx, ty = s.x + c * p["x"] - sn * p["y"], s.y + sn * p["x"] + c * p["y"]
         task.detail["legs"] = []
-        for _ in range(8):
+        for _ in range(3):                  # a few scans first, so the map shows what's around
+            self._refresh_cloud()
+        replans = 0
+        for _ in range(12):
             s = self._fresh_state()
             remaining = math.hypot(tx - s.x, ty - s.y)
             if remaining < .12:
                 break
+            # Head for the next waypoint of a route around what the map shows, or straight for the target when
+            # the straight line is clear (or no route is known: then the LiDAR checks stop it safely).
+            route = self._route(s, tx, ty)
+            wx, wy = route[0] if route else (tx, ty)
+            if route:
+                task.detail["route"] = [[round(x, 2), round(y, 2)] for x, y in route]
             task.detail["legs"].append({})
-            self._goto_leg(task, cancel, tx, ty)
+            try:
+                self._goto_leg(task, cancel, wx, wy)
+            except _BlockedError:
+                # Something the map didn't show yet is in the way: the scans have now added it, so plan again.
+                if replans >= MAX_REPLANS:
+                    raise
+                replans += 1
+                task.status = "running"
+                task.detail["replanned"] = replans
+                task.detail.pop("blocked", None)
+                for _ in range(3):
+                    self._refresh_cloud()
         s = self._fresh_state()
         task.detail["remaining_m"] = round(math.hypot(tx - s.x, ty - s.y), 2)
+
+    def _route(self, s, tx, ty):
+        """Waypoints in odometry coordinates from the robot to (tx, ty) around obstacles on the room map, ending
+        at the target; [] when the straight line is already clear; None when the map has no route (the target is
+        off the map, inside an obstacle, or walled off)."""
+        m = self.room_map
+        start, goal = m.world_to_cell(s.x, s.y), m.world_to_cell(tx, ty)
+        if start is None or goal is None:
+            return None
+        for clearance in ROUTE_CLEARANCE_M:
+            blocked = m.blocked(clearance)
+            k = int(math.ceil(clearance / m.resolution))         # it may already stand closer than that
+            blocked[max(0, start[0] - k):start[0] + k + 1, max(0, start[1] - k):start[1] + k + 1] = False
+            if m.line_clear(blocked, start, goal):
+                return []
+            path = astar(m.grid, start, goal, blocked=blocked, unknown_cost=UNKNOWN_COST, diagonal=True)
+            if path is not None:
+                cells = simplify(path, lambda a, b: m.line_clear(blocked, a, b))
+                route = [m.cell_to_world(*c) for c in cells[1:-1]] + [(tx, ty)]
+                points = [(s.x, s.y)] + route
+                length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+                if length > MAX_DETOUR * math.hypot(tx - s.x, ty - s.y) + 2.:
+                    return None               # a long way round, probably through unmapped space: don't wander
+                return route
+        return None
 
     def _stable_ids(self, detections, pose):
         """Keep an object's id across looks (same label within 0.6 m of where it was seen), so an id the
