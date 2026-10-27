@@ -18,12 +18,12 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from .object_memory import ObjectMemory
 from types import SimpleNamespace
 
 import numpy as np
 
 from . import limits as L
+from .object_memory import ObjectMemory
 from . import perception as P
 from .room_map import OccupancyGrid
 from .path_planner import astar
@@ -415,9 +415,6 @@ class Executor:
         except AdapterError as error:
             result["camera_error"] = str(error)
         result["note"] = "objects come from the front camera (about 120° wide); free_space_m is the free distance from the body on each side, 'clear' meaning nothing within 5 m"
-        result["remembered_objects"] = [
-            dict(item) for item in self.object_memory.objects
-        ]
         return result
 
     # ---- worker ----------------------------------------------------------------------
@@ -759,24 +756,13 @@ class Executor:
         for d in detections:
             if d.x_m is None:
                 continue
-
             wx, wy = pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m
             kept = [m for m in kept if not (m[0].label == d.label and math.hypot(m[1] - wx, m[2] - wy) < .6)]
             kept.append((d, wx, wy, now))
-
-            self.object_memory.remember(
-                label=d.label,
-                x=wx,
-                y=wy,
-                color=d.color,
-                confidence=d.confidence,
-                save=False,
-            )
-            
+            self.object_memory.remember(label=d.label, x=wx, y=wy, color=d.color, confidence=d.confidence,
+                                        save=False)
         self.memory = kept[-60:]
-        self.object_memory.save()
-
-        
+        self.object_memory.save()             # once per look, not once per object
 
     @staticmethod
     def _score(det, words):
@@ -855,78 +841,27 @@ class Executor:
 
 
     def _recall(self, target):
-        """Recall an object from persistent memory first,
-        then fall back to recent in-memory detections.
-        """
+        """An object seen before that fits the words, by its remembered position in the room: from this run's
+        recent looks or the saved memory (which survives a restart). The best fit wins; between equal fits, the
+        most recently seen, so an object that has moved is looked for where it was last seen."""
+        now, wall = time.monotonic(), time.time()
+        for d, wx, wy, t in reversed(self.memory):
+            if d.id == target and now - t <= MEMORY_S:
+                return d, wx, wy
         words = self._words(target)
-        candidates = self.object_memory.objects
-
-        if candidates:
-            best = None
-            best_score = -1
-
-            for item in candidates:
-                from types import SimpleNamespace
-
-                det = SimpleNamespace(
-                    id=item.get("id", item.get("label", "")),
-                    label=item.get("label", ""),
-                    color=item.get("color"),
-                )
-
-                score, mismatch = self._score(det, words)
-
-                if score and not mismatch and score > best_score:
-                    best = item
-                    best_score = score
-
-            if best is not None:
-                return (
-                    SimpleNamespace(
-                        id=best.get("id", best.get("label", "")),
-                        label=best.get("label", ""),
-                        color=best.get("color"),
-                    ),
-                    best["x"],
-                    best["y"],
-                )
-
-        # Fall back to the original short-term memory.
-        now = time.monotonic()
-
-        for det, wx, wy, timestamp in reversed(self.memory):
-            if det.id == target and now - timestamp <= MEMORY_S:
-                return det, wx, wy
-
-        candidates = [
-            (
-                self._score(det, words),
-                -abs(now - timestamp),
-                det,
-                wx,
-                wy,
-            )
-            for det, wx, wy, timestamp in self.memory
-            if now - timestamp <= MEMORY_S
-        ]
-
-        candidates = [
-            item for item in candidates
-            if item[0][0] and not item[0][1]
-        ]
-
+        candidates = []                       # (score, seen at (wall clock), detection-like, x, y)
+        for d, wx, wy, t in self.memory:
+            if now - t <= MEMORY_S:
+                candidates.append((self._score(d, words), wall - (now - t), d, wx, wy))
+        for item in self.object_memory.objects:
+            d = SimpleNamespace(id=item.get("id", item.get("label", "")), label=item.get("label", ""),
+                                color=item.get("color"))
+            candidates.append((self._score(d, words), item.get("last_seen", 0.), d, item["x"], item["y"]))
+        candidates = [c for c in candidates if c[0][0] and not c[0][1]]
         if not candidates:
             return None
-
-        _, _, det, wx, wy = max(
-            candidates,
-            key=lambda item: (item[0][0], item[1]),
-        )
+        _, _, det, wx, wy = max(candidates, key=lambda c: (c[0][0], c[1]))
         return det, wx, wy
-
-
-            
-
 
     def _turn_by(self, task, cancel, angle):
         rate = L.default_turn_rate(abs(angle))
