@@ -30,6 +30,7 @@ DECEL_LINEAR, DECEL_ANGULAR = 1.6, 4.0      # m/s², rad/s² used for braking le
 # Stall: something the LiDAR can't see (glass, thin chair legs) is stopping the robot. After the ramp-up, a move
 # or turn that makes less than a third of the progress its commanded speed should give over 0.4 s stops.
 STALL_WINDOW_S, STALL_FRACTION, STALL_GRACE_S = .4, 1 / 3, .3
+STALL_START_S = .8     # the latest the check starts if the robot never gets going (e.g. it starts against glass)
 STALLED = "bumped into something the sensors missed"
 BACKOFF_M, BACKOFF_SPEED = .2, .2           # after a stall, back away the way it came if the LiDAR says clear
 BUMP_MEMORY_S = 180.                        # where it bumped counts as an obstacle for this long
@@ -646,9 +647,14 @@ class Executor:
         progress = 0.
         yaw_prev, turned = yaw0, 0.
         outcome = "completed"
-        # Stall check: expected progress at the commanded speed, after the ramp-up and a short grace period.
+        # Stall check: expected progress at the commanded speed. Legs take a moment to get going (a side-step
+        # in the simulator barely moves for the first 0.3 s), so the check starts once the robot has first
+        # reached half the commanded speed, after the ramp-up and a short grace period. If it never gets going
+        # (it started pressed against glass), it starts anyway STALL_START_S later. Only samples from then on
+        # are judged, so a slow start can't count against it.
         rate = p["turn_rate"] if turning else speed
-        watch_from = began + rate / (DECEL_ANGULAR if turning else DECEL_LINEAR) + STALL_GRACE_S
+        earliest = began + rate / (DECEL_ANGULAR if turning else DECEL_LINEAR) + STALL_GRACE_S
+        watch_from = None
         recent = deque()
         try:
             while True:
@@ -672,11 +678,14 @@ class Executor:
                 # speed. The robot's own speed reading doesn't drop when a busy computer briefly slows the
                 # simulator or delays telemetry, so those hiccups aren't mistaken for touching something.
                 moving = abs(s.wz) if turning else s.vx * p["ux"] + s.vy * p["uy"]
-                recent.append((now, progress, moving))
-                while len(recent) > 1 and now - recent[1][0] >= STALL_WINDOW_S:
-                    recent.popleft()            # keep the newest sample at least a window old
-                old_t, old_progress, _ = recent[0]
-                if now >= watch_from and now - old_t >= STALL_WINDOW_S:
+                if watch_from is None and now >= earliest and (moving >= rate / 2 or now >= earliest + STALL_START_S):
+                    watch_from = now
+                if watch_from is not None:
+                    recent.append((now, progress, moving))
+                    while len(recent) > 1 and now - recent[1][0] >= STALL_WINDOW_S:
+                        recent.popleft()        # keep the newest sample at least a window old
+                old_t, old_progress, _ = recent[0] if recent else (now, progress, 0.)
+                if recent and now - old_t >= STALL_WINDOW_S:
                     expected = rate * STALL_FRACTION
                     measured = sum(r[2] for r in recent) / len(recent)
                     if progress - old_progress < expected * (now - old_t) and measured < expected:

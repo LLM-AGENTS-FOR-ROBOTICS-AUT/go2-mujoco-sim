@@ -27,6 +27,8 @@ class FakeRobot(RobotAdapter):
         self.contact_at = None             # when the body first touched glass
         self.stop_times = []
         self.paused_until = 0.             # simulate a busy computer: the world stops advancing, readings don't change
+        self.start_lag = 0.                # legs take this long to get going after a move from standstill
+        self._moving_since = None
         self.requires_arming = requires_arming
         self.obstacles = list(obstacles)   # (xmin, xmax, ymin, ymax) boxes in odom, 0.6 m tall
         self.unsupported = set(unsupported)
@@ -68,7 +70,13 @@ class FakeRobot(RobotAdapter):
                     self.cmd[:] = 0
                     self.last_move = None
                 step = np.array([1.6, 1.6, 4.0]) * dt
-                self.v += np.clip(self.cmd - self.v, -step, step)
+                if self.cmd.any() and self._moving_since is None:
+                    self._moving_since = now
+                elif not self.cmd.any():
+                    self._moving_since = None
+                lagging = self._moving_since is not None and now - self._moving_since < self.start_lag
+                if not lagging:
+                    self.v += np.clip(self.cmd - self.v, -step, step)
                 c, s = math.cos(self.yaw), math.sin(self.yaw)
                 nx = self.x + (c * self.v[0] - s * self.v[1]) * dt
                 ny = self.y + (s * self.v[0] + c * self.v[1]) * dt

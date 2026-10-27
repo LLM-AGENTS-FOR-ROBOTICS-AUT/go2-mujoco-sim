@@ -100,5 +100,33 @@ class HazardsTests(unittest.TestCase):
         self.assertEqual(retry.get("status") if isinstance(retry, dict) else retry.status, "blocked")
 
 
+
+@unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")
+class OpenFloorTests(unittest.TestCase):
+    """No false stalls: short side-steps on an empty floor, where there is nothing to bump into. The legs take a
+    moment to get going, which used to look like a stall in about one side-step in three."""
+
+    def test_short_side_steps_never_stall(self):
+        from go2.adapters.sim import SimAdapter
+        sim = SimAdapter(python=sys.executable, scene="empty", headless=True)
+        sim.connect()
+        self.addCleanup(sim.close)
+        events = []
+        executor = Executor(on_event=events.append)
+        executor.attach(sim)
+        self.addCleanup(executor.close)
+        sim.reset(0, 0, 0)
+        self.assertTrue(wait_for(lambda: sim.state().posture == "standing", 5))
+        stalls = []
+        for i in range(20):
+            n = len(events)
+            executor.submit(resolve("move", {"direction": "right" if i % 2 else "left", "distance_m": .25}), "g", 1)
+            self.assertTrue(wait_for(lambda: len(events) > n, 20))
+            if (events[-1].detail.get("blocked") or {}).get("stall"):
+                stalls.append(events[-1].detail.get("moved_m"))
+            wait_for(lambda: sim.state().speed < .05, 2)
+        self.assertEqual(stalls, [], f"{len(stalls)} of 20 side-steps stopped as stalls")
+
+
 if __name__ == "__main__":
     unittest.main()

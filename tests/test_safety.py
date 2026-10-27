@@ -185,6 +185,24 @@ class StallAndLedgeExecutorTests(unittest.TestCase):
         task = self.finished()
         self.assertEqual(task.status, "completed", task.detail)
 
+    def test_a_slow_start_is_not_mistaken_for_a_stall(self):
+        robot = self.attach()
+        robot.start_lag = .35                          # legs barely move for the first 0.35 s, as in MuJoCo
+        for i in range(8):
+            self.submit("move", {"direction": "right" if i % 2 else "left", "distance_m": .25}, group=f"g{i}")
+            task = self.finished(i + 1)
+            self.assertEqual(task.status, "completed", f"side-step {i}: {task.detail}")
+
+    def test_starting_against_glass_is_still_caught(self):
+        robot = self.attach(glass=[(.38, .43, -1, 1)])  # the nose is 2 cm from the pane
+        robot.start_lag = .2
+        began = time.monotonic()
+        self.submit("move", {"direction": "forward", "distance_m": 2})
+        task = self.finished()
+        self.assertEqual(task.status, "blocked", task.detail)
+        self.assertTrue(task.detail["blocked"].get("stall"))
+        self.assertLess(task.finished - began, 3.5)
+
     def test_bump_spots_are_forgotten_after_a_while(self):
         self.attach(glass=[(1.2, 1.25, -1, 1)])
         self.submit("move", {"direction": "forward", "distance_m": 2.5})
