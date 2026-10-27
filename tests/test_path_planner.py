@@ -50,6 +50,14 @@ class TestAStar(unittest.TestCase):
 
         self.assertIsNone(astar(grid, (0, 0), (4, 4)))
 
+    def test_does_not_travel_through_unknown_cells(self):
+        grid = np.zeros((5, 5), dtype=int)
+        grid[2, :] = -1
+
+        path = astar(grid, (0, 0), (4, 4))
+
+        self.assertIsNone(path)
+
 
 if __name__ == "__main__":
     unittest.main()

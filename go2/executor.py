@@ -361,22 +361,35 @@ class Executor:
             report["battery_pct"] = round(s.battery_pct)
         return report
 
+    
     def _refresh_cloud(self):
         points, state = self.adapter.lidar()
         level = P.base_to_level(points, state.roll, state.pitch)
-        self.cloud.add(state.stamp, level, (state.x, state.y, state.yaw), state.height)
+        self.cloud.add(
+            state.stamp,
+            level,
+            (state.x, state.y, state.yaw),
+            state.height,
+        )
 
         floor_cloud = self.cloud.level((state.x, state.y, state.yaw))
-        if len(floor_cloud):
-            obstacle_points = P.obstacles(floor_cloud)
-            if len(obstacle_points):
-                world_points = P.level_to_odom(
-                    obstacle_points,
-                    (state.x, state.y, state.yaw),
+        obstacle_points = P.obstacles(floor_cloud) if len(floor_cloud) else np.zeros((0, 3))
+
+        if len(obstacle_points):
+            world_points = P.level_to_odom(
+                obstacle_points,
+                (state.x, state.y, state.yaw),
+            )
+
+            for point in world_points[:, :2]:
+                self.room_map.mark_ray(
+                    (state.x, state.y),
+                    (point[0], point[1]),
                 )
-                self.room_map.mark_obstacles(obstacle_points[:, :2])
 
         return state
+
+
 
     def look(self):
         with self.lock:
@@ -721,16 +734,54 @@ class Executor:
         else:
             c, sn = math.cos(s.yaw), math.sin(s.yaw)
             tx, ty = s.x + c * p["x"] - sn * p["y"], s.y + sn * p["x"] + c * p["y"]
+        
+        
+
+        start_cell = self.room_map.world_to_cell(s.x, s.y)
+        goal_cell = self.room_map.world_to_cell(tx, ty)
+        path = None
+
+        if start_cell is not None and goal_cell is not None:
+            grid = self.room_map.grid.copy()
+
+            # Allow planning from the robot's current cell.
+            grid[start_cell] = 0
+
+            # Allow the previously visited starting position as a destination,
+            # provided it is not marked as occupied.
+            if p["target"] == "start" and grid[goal_cell] != 1:
+                grid[goal_cell] = 0
+
+            path = astar(grid, start_cell, goal_cell)
+
+
         task.detail["legs"] = []
-        for _ in range(8):
+
+        
+        if path is None:
+            raise AdapterError(
+                f"No known-free route to the target is available. "
+                f"Start cell: {start_cell}, Goal cell: {goal_cell}, "
+                f"Start value: {grid[start_cell] if start_cell is not None else 'out of bounds'}, "
+                f"Goal value: {grid[goal_cell] if goal_cell is not None else 'out of bounds'}"
+            )
+
+        for cell in path[1:]:
             s = self._fresh_state()
+
             remaining = math.hypot(tx - s.x, ty - s.y)
-            if remaining < .12:
+            if remaining < 0.12:
                 break
+
+            wx, wy = self.room_map.cell_to_world(*cell)
+
             task.detail["legs"].append({})
-            self._goto_leg(task, cancel, tx, ty)
+            self._goto_leg(task, cancel, wx, wy)
+
         s = self._fresh_state()
-        task.detail["remaining_m"] = round(math.hypot(tx - s.x, ty - s.y), 2)
+        task.detail["remaining_m"] = round(
+            math.hypot(tx - s.x, ty - s.y), 2
+        )
 
     def _stable_ids(self, detections, pose):
         """Keep an object's id across looks (same label within 0.6 m of where it was seen), so an id the

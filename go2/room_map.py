@@ -56,9 +56,14 @@ class OccupancyGrid:
             if cell is not None:
                 self.grid[cell] = 1
 
-    
-    def mark_ray(self, start, end):
-        """Mark free cells along a ray and its endpoint as occupied."""
+
+
+    def mark_ray(self, start, end, endpoint_occupied=True):
+        """Mark cells along a ray as free.
+
+        If endpoint_occupied is True, mark the endpoint as occupied.
+        Otherwise, mark the entire ray as free.
+        """
         start_cell = self.world_to_cell(*start)
         end_cell = self.world_to_cell(*end)
 
@@ -71,7 +76,7 @@ class OccupancyGrid:
         steps = max(abs(row1 - row0), abs(col1 - col0))
 
         if steps == 0:
-            self.grid[end_cell] = 1
+            self.grid[end_cell] = 1 if endpoint_occupied else 0
             return
 
         rows = np.rint(
@@ -81,9 +86,8 @@ class OccupancyGrid:
             np.linspace(col0, col1, steps + 1)
         ).astype(int)
 
-        # Cells along the ray are free.
-        self.grid[rows[:-1], cols[:-1]] = 0
+        self.grid[rows, cols] = 0
 
-        # The endpoint is occupied.
-        self.grid[end_cell] = 1
+        if endpoint_occupied:
+            self.grid[end_cell] = 1
 

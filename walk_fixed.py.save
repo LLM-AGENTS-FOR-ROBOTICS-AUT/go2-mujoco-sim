@@ -1,0 +1,43 @@
+import mujoco
+import mujoco.viewer
+import numpy as np
+import time
+
+# Load model
+model = mujoco.MjModel.from_xml_path(
+    "_deps/unitree_mujoco/unitree_robots/go2/scene.xml"
+)
+data = mujoco.MjData(model)
+
+t = 0
+dt = 0.01
+
+with mujoco.viewer.launch_passive(model, data) as viewer:
+    while viewer.is_running():
+
+        # --- STANDING POSTURE (IMPORTANT) ---
+        for i in range(12):
+            if i % 3 == 0:       # hip
+                data.ctrl[i] = 0
+            elif i % 3 == 1:     # thigh
+                data.ctrl[i] = 0.8
+            else:                # calf
+                data.ctrl[i] = -1.5
+
+        # --- SIMPLE WALK (front/back alternating) ---
+        phase = np.sin(t)
+
+        # front-left + back-right
+        data.ctrl[0] += 0.3 * phase
+        data.ctrl[6] += 0.3 * phase
+
+        # front-right + back-left
+        data.ctrl[3] -= 0.3 * phase
+        data.ctrl[9] -= 0.3 * phase
+
+        mujoco.mj_step(model, data)
+        viewer.sync()
+
+        t += dt
+        time.sleep(dt)
+
