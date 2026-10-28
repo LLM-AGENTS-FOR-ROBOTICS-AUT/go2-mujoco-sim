@@ -289,7 +289,8 @@ class HouseMujocoTests(unittest.TestCase):
         names = {item.name for item in objects.values()}
         expected = {"wall_north", "wall_south", "wall_east", "wall_west"} | {o.name for o, *_ in world.ROOM_OBJECTS}
         self.assertTrue(expected <= names)
-        self.assertFalse(names - expected - {short for short, *_ in world.GSO_PLACEMENT})
+        walkers = {name for name, _ in world.WALKERS}       # parked under the floor until asked to walk (#15)
+        self.assertFalse(names - expected - walkers - {short for short, *_ in world.GSO_PLACEMENT})
 
     def test_house_physics_is_about_as_fast_as_the_room(self):
         import world

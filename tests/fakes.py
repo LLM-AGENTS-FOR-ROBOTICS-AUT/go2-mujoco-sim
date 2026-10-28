@@ -11,7 +11,7 @@ import time
 
 import numpy as np
 
-from go2.adapters.base import AdapterError, RobotAdapter, RobotState
+from go2.adapters.base import AdapterError, CameraFrame, RobotAdapter, RobotState
 
 
 class FakeRobot(RobotAdapter):
@@ -20,7 +20,7 @@ class FakeRobot(RobotAdapter):
     kind, label = "fake", "Fake robot"
 
     def __init__(self, obstacles=(), requires_arming=False, unsupported=(), posture="standing", height=.3,
-                 blind_behind=False, drops=(), glass=()):
+                 blind_behind=False, drops=(), glass=(), people=(), camera=False):
         self.blind_behind = blind_behind
         self.drops = list(drops)           # (xmin, xmax, ymin, ymax) boxes in odom where the floor is 0.5 m lower
         self.glass = list(glass)           # boxes that stop the robot but return nothing to the LiDAR
@@ -29,6 +29,9 @@ class FakeRobot(RobotAdapter):
         self.paused_until = 0.             # simulate a busy computer: the world stops advancing, readings don't change
         self.start_lag = 0.                # legs take this long to get going after a move from standstill
         self._moving_since = None
+        self.people = list(people)         # FakePerson: walk paths, seen by the LiDAR and (patched fuse) the camera
+        self.has_camera = camera
+        self.camera_period = .05           # seconds per frame; less than the LiDAR's 0.1 s means repeated scans
         self.requires_arming = requires_arming
         self.obstacles = list(obstacles)   # (xmin, xmax, ymin, ymax) boxes in odom, 0.6 m tall
         self.unsupported = set(unsupported)
@@ -136,7 +139,10 @@ class FakeRobot(RobotAdapter):
         """Points on obstacle faces (0.1-0.5 m high) plus a floor ring, in the base frame."""
         with self.lock:
             pts = []
-            for xmin, xmax, ymin, ymax in self.obstacles:
+            now = time.monotonic()
+            people = [(x - .15, x + .15, y - .15, y + .15) for x, y in
+                      (p.at(now) for p in self.people) if x is not None]
+            for xmin, xmax, ymin, ymax in self.obstacles + people:
                 for z in (.1, .3, .5):
                     for t in np.linspace(0, 1, 25):
                         for px, py in ((xmin + t * (xmax - xmin), ymin), (xmin + t * (xmax - xmin), ymax),
@@ -182,7 +188,57 @@ class FakeRobot(RobotAdapter):
         return hidden
 
     def camera(self):
-        raise AdapterError("fake robot has no camera")
+        if not self.has_camera:
+            raise AdapterError("fake robot has no camera")
+        time.sleep(self.camera_period)         # a frame takes a while, as on the real thing
+        return CameraFrame(rgb=np.zeros((4, 4, 3), np.uint8), masks=[], intrinsics={}, camera_pos=np.zeros(3),
+                           camera_rot=np.eye(3), state=self.state())
+
+    def seen_people(self, hfov_deg=120., max_m=6., at=None):
+        """What a camera + LiDAR fusion would report: Detections of the people in front, in the level frame
+        (used in place of perception.fuse in tests; FakeRobot renders no images). `at`: where people were at
+        that time (the newest LiDAR scan's), as the real fusion places them; default now."""
+        from go2.perception import Detection
+        s, out = self.state(), []
+        now = time.monotonic() if at is None else at
+        c, sn = math.cos(s.yaw), math.sin(s.yaw)
+        for i, person in enumerate(self.people):
+            px, py = person.at(now)
+            if px is None:
+                continue
+            dx, dy = c * (px - s.x) + sn * (py - s.y), -sn * (px - s.x) + c * (py - s.y)
+            r = math.hypot(dx, dy)
+            bearing = math.degrees(math.atan2(dy, dx))
+            if abs(bearing) > hfov_deg / 2 or r > max_m or r < .2:
+                continue
+            nx, ny = dx * (r - .15) / r, dy * (r - .15) / r          # near surface
+            out.append(Detection(id=f"obj{i + 1}", label="person", color=None, distance_m=r - .15, bearing_deg=bearing,
+                                 x_m=nx, y_m=ny, distance_source="lidar", confidence=.9, clothing=person.colour,
+                                 box=[.4, .2, .6, .9]))
+        return out
+
+
+class FakePerson:
+    """Walks a polyline at `speed` m/s from when it is created (or stands still with one point); hide() removes them."""
+
+    def __init__(self, path, speed=.5, colour="red", delay=0.):
+        self.path, self.speed, self.colour = [tuple(map(float, p)) for p in path], speed, colour
+        self.start, self.hidden = time.monotonic() + delay, False
+
+    def hide(self):
+        self.hidden = True
+
+    def at(self, now):
+        if self.hidden:
+            return None, None
+        travel = max(0., now - self.start) * self.speed
+        for (x0, y0), (x1, y1) in zip(self.path, self.path[1:]):
+            leg = math.hypot(x1 - x0, y1 - y0)
+            if travel <= leg:
+                f = travel / leg if leg else 0.
+                return x0 + (x1 - x0) * f, y0 + (y1 - y0) * f
+            travel -= leg
+        return self.path[-1]
 
 
 class ScriptedModel:
