@@ -1036,7 +1036,8 @@ class Executor:
         candidates = [c for c in candidates if c[0][0] and not c[0][1]]
         if not candidates:
             return None
-        _, _, det, wx, wy = max(candidates, key=lambda c: (c[0][0], c[1]))
+        # Reversed, so a tie goes to the later sighting: Windows' clock can give two sightings the same time.
+        _, _, det, wx, wy = max(reversed(candidates), key=lambda c: (c[0][0], c[1]))
         return det, wx, wy
 
     def _turn_by(self, task, cancel, angle):
