@@ -27,6 +27,14 @@ from .adapters.base import AdapterError, LOW_POSTURES
 from .tools import Command
 
 DECEL_LINEAR, DECEL_ANGULAR = 1.6, 4.0      # m/s², rad/s² used for braking lead
+# Stall: something the LiDAR can't see (glass, thin chair legs) is stopping the robot. After the ramp-up, a move
+# or turn that makes less than a third of the progress its commanded speed should give over 0.4 s stops.
+STALL_WINDOW_S, STALL_FRACTION, STALL_GRACE_S = .4, 1 / 3, .3
+STALL_START_S = .8     # the latest the check starts if the robot never gets going (e.g. it starts against glass)
+STALLED = "bumped into something the sensors missed"
+BACKOFF_M, BACKOFF_SPEED = .2, .2           # after a stall, back away the way it came if the LiDAR says clear
+BUMP_MEMORY_S = 180.                        # where it bumped counts as an obstacle for this long
+BUMP_HALF_WIDTH = .3
 STALE_S = .5
 TICK_S = .05
 # A motion that can start right away is held back from the model for up to this long, so that the tool
@@ -117,6 +125,8 @@ class Executor:
         self.last_frame_meta = None
         self.closed = False
         self._observed = math.inf
+        self._drop = self._obstacle = self._bump = math.inf
+        self.bumps = []             # [(seen_at, Nx3 odom points)]: spots it bumped into something unseen
         # Optional f(task, cancel), asked once per task right before it first moves the robot (after its first
         # safety check). It may wait briefly: the console holds a spoken reply's first movement until Go2's voice
         # is ready, so the two start together. Stop cuts the wait short (cancel is set).
@@ -370,7 +380,7 @@ class Executor:
                 state = self._refresh_cloud()
                 time.sleep(.05)
             floor_cloud = self.cloud.level((state.x, state.y, state.yaw))
-            free = P.sector_summary(floor_cloud)
+            free = P.sector_free_space(self._with_bumps(floor_cloud, state))
             result["free_space_m"] = {side: ("clear" if v is None else v) for side, v in free.items()}
         except AdapterError as error:
             result["lidar_error"] = str(error)
@@ -553,14 +563,51 @@ class Executor:
         task.detail["posture"] = s.posture
 
     # ---- motion ------------------------------------------------------------------------------
+    def _with_bumps(self, cloud, s):
+        """The level-frame cloud plus the spots it recently bumped into (as obstacle points)."""
+        now = time.monotonic()
+        with self.lock:
+            self.bumps = [b for b in self.bumps if now - b[0] <= BUMP_MEMORY_S]
+            spots = [pts for _, pts in self.bumps]
+        if not spots:
+            return cloud
+        return np.concatenate([cloud, P.odom_to_level(np.concatenate(spots), (s.x, s.y, s.yaw))])
+
+    def _remember_bump(self, s, ux, uy):
+        """Mark a short wall across the travel direction just past the body edge, in odom coordinates."""
+        extent = abs(ux) * P.HALF_LENGTH + abs(uy) * P.HALF_WIDTH + .05
+        c, sn = math.cos(s.yaw), math.sin(s.yaw)
+        wx, wy = c * ux - sn * uy, sn * ux + c * uy          # travel direction in odom
+        px, py = -wy, wx                                     # across it
+        offsets = np.linspace(-BUMP_HALF_WIDTH, BUMP_HALF_WIDTH, 13)
+        pts = np.array([(s.x + wx * extent + px * o, s.y + wy * extent + py * o, z)
+                        for o in offsets for z in (.15, .3)])
+        with self.lock:
+            self.bumps.append((time.monotonic(), pts))
+
     def _clearance(self, ux, uy, turning):
-        """Free distance along the travel direction, limited to what the LiDAR can actually see."""
+        """Free distance along the travel direction, limited to what the LiDAR can actually see. Drops (a
+        ledge, stairs going down) and spots it recently bumped into count as obstacles."""
         s = self._refresh_cloud()
         cloud = self.cloud.level((s.x, s.y, s.yaw))
         if turning:
-            return P.turn_clearance(cloud)
+            return P.turn_clearance(self._with_bumps(cloud, s))
         self._observed = P.observed_along(cloud, ux, uy)
-        return min(P.clearance_along(cloud, ux, uy), self._observed)
+        self._drop = P.drop_along(cloud, ux, uy)
+        self._obstacle = P.obstacle_along(cloud, ux, uy)
+        bumped = self._with_bumps(cloud, s)
+        self._bump = P.obstacle_along(bumped, ux, uy) if len(bumped) > len(cloud) else math.inf
+        return min(self._obstacle, self._drop, self._bump, self._observed)
+
+    def _why_blocked(self, clear, toward):
+        """Which limit stopped a straight move: a drop, a remembered bump, an obstacle, or what it can't see."""
+        if self._drop != math.inf and self._drop <= clear + 1e-9:
+            return f"drop {toward}"
+        if self._bump < self._obstacle and self._bump <= clear + 1e-9:
+            return f"something I bumped into earlier, {toward}"
+        if self._obstacle < self._observed - 1e-9 or self._bump < self._observed - 1e-9:
+            return f"obstacle {toward}"
+        return UNSEEN
 
     @staticmethod
     def _margin(speed):
@@ -582,10 +629,13 @@ class Executor:
             raise AdapterError(f"no LiDAR data, so I can't check the path ({error})") from None
         toward = None if turning else _toward(p["ux"], p["uy"])
         if turning and clear < .03:
-            raise _blocked(task, "too close to an obstacle to turn safely", clear, 0.)
+            raise _blocked(task, "too close to an obstacle or a drop to turn safely", clear, 0.)
         if not turning and clear < self._margin(speed):
             task._observed = self._observed
-            raise _blocked(task, "path is blocked", clear, 0., toward)
+            why = self._why_blocked(clear, toward)
+            if why.startswith("obstacle") or why == UNSEEN:
+                why = "path is blocked"     # the wording go2-ft-04 was trained on (_blocked adds UNSEEN)
+            raise _blocked(task, why, clear, 0., toward)
         self._underway(task)
         self._hold(task, cancel)            # the loop below checks the path again before the first step
         distance, angle, duration = p.get("distance"), p.get("angle"), p.get("duration")
@@ -597,6 +647,15 @@ class Executor:
         progress = 0.
         yaw_prev, turned = yaw0, 0.
         outcome = "completed"
+        # Stall check: expected progress at the commanded speed. Legs take a moment to get going (a side-step
+        # in the simulator barely moves for the first 0.3 s), so the check starts once the robot has first
+        # reached half the commanded speed, after the ramp-up and a short grace period. If it never gets going
+        # (it started pressed against glass), it starts anyway STALL_START_S later. Only samples from then on
+        # are judged, so a slow start can't count against it.
+        rate = p["turn_rate"] if turning else speed
+        earliest = began + rate / (DECEL_ANGULAR if turning else DECEL_LINEAR) + STALL_GRACE_S
+        watch_from = None
+        recent = deque()
         try:
             while True:
                 self._check(cancel)
@@ -613,7 +672,24 @@ class Executor:
                     clear = self._clearance(p["ux"], p["uy"], False)
                     if clear < self._margin(max(s.speed, .1)):
                         outcome = "blocked"
-                        trigger = (clear, self._observed, progress)
+                        trigger = (clear, self._observed, progress, self._why_blocked(clear, toward))
+                        break
+                # A stall needs both: little progress over the window (wall clock) and a low measured body
+                # speed. The robot's own speed reading doesn't drop when a busy computer briefly slows the
+                # simulator or delays telemetry, so those hiccups aren't mistaken for touching something.
+                moving = abs(s.wz) if turning else s.vx * p["ux"] + s.vy * p["uy"]
+                if watch_from is None and now >= earliest and (moving >= rate / 2 or now >= earliest + STALL_START_S):
+                    watch_from = now
+                if watch_from is not None:
+                    recent.append((now, progress, moving))
+                    while len(recent) > 1 and now - recent[1][0] >= STALL_WINDOW_S:
+                        recent.popleft()        # keep the newest sample at least a window old
+                old_t, old_progress, _ = recent[0] if recent else (now, progress, 0.)
+                if recent and now - old_t >= STALL_WINDOW_S:
+                    expected = rate * STALL_FRACTION
+                    measured = sum(r[2] for r in recent) / len(recent)
+                    if progress - old_progress < expected * (now - old_t) and measured < expected:
+                        outcome = "stalled"
                         break
                 if distance is not None and progress >= distance - s.speed ** 2 / (2 * DECEL_LINEAR) - .01:
                     break
@@ -650,14 +726,53 @@ class Executor:
         if outcome == "blocked":
             # Judge by what the LiDAR showed when deciding to stop (a re-scan after braking can miss an
             # obstacle at the corridor's edge); the gap shrinks by the distance covered while braking.
-            clear, observed, at = trigger
+            clear, observed, at, why = trigger
             task._observed = observed
-            why = f"obstacle {toward}" if clear < observed - 1e-9 else UNSEEN
             raise _blocked(task, why, max(0., clear - max(0., progress - at)), progress, toward)
+        if outcome == "stalled":
+            backed = 0.
+            if not turning:
+                self._remember_bump(self._fresh_state(), p["ux"], p["uy"])
+                backed = self._back_off(p["ux"], p["uy"], cancel)
+            error = _blocked(task, STALLED, 0., progress, toward)
+            task.detail["blocked"]["stall"] = True
+            if backed:
+                task.detail["blocked"]["backed_off_m"] = round(float(backed), 2)
+            raise error
         if outcome == "timeout":
             task.status = "failed"
             task.detail["error"] = "did not reach the target in time"
         return progress
+
+    def _back_off(self, ux, uy, cancel):
+        """After a stall: walk BACKOFF_M back the way it came, only if the LiDAR says that way is clear, so it
+        isn't left leaning on the obstacle. Returns the distance it moved back."""
+        try:
+            if self._clearance(-ux, -uy, False) < self._margin(BACKOFF_SPEED) + BACKOFF_M:
+                return 0.
+        except AdapterError:
+            return 0.
+        adapter = self.adapter
+        s0 = self._fresh_state()
+        c, sn = math.cos(s0.yaw), math.sin(s0.yaw)
+        wx, wy = -(c * ux - sn * uy), -(sn * ux + c * uy)
+        deadline = time.monotonic() + BACKOFF_M / BACKOFF_SPEED + 1.5
+        moved, last_send = 0., 0.
+        try:
+            while True:
+                self._check(cancel)
+                now = time.monotonic()
+                if now - last_send >= .1:
+                    adapter.move(-ux * BACKOFF_SPEED, -uy * BACKOFF_SPEED, 0.)
+                    last_send = now
+                s = self._fresh_state()
+                moved = (s.x - s0.x) * wx + (s.y - s0.y) * wy
+                if moved >= BACKOFF_M - s.speed ** 2 / (2 * DECEL_LINEAR) - .01 or now > deadline:
+                    break
+                time.sleep(TICK_S)
+        finally:
+            adapter.stop_move()
+        return max(0., moved)
 
     def _goto_leg(self, task, cancel, tx, ty):
         """Turn toward (tx, ty) in odom, then walk there in legs within the per-call limits."""

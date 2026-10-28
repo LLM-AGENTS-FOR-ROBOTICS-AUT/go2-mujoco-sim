@@ -553,7 +553,11 @@ def describe_outcome(task, group, still_to_do=()):
     if "moved_m" in d and "target_m" in d:
         progress = f" after {d['moved_m']} of {d['target_m']} m"
     blocked = d.get("blocked")
-    if blocked:
+    if blocked and blocked.get("stall"):
+        backed = f", then backed off {blocked['backed_off_m']} m" if blocked.get("backed_off_m") else ""
+        reason = (f"stopped: it {blocked['reason']} (glass, thin legs or similar){progress}{backed}; that spot now "
+                  "counts as an obstacle for a few minutes")
+    elif blocked:
         detail = blocked["reason"] + ","
         if blocked.get("clearance_m") is not None:
             detail = (f"{blocked['reason']} (it could only check {blocked['clearance_m']} m {blocked.get('toward', 'ahead')})"

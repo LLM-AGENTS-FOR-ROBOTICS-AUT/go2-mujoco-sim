@@ -46,7 +46,9 @@ Options: `--mock` (scripted replies, no language model: checks the page and robo
 file), `--scene empty`, `--scene house` (a furnished house: hallway, living room, kitchen, two bedrooms
 and a bathroom, with the teddy bear in bedroom 2) and `--scene house --seed N` (a random house of 2–7
 rooms, the same for the same N). Houses have realistic chairs, plants, TVs, beds and stoves once setup has
-run `simulation/fetch_furniture.py`, and plain shapes without them. `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
+run `simulation/fetch_furniture.py`, and plain shapes without them. `--scene hazards` starts the robot on a
+0.5 m platform with a sheer ledge, stairs going down and a glass pane the LiDAR can't see, for checking the
+ledge and stall protection. `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
 `--no-voice` (no speech recognition or spoken replies, saving memory), `--no-upload` (keep flagged replies on
 this computer only, no Firebase copy), `--check`.
 
@@ -106,7 +108,7 @@ Use the name of the network interface cabled to the robot. Follow the safety rul
 | `../go2/executor.py` | Runs tool calls safely: clearance checks, queueing, stopping |
 | `../go2/llm.py` | The private Ollama process and tool-calling chat |
 | `../go2/adapters/` | The robot: `sim.py` (room simulation process) and `go2_sdk.py` (real Go2) |
-| `../simulation/` | The room: world, simulated robot (sport mode over the walking policy), LiDAR and camera; `house.py`: multi-room houses |
+| `../simulation/` | The room: world, simulated robot (sport mode over the walking policy), LiDAR and camera; `house.py`: multi-room houses; `hazards.py`: ledge, stairs and glass |
 | `../models/` | The model catalog and checksums (the weights themselves are shared separately) |
 
 ## Troubleshooting

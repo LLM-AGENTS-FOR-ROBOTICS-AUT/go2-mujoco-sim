@@ -20,8 +20,15 @@ class FakeRobot(RobotAdapter):
     kind, label = "fake", "Fake robot"
 
     def __init__(self, obstacles=(), requires_arming=False, unsupported=(), posture="standing", height=.3,
-                 blind_behind=False):
+                 blind_behind=False, drops=(), glass=()):
         self.blind_behind = blind_behind
+        self.drops = list(drops)           # (xmin, xmax, ymin, ymax) boxes in odom where the floor is 0.5 m lower
+        self.glass = list(glass)           # boxes that stop the robot but return nothing to the LiDAR
+        self.contact_at = None             # when the body first touched glass
+        self.stop_times = []
+        self.paused_until = 0.             # simulate a busy computer: the world stops advancing, readings don't change
+        self.start_lag = 0.                # legs take this long to get going after a move from standstill
+        self._moving_since = None
         self.requires_arming = requires_arming
         self.obstacles = list(obstacles)   # (xmin, xmax, ymin, ymax) boxes in odom, 0.6 m tall
         self.unsupported = set(unsupported)
@@ -56,15 +63,29 @@ class FakeRobot(RobotAdapter):
         while not self._closed.wait(.01):
             now = time.monotonic()
             dt, last = min(now - last, .1), now   # the time that really passed: a busy machine wakes this late
+            if now < self.paused_until:
+                continue
             with self.lock:
                 if self.last_move is not None and time.monotonic() - self.last_move > .5:
                     self.cmd[:] = 0
                     self.last_move = None
                 step = np.array([1.6, 1.6, 4.0]) * dt
-                self.v += np.clip(self.cmd - self.v, -step, step)
+                if self.cmd.any() and self._moving_since is None:
+                    self._moving_since = now
+                elif not self.cmd.any():
+                    self._moving_since = None
+                lagging = self._moving_since is not None and now - self._moving_since < self.start_lag
+                if not lagging:
+                    self.v += np.clip(self.cmd - self.v, -step, step)
                 c, s = math.cos(self.yaw), math.sin(self.yaw)
-                self.x += (c * self.v[0] - s * self.v[1]) * dt
-                self.y += (s * self.v[0] + c * self.v[1]) * dt
+                nx = self.x + (c * self.v[0] - s * self.v[1]) * dt
+                ny = self.y + (s * self.v[0] + c * self.v[1]) * dt
+                if self._touches_glass(nx, ny):
+                    self.v[:2] = 0                 # pressed against it: no progress, like a real stall
+                    if self.contact_at is None:
+                        self.contact_at = time.monotonic()
+                else:
+                    self.x, self.y = nx, ny
                 self.yaw = math.atan2(math.sin(self.yaw + self.v[2] * dt), math.cos(self.yaw + self.v[2] * dt))
                 if self.posture == "walking" and not self.cmd.any() and np.abs(self.v).max() < 1e-3:
                     self.posture = "standing"
@@ -95,6 +116,7 @@ class FakeRobot(RobotAdapter):
     def stop_move(self):
         with self.lock:
             self.calls.append(("stop_move",))
+            self.stop_times.append(time.monotonic())
             self.cmd[:] = 0
             self.last_move = None
 
@@ -126,13 +148,23 @@ class FakeRobot(RobotAdapter):
             keep = gx ** 2 + gy ** 2 <= 9
             floor = np.stack([self.x + gx[keep], self.y + gy[keep]], 1)
             floor = floor[~self._shadowed(floor)]
-            pts = np.array(pts + [(fx, fy, 0.) for fx, fy in floor], dtype=float)
+            def floor_z(fx, fy):
+                return -.5 if any(a <= fx <= b and c <= fy <= d for a, b, c, d in self.drops) else 0.
+            pts = np.array(pts + [(fx, fy, floor_z(fx, fy)) for fx, fy in floor], dtype=float)
             c, s = math.cos(self.yaw), math.sin(self.yaw)
             dx, dy = pts[:, 0] - self.x, pts[:, 1] - self.y
             base = np.stack([c * dx + s * dy, -s * dx + c * dy, pts[:, 2] - self.height], 1)
             if self.blind_behind:
                 base = base[base[:, 0] > -.3]
         return base, self.state()
+
+    def _touches_glass(self, x, y, radius=.36):
+        for xmin, xmax, ymin, ymax in self.glass:
+            dx = max(xmin - x, 0, x - xmax)
+            dy = max(ymin - y, 0, y - ymax)
+            if math.hypot(dx, dy) < radius:
+                return True
+        return False
 
     def _shadowed(self, floor):
         """Slab test: does the sight line from the robot to each floor point cross an obstacle box?"""
