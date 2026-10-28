@@ -86,12 +86,15 @@ class SpokenReply:
 
 # ---- the robot, the executor and the agent ----------------------------------------------------------------
 class Console:
-    def __init__(self, model, adapter, robot_info=None, voice=False, feedback=FEEDBACK, uploader=None):
+    def __init__(self, model, adapter, robot_info=None, voice=False, feedback=FEEDBACK, uploader=None,
+                 memory_path=None):
         self.model, self.adapter = model, adapter
         self.feedback = Path(feedback)
         self.uploader = uploader                # a copy of each flag in Firebase (go2/feedback_upload.py), or None
         self.robot_info = robot_info or {}       # {"scene": "room"} or {"interface": "en7"}, shown in the state
-        self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task))
+        # memory_path: where remembered objects are saved (one file per scene; see memory_file), or None to keep
+        # them only while running, as in the tests.
+        self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task), memory_path=memory_path)
         self.agent = Agent(model, self.executor)
         self.agent.robot_line = lambda: robot_state_line(self.adapter, self.executor)
         self.agent.robot_snapshot = self._robot_snapshot
@@ -880,6 +883,16 @@ def check(args):
                                  if spec.get("download_url") else "see command_ui/README.md (model file and Ollama)"}))
 
 
+def memory_file(args):
+    """Where remembered objects are saved: one file per simulated scene (and house seed), because positions are
+    measured in that scene's coordinates. None on the real Go2 for now: its odometry restarts at zero each
+    time, so saved positions would point to the wrong places."""
+    if args.robot:
+        return None
+    name = args.scene + (f"-seed{args.seed}" if args.seed is not None else "")
+    return ROOT / "runtime" / "object_memory" / f"{name}.json"
+
+
 def start_uploader(args):
     """Copy flagged replies to Firebase (on by default). Not for --mock: scripted replies aren't the model's."""
     if args.mock or args.no_upload or not feedback_upload.enabled_by_env():
@@ -930,7 +943,7 @@ def main():
     except AdapterError as error:
         sys.exit(f"Could not start the robot: {error}")
     console = Console(model, adapter, {"interface": args.robot} if args.robot else {"scene": args.scene},
-                      voice=not args.no_voice, uploader=start_uploader(args))
+                      voice=not args.no_voice, uploader=start_uploader(args), memory_path=memory_file(args))
     if args.robot and args.arm:
         console.executor.set_armed(True)
         print("The real Go2 is ARMED: it will move when told to. Press Stop on the page to halt it.")

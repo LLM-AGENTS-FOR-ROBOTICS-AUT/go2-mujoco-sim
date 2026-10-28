@@ -18,11 +18,13 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import numpy as np
 
 from . import follow as F
 from . import limits as L
+from .object_memory import ObjectMemory
 from . import perception as P
 from .adapters.base import AdapterError, LOW_POSTURES
 from .tools import Command
@@ -102,7 +104,7 @@ class Task:
 
 
 class Executor:
-    def __init__(self, on_event=None):
+    def __init__(self, on_event=None, memory_path=None):
         self.adapter = None
         self.on_event = on_event or (lambda task: None)
         self.lock = threading.RLock()
@@ -120,6 +122,7 @@ class Executor:
         self.cloud = P.CloudBuffer()
         self._cloud_lock = threading.RLock()   # the follow camera thread reads the cloud too
         self.last_detections = []
+        self.object_memory = ObjectMemory(memory_path)
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
         self._next_id = 0
         self.detection_filter = None  # optional f(detections) -> detections (training-data noise)
@@ -869,7 +872,10 @@ class Executor:
             wx, wy = pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m
             kept = [m for m in kept if not (m[0].label == d.label and math.hypot(m[1] - wx, m[2] - wy) < .6)]
             kept.append((d, wx, wy, now))
+            self.object_memory.remember(label=d.label, x=wx, y=wy, color=d.color, confidence=d.confidence,
+                                        save=False)
         self.memory = kept[-60:]
+        self.object_memory.save()             # once per look, not once per object
 
     @staticmethod
     def _score(det, words):
@@ -945,14 +951,25 @@ class Executor:
                 best, best_key = (det, pose), key
         return best, closest
 
+
+
     def _recall(self, target):
-        """A recently seen object that fits the words, by its remembered position in the room."""
-        now = time.monotonic()
+        """An object seen before that fits the words, by its remembered position in the room: from this run's
+        recent looks or the saved memory (which survives a restart). The best fit wins; between equal fits, the
+        most recently seen, so an object that has moved is looked for where it was last seen."""
+        now, wall = time.monotonic(), time.time()
         for d, wx, wy, t in reversed(self.memory):
             if d.id == target and now - t <= MEMORY_S:
                 return d, wx, wy
         words = self._words(target)
-        candidates = [(self._score(d, words), -abs(now - t), d, wx, wy) for d, wx, wy, t in self.memory if now - t <= MEMORY_S]
+        candidates = []                       # (score, seen at (wall clock), detection-like, x, y)
+        for d, wx, wy, t in self.memory:
+            if now - t <= MEMORY_S:
+                candidates.append((self._score(d, words), wall - (now - t), d, wx, wy))
+        for item in self.object_memory.objects:
+            d = SimpleNamespace(id=item.get("id", item.get("label", "")), label=item.get("label", ""),
+                                color=item.get("color"))
+            candidates.append((self._score(d, words), item.get("last_seen", 0.), d, item["x"], item["y"]))
         candidates = [c for c in candidates if c[0][0] and not c[0][1]]
         if not candidates:
             return None
