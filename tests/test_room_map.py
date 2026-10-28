@@ -78,6 +78,12 @@ class OccupancyGridTests(unittest.TestCase):
         room_map.mark_scan((0., 0.), np.array([[2.0, 0., 0.]]))           # now the LiDAR sees floor behind
         self.assertEqual(room_map.grid[room_map.world_to_cell(1.0, 0.0)], 0)
 
+    def test_floor_below_the_robots_is_marked_as_a_drop(self):
+        room_map = OccupancyGrid()
+        room_map.mark_scan((0., 0.), np.array([[.8, 0., 0.], [1.6, 0., -.5]]))    # platform, then the floor below
+        self.assertEqual(room_map.grid[room_map.world_to_cell(.8, 0.)], 0)
+        self.assertEqual(room_map.grid[room_map.world_to_cell(1.6, 0.)], 1)
+
     def test_blocked_grows_obstacles_by_the_body_size(self):
         room_map = OccupancyGrid()
         room_map.mark_obstacles(np.array([[1.0, 0.0]]))

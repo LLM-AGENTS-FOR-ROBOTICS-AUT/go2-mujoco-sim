@@ -62,6 +62,14 @@ class GoToRouteTests(unittest.TestCase):
         self.assertEqual(task.status, "blocked", task.detail)
         self.assertLess(robot.x + .36, 1.2, "never touched the wall")
 
+    def test_after_bumping_into_glass_it_plans_around_it(self):
+        # The LiDAR can't see the glass; the stall check catches it, marks it on the map, and go_to plans again.
+        robot = self.attach(glass=[(1.2, 1.25, -.4, .4)])
+        task = self.go_to(3.0)
+        self.assertEqual(task.status, "completed", task.detail)
+        self.assertGreaterEqual(task.detail.get("replanned", 0), 1)
+        self.assertAlmostEqual(robot.x, 3.0, delta=.15)
+
     def test_going_back_to_the_start_goes_around_too(self):
         robot = self.attach(obstacles=[(1.2, 1.6, -.4, .4)])
         self.assertEqual(self.go_to(3.0).status, "completed")

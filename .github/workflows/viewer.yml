@@ -1,7 +1,10 @@
 name: Viewer setup
 
 on:
+  # Other branches are checked through their pull request, so a push to one runs this once, not twice.
+  # A branch without a pull request can still be run from the Actions tab.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -24,7 +27,7 @@ jobs:
             architecture: x86_64
             mujoco: '3.10.0'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,6 +73,20 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/Go2 simulator/macos/run.sh" --walk --validate
           "$GITHUB_WORKSPACE/Go2 simulator/_deps/tools/uv" pip check --python "$GITHUB_WORKSPACE/Go2 simulator/.venv/bin/python"
+      - name: Install what the unit tests use on Apple Silicon
+        if: matrix.architecture == 'arm64'
+        working-directory: Go2 simulator
+        run: |
+          # setup.sh --agent without the 3.4 GB language model: the console's packages, the room's
+          # scanned objects and the houses' furniture.
+          _deps/tools/uv pip install --python .venv/bin/python --requirement command_ui/requirements.txt
+          .venv/bin/python simulation/fetch_gso.py
+          .venv/bin/python simulation/fetch_furniture.py
+      - name: Run the unit tests on Apple Silicon
+        if: matrix.architecture == 'arm64'
+        timeout-minutes: 20
+        working-directory: Go2 simulator
+        run: .venv/bin/python -m unittest discover -s tests -t . -v
       - name: Save Apple Silicon motion results
         if: always() && matrix.architecture == 'arm64'
         uses: actions/upload-artifact@v7
@@ -80,7 +97,7 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
         with:
@@ -115,6 +132,23 @@ jobs:
           call "%GITHUB_WORKSPACE%\Go2 simulator\windows\Launch Go2 Viewer.cmd" --walk --validate
           if errorlevel 1 exit /b 1
           "%GITHUB_WORKSPACE%\Go2 simulator\.venv\Scripts\python.exe" -m pip check
+      - name: Install what the unit tests use
+        working-directory: Go2 simulator
+        shell: powershell
+        run: |
+          # setup.ps1 -Agent without the 3.4 GB language model: the console's packages, the room's
+          # scanned objects and the houses' furniture.
+          & .venv\Scripts\python.exe -m pip install --requirement command_ui\requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & .venv\Scripts\python.exe simulation\fetch_gso.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & .venv\Scripts\python.exe simulation\fetch_furniture.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Run the unit tests
+        timeout-minutes: 20
+        working-directory: Go2 simulator
+        shell: cmd
+        run: .venv\Scripts\python.exe -m unittest discover -s tests -t . -v
       - name: Save Windows motion results
         if: always()
         uses: actions/upload-artifact@v7

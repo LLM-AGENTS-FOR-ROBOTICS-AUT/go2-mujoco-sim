@@ -415,7 +415,7 @@ class Agent:
         group_done = task.detail.get("group_remaining", 0) == 0
         group = [t for t in self.executor.history if t.group == task.group]
         noteworthy = status in ("blocked", "failed") or (
-            status == "completed" and group_done and (len(group) > 1 or tool in ("go_to", "approach")))
+            status == "completed" and group_done and (len(group) > 1 or tool in ("go_to", "approach", "follow")))
         if status in ("stopped", "cancelled") or not noteworthy:
             return
         # What other requests still have queued. Read now, under the executor lock and before the agent lock
@@ -546,14 +546,20 @@ def describe_outcome(task, group, still_to_do=()):
             text = f"finished: {task.command.summary}"
         if "remaining_m" in d:
             text += f" (ended {d['remaining_m']} m from the target)"
-        if "final_gap_m" in d:
+        if "followed_s" in d:
+            text += f" (followed for {d['followed_s']} s and walked {d['walked_m']} m; ask again to keep following)"
+        elif "final_gap_m" in d:
             text += f" (now {d['final_gap_m']} m from it)"
         return text + ahead + ". Tell the user briefly."
     progress = ""
     if "moved_m" in d and "target_m" in d:
         progress = f" after {d['moved_m']} of {d['target_m']} m"
     blocked = d.get("blocked")
-    if blocked:
+    if blocked and blocked.get("stall"):
+        backed = f", then backed off {blocked['backed_off_m']} m" if blocked.get("backed_off_m") else ""
+        reason = (f"stopped: it {blocked['reason']} (glass, thin legs or similar){progress}{backed}; that spot now "
+                  "counts as an obstacle for a few minutes")
+    elif blocked:
         detail = blocked["reason"] + ","
         if blocked.get("clearance_m") is not None:
             detail = (f"{blocked['reason']} (it could only check {blocked['clearance_m']} m {blocked.get('toward', 'ahead')})"

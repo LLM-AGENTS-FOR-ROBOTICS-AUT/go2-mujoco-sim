@@ -63,6 +63,24 @@ def _person(shirt, skin):
             ("box", (.12, .2, .3), (0, 0, 1.15), shirt), ("sphere", (.11,), (0, 0, 1.6), skin)]
 
 
+# People who can walk (#15, follow-me): mocap bodies parked under the floor until sim_server's walker op gives
+# them a path. Listed as "person" for the camera, like the standing person in the room.
+WALKERS = [("walker_red", "red"), ("walker_blue", "blue")]
+WALKER_PARK = (0., 0., -5.)
+
+
+def _add_walkers(spec, objects):
+    shirts = {"red": RED, "blue": BLUE}
+    for i, (name, colour) in enumerate(WALKERS):
+        body = spec.worldbody.add_body()
+        body.name, body.mocap = name, True
+        body.pos = (WALKER_PARK[0] + 2 * i, WALKER_PARK[1], WALKER_PARK[2])
+        for kind, size, pos, rgba in _person(shirts[colour], SKIN):
+            geom = body.add_geom()
+            geom.type, geom.size, geom.pos, geom.rgba = GEOM_TYPES[kind], _size3(size), pos, rgba
+        objects.append((name, WorldObject(name, "person", colour)))
+
+
 ROOM_OBJECTS = [
     (WorldObject("ball_red", "sports ball", "red"), (0.6, 1.3), 0, [("sphere", (.12,), (0, 0, .12), RED)]),
     (WorldObject("ball_blue", "sports ball", "blue"), (-0.8, -2.6), 0, [("sphere", (.12,), (0, 0, .12), BLUE)]),
@@ -83,14 +101,22 @@ GSO_PLACEMENT = [("teddy_bear", "teddy bear", .5, -2.8, .8), ("backpack", "backp
                  ("toy_elephant", "elephant", -3.3, -3.2, .4), ("toy_horse", "horse", 3.4, 3.3, -2.), ("alarm_clock", "clock", -2.0, -1.6, 1.9),
                  ("fire_truck", "truck", 1.3, -.35, 1.2), ("laptop", "laptop", -3.2, 1.6, .3), ("keyboard", "keyboard", -.5, -3.35, 0.),
                  ("book", "book", 2.6, -3.0, .7)]
+# Scans that don't come the right way up: the turn (quaternion) that stands them up. The teddy bear was scanned
+# lying on its back (0.37 m long, 0.12 m tall) and looked like a flat golden shape from Go2's camera; a quarter
+# turn about x sits it up facing -y, so yaw turns it as before.
+GSO_UPRIGHT = {"teddy_bear": (np.cos(np.pi / 4), np.sin(np.pi / 4), 0, 0)}
 
 
-def _obj_zmin(path):
+def _obj_zmin(path, quat=(1, 0, 0, 0)):
+    """The lowest point of an OBJ mesh once turned by `quat`."""
+    up = np.zeros(9)
+    mujoco.mju_quat2Mat(up, np.asarray(quat, dtype=float))
+    up = up[6:]                                        # the rotation's z row: height of a turned vertex
     zmin = None
     with open(path) as f:
         for line in f:
             if line.startswith("v "):
-                z = float(line.split()[3])
+                z = float(np.dot(up, [float(v) for v in line.split()[1:4]]))
                 zmin = z if zmin is None or z < zmin else zmin
     return zmin or 0.
 
@@ -110,9 +136,11 @@ def _add_scanned(spec, short, name, x, y, yaw):
     mesh.name, mesh.file = f"{short}_mesh", str(folder / "model.obj")
     body = spec.worldbody.add_body()
     body.name = name
-    body.pos = (x, y, -_obj_zmin(folder / "model.obj") + .002)
+    upright = GSO_UPRIGHT.get(short, (1, 0, 0, 0))
+    body.pos = (x, y, -_obj_zmin(folder / "model.obj", upright) + .002)
     body.quat = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
     geom = body.add_geom()
+    geom.quat = upright
     geom.type, geom.meshname, geom.material = mujoco.mjtGeom.mjGEOM_MESH, mesh.name, material.name
     geom.group = 0   # world group: rendered, seen by the LiDAR, solid (convex hull) to the robot
     return True
@@ -138,9 +166,10 @@ def build(scene: str = "room", world=None):
     """Return (model, objects) where objects maps body id -> WorldObject.
 
     scene "procedural" builds the room and objects described by `world` (see random_world); scene "house"
-    builds the multi-room house described by `world` (see house.py), or the demo house without one."""
-    if scene not in ("room", "empty", "procedural", "house"):
-        raise ValueError("scene must be 'room', 'empty', 'procedural' or 'house'")
+    builds the multi-room house described by `world` (see house.py), or the demo house without one; scene "hazards"
+    builds the ledge, stairs and glass test platform (see hazards.py)."""
+    if scene not in ("room", "empty", "procedural", "house", "hazards"):
+        raise ValueError("scene must be 'room', 'empty', 'procedural', 'house' or 'hazards'")
     if scene == "procedural" and world is None:
         raise ValueError("procedural scenes need a world description")
     spec = mujoco.MjSpec.from_file(str(SCENE))
@@ -217,6 +246,11 @@ def build(scene: str = "room", world=None):
     if scene == "house":
         import house     # simulation/house.py, kept apart so the room scenes never change
         house.build_house(spec, world if world is not None else house.house_demo(), objects)
+    if scene == "hazards":
+        import hazards   # simulation/hazards.py: platform, ledge, stairs down and a glass pane (#22)
+        hazards.build_hazards(spec, objects, WorldObject)
+    if scene in ("room", "empty"):
+        _add_walkers(spec, objects)   # not in houses or the procedural training rooms, which stay as they were
     model = spec.compile()
     by_body = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name): item for name, item in objects}
     return model, by_body

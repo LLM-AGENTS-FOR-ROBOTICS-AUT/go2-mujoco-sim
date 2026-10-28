@@ -16,6 +16,10 @@ MAX_BODY_PITCH_DEG = 43.0
 MAX_BODY_YAW_DEG = 34.0
 
 MAX_WAIT_S = 30.0
+FOLLOW_DISTANCE_M = (0.8, 3.0)   # gap kept between Go2's nose and the person
+DEFAULT_FOLLOW_DISTANCE_M = 1.2
+DEFAULT_FOLLOW_S = 60.0         # following always ends on its own: ask again to keep going
+MAX_FOLLOW_S = 120.0
 MAX_GOTO_LEG_M = MAX_DISTANCE_M
 CONFIRMATION_TTL_S = 60.0
 

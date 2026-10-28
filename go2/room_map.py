@@ -5,9 +5,12 @@ Each scan marks the cells between the robot and every return as free, then the r
 body as occupied. Marking free space every scan also clears things that have moved, such as a person walking
 past.
 
-Limits, worth revisiting: the grid is a fixed square around the odometry origin (20 m x 20 m by default), so
-points beyond it are dropped; and drops (ledges, stairs down) aren't marked yet, so a planned route can lead to a
-ledge, where the executor's own drop check (#22) stops the robot."""
+Floor seen lower than the robot's (beyond a ledge, down the stairs) is marked occupied, so routes keep away from
+drops; the executor's drop check (#22) still stops the robot at an edge either way. Spots the stall check bumped
+into (glass, thin legs) are added when planning (blocked(extra=...)), since the LiDAR's rays see through them.
+
+Limit, worth revisiting: the grid is a fixed square around the odometry origin (20 m x 20 m by default), so
+points beyond it are dropped."""
 
 import math
 
@@ -92,6 +95,7 @@ class OccupancyGrid:
         d = np.hypot(points[:, 0] - ox, points[:, 1] - oy)
         floor = (np.abs(z) < FLOOR_Z) & (d <= RAY_RANGE_M)
         blocking = (z > OBSTACLE_Z[0]) & (z < OBSTACLE_Z[1])
+        below = z < -FLOOR_Z               # floor lower than the robot's: beyond a ledge or down the stairs
         rays = points[(floor | blocking) & (d <= RAY_RANGE_M) & (d > 1e-6)]
         if len(rays) > MAX_RAYS:
             rays = rays[self._rng.choice(len(rays), MAX_RAYS, replace=False)]
@@ -110,12 +114,18 @@ class OccupancyGrid:
             rows, cols, inside = self._cells(floor_pts[:, :2])
             keep = self.grid[rows[inside], cols[inside]] != OCCUPIED
             self.grid[rows[inside][keep], cols[inside][keep]] = FREE
-        self.mark_obstacles(points[blocking][:, :2])
+        self.mark_obstacles(points[blocking | below][:, :2])
 
     # ---- planning helpers ----------------------------------------------------------------------
-    def blocked(self, radius_m):
-        """Boolean grid of cells the body's centre can't be in: occupied cells grown by radius_m."""
+    def blocked(self, radius_m, extra=None):
+        """Boolean grid of cells the body's centre can't be in: occupied cells, plus any extra points (Nx2,
+        metres; for things the LiDAR can't see, which its free-space rays would otherwise clear), grown by
+        radius_m."""
         occupied = self.grid == OCCUPIED
+        if extra is not None and len(extra):
+            occupied = occupied.copy()
+            rows, cols, inside = self._cells(np.asarray(extra, dtype=float)[:, :2])
+            occupied[rows[inside], cols[inside]] = True
         reach = int(math.ceil(radius_m / self.resolution))
         if reach <= 0 or not occupied.any():
             return occupied

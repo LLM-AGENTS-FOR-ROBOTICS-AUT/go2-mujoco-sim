@@ -16,6 +16,9 @@ import numpy as np
 # Go2 body footprint (m): length 0.70, width 0.31, standing height ~0.40
 HALF_LENGTH, HALF_WIDTH = .36, .17
 OBSTACLE_MIN_Z, OBSTACLE_MAX_Z = .06, .55   # height above the floor that can block the body
+# A return this far below the robot's own floor is a drop (a ledge, stairs going down): the same 6 cm the
+# obstacle check uses going up. Indoors a downward ramp also looks like a drop, which is the safe side.
+STEP_DOWN_Z = .06
 # Beyond this the floor-contact estimate is unreliable (one pixel is metres of distance): say "unknown".
 GROUND_PLANE_MAX_M = 6.
 NO_COLOR = {"person", "wall"}   # a person's "colour" is just their clothes; don't name people by it
@@ -40,9 +43,15 @@ class Detection:
     y_m: float | None
     distance_source: str        # "lidar", "ground_plane" or "unknown"
     confidence: float
+    # Internal only (not shown to the model, whose look results stay as trained): a person's shirt colour, used
+    # to tell people apart while following, and where the object is in the image as [left, top, right, bottom].
+    clothing: str | None = None
+    box: list | None = None
 
     def public(self):
         value = asdict(self)
+        value.pop("clothing")
+        value.pop("box")
         for key in ("distance_m", "x_m", "y_m"):
             if value[key] is not None:
                 value[key] = round(value[key], 2)
@@ -110,44 +119,82 @@ def obstacles(points_floor):
     return points_floor[(z > OBSTACLE_MIN_Z) & (z < OBSTACLE_MAX_Z)]
 
 
-def clearance_along(points_floor, ux, uy):
-    """Free distance (m) from the body edge along unit direction (ux, uy), within a body-wide corridor."""
+def _corridor(points_floor, ux, uy):
+    """(along, across, extent, half) for a body-wide corridor along unit direction (ux, uy)."""
+    along = points_floor[:, 0] * ux + points_floor[:, 1] * uy
+    across = np.abs(-points_floor[:, 0] * uy + points_floor[:, 1] * ux)
+    extent = abs(ux) * HALF_LENGTH + abs(uy) * HALF_WIDTH
+    half = abs(ux) * HALF_WIDTH + abs(uy) * HALF_LENGTH + .05
+    return along, across, extent, half
+
+
+def obstacle_along(points_floor, ux, uy):
+    """Free distance (m) from the body edge to the nearest obstacle along (ux, uy), within the corridor."""
     pts = obstacles(points_floor)
     if not len(pts):
         return math.inf
-    along = pts[:, 0] * ux + pts[:, 1] * uy
-    across = np.abs(-pts[:, 0] * uy + pts[:, 1] * ux)
-    extent = abs(ux) * HALF_LENGTH + abs(uy) * HALF_WIDTH
-    half = abs(ux) * HALF_WIDTH + abs(uy) * HALF_LENGTH + .05
+    along, across, extent, half = _corridor(pts, ux, uy)
     ahead = (along > 0) & (across < half)
     if not ahead.any():
         return math.inf
     return float(max(0., along[ahead].min() - extent))
 
 
-def observed_along(points_floor, ux, uy, bin_m=.1, max_m=3.0):
-    """How far beyond the body edge the corridor along (ux, uy) is actually observed (any return,
-    floor or obstacle, in every 10 cm step). Space the LiDAR cannot see is never assumed free."""
-    if not len(points_floor):
-        return 0.
-    along = points_floor[:, 0] * ux + points_floor[:, 1] * uy
-    across = np.abs(-points_floor[:, 0] * uy + points_floor[:, 1] * ux)
-    extent = abs(ux) * HALF_LENGTH + abs(uy) * HALF_WIDTH
-    half = abs(ux) * HALF_WIDTH + abs(uy) * HALF_LENGTH + .05
-    beyond = along[(across < half) & (along > extent)] - extent
+def _filled(beyond, bin_m, max_m):
+    """Distance covered by consecutive 10 cm steps that each hold at least one return, from the body edge."""
     bins = np.zeros(int(max_m / bin_m), bool)
     index = (beyond / bin_m).astype(int)
-    bins[index[index < len(bins)]] = True
+    bins[index[(index >= 0) & (index < len(bins))]] = True
     return float((np.argmin(bins) if not bins.all() else len(bins)) * bin_m)
 
 
-def turn_clearance(points_floor):
-    """Free margin (m) around the body's turning circle."""
-    pts = obstacles(points_floor)
-    if not len(pts):
+def drop_along(points_floor, ux, uy, bin_m=.1, max_m=3.0):
+    """Free distance (m) from the body edge to a drop along (ux, uy): where the supported floor ends, when the
+    LiDAR sees returns more than STEP_DOWN_Z below the robot's floor in the corridor (a ledge, stairs going
+    down, a hole). inf when nothing in the corridor is below the floor."""
+    if not len(points_floor):
         return math.inf
+    along, across, extent, half = _corridor(points_floor, ux, uy)
+    inside = (across < half) & (along > extent)
+    z = points_floor[:, 2]
+    below = inside & (z < -STEP_DOWN_Z)
+    if not below.any():
+        return math.inf
+    supported = inside & (z >= -STEP_DOWN_Z)            # floor (or anything standing on it) at our level
+    floor_end = _filled(along[supported] - extent, bin_m, max_m)
+    return float(max(0., min(floor_end, (along[below] - extent).min())))
+
+
+def clearance_along(points_floor, ux, uy):
+    """Free distance (m) from the body edge along unit direction (ux, uy), within a body-wide corridor: to the
+    nearer of an obstacle and a drop."""
+    return min(obstacle_along(points_floor, ux, uy), drop_along(points_floor, ux, uy))
+
+
+def observed_along(points_floor, ux, uy, bin_m=.1, max_m=3.0):
+    """How far beyond the body edge the corridor along (ux, uy) is actually observed (a return at the robot's
+    floor level or above in every 10 cm step). Space the LiDAR cannot see is never assumed free, and a lower
+    floor past a ledge does not count as seeing the corridor."""
+    if not len(points_floor):
+        return 0.
+    along, across, extent, half = _corridor(points_floor, ux, uy)
+    seen = (across < half) & (along > extent) & (points_floor[:, 2] >= -STEP_DOWN_Z)
+    return _filled(along[seen] - extent, bin_m, max_m)
+
+
+def turn_clearance(points_floor):
+    """Free margin (m) around the body's turning circle: to the nearest obstacle, or to the nearest point
+    below the floor (no floor under the circle means a ledge it could step off while turning)."""
     radius = math.hypot(HALF_LENGTH, HALF_WIDTH)
-    return float(max(0., np.hypot(pts[:, 0], pts[:, 1]).min() - radius))
+    margin = math.inf
+    pts = obstacles(points_floor)
+    if len(pts):
+        margin = float(max(0., np.hypot(pts[:, 0], pts[:, 1]).min() - radius))
+    if len(points_floor):
+        below = points_floor[points_floor[:, 2] < -STEP_DOWN_Z]
+        if len(below):
+            margin = min(margin, float(max(0., np.hypot(below[:, 0], below[:, 1]).min() - radius)))
+    return margin
 
 
 def sector_summary(points_floor, max_range=5.0):
@@ -167,6 +214,19 @@ def sector_summary(points_floor, max_range=5.0):
             ux, uy = math.cos(math.radians(centre)), math.sin(math.radians(centre))
             edge = abs(ux) * HALF_LENGTH + abs(uy) * HALF_WIDTH
             result[name] = round(max(0., float(dist[sel].min()) - edge), 2)
+    return result
+
+
+def sector_free_space(points_floor, max_range=5.0):
+    """sector_summary, plus the distance to a drop in each direction (a ledge is reported like an obstacle,
+    so `look` gives a number instead of "clear" on that side)."""
+    result = sector_summary(points_floor, max_range)
+    for i, name in enumerate(SECTORS):
+        a = math.radians(i * 45)
+        edge = drop_along(points_floor, math.cos(a), math.sin(a), max_m=min(max_range, 3.0))
+        if edge != math.inf:
+            edge = round(edge, 2)
+            result[name] = edge if result[name] is None else min(result[name], edge)
     return result
 
 
@@ -258,10 +318,18 @@ def fuse(masks, rgb, cloud_base, intrinsics, camera_pos, camera_rot, roll, pitch
                 if math.hypot(gx, gy) <= GROUND_PLANE_MAX_M:
                     x, y, distance, source = gx, gy, math.hypot(gx, gy), "ground_plane"
                 bearing = math.degrees(math.atan2(gy, gx))
+        clothing = None
+        if item.label == "person":
+            top, bottom = rows.min(), rows.max()
+            torso = (rows >= top + .2 * (bottom - top)) & (rows <= top + .55 * (bottom - top))
+            clothing = color_name(rgb[rows[torso], cols[torso]])
+        h, w = item.mask.shape
+        box = [round(cols.min() / w, 4), round(rows.min() / h, 4), round((cols.max() + 1) / w, 4),
+               round((rows.max() + 1) / h, 4)]
         detections.append(Detection(
             id=f"obj{n + 1}", label=item.label, color=None if item.label in NO_COLOR else color_name(rgb[item.mask]),
             distance_m=distance, bearing_deg=bearing, x_m=x, y_m=y, distance_source=source,
-            confidence=float(item.score)))
+            confidence=float(item.score), clothing=clothing, box=box))
     return sorted(detections, key=lambda d: (d.distance_m is None, d.distance_m or 0))
 
 

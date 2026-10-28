@@ -10,7 +10,7 @@ try:
     import server
 except ImportError:                     # flask not installed: the console's own requirements
     server = None
-from tests.fakes import FakeRobot, ScriptedModel, wait_for  # noqa: E402
+from tests.fakes import FakeRobot, ScriptedModel, needs_camera, wait_for  # noqa: E402
 
 try:
     import mujoco  # noqa: F401
@@ -289,6 +289,7 @@ class CleanupTests(unittest.TestCase):
 class CameraTests(unittest.TestCase):
     """The camera endpoint, on the real (headless) room simulation."""
 
+    @needs_camera
     def test_after_a_look_the_frame_and_its_objects_are_served(self):
         adapter = SimAdapter(scene="room", headless=True)
         adapter.connect()

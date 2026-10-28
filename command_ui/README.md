@@ -11,7 +11,7 @@ you type / speak  ->  LLM agent (go2-ft-04)  ->  tool calls  ->  safety executor
 | | Before (`main`) | This branch (`llm-agent`) |
 |---|---|---|
 | Understanding | Keyword rules (`agent.py`, the placeholder) | Gemma 4 E2B fine-tuned for Go2 (`go2-ft-04`), via a private Ollama |
-| Actions | Walk, strafe, turn, stop | 12 tools: move, turn, go_to, approach, posture (sit, stand, lie), trick, acrobatic, body pose, look, wait, get_status, stop |
+| Actions | Walk, strafe, turn, stop | 13 tools: move, turn, go_to, approach, follow (simulator only), posture (sit, stand, lie), trick, acrobatic, body pose, look, wait, get_status, stop |
 | Safety | Speed and duration bounds | Per-call limits (0.8 m/s, 5 s, 4 m, 57 deg/s) plus LiDAR clearance checks before and during each move |
 | Robot | Flat floor, walking only | Indoor room with household objects, simulated L1 LiDAR and front camera, or the real Go2 EDU |
 | Voice | Records 5 s, faster-whisper base | Ends when you pause; hands-free conversation you can cut into; Whisper large-v3-turbo in, Kokoro voice out |
@@ -46,9 +46,22 @@ Options: `--mock` (scripted replies, no language model: checks the page and robo
 file), `--scene empty`, `--scene house` (a furnished house: hallway, living room, kitchen, two bedrooms
 and a bathroom, with the teddy bear in bedroom 2) and `--scene house --seed N` (a random house of 2–7
 rooms, the same for the same N). Houses have realistic chairs, plants, TVs, beds and stoves once setup has
-run `simulation/fetch_furniture.py`, and plain shapes without them. `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
+run `simulation/fetch_furniture.py`, and plain shapes without them. `--scene hazards` starts the robot on a
+0.5 m platform with a sheer ledge, stairs going down and a glass pane the LiDAR can't see, for checking the
+ledge and stall protection. `--headless` (no MuJoCo window), `--port N`, `--no-browser`,
 `--no-voice` (no speech recognition or spoken replies, saving memory), `--no-upload` (keep flagged replies on
 this computer only, no Firebase copy), `--check`.
+
+**Follow-me (simulator only).** "Follow me" or "follow the person in red" walks after a person the camera
+can see, keeping 1.2 m (0.8–3 m) behind them; "stop" ends it at once. Following always ends by itself: after
+60 s unless asked for longer (at most 120 s), so a robot nobody is watching doesn't walk on indefinitely. Ask
+again to keep going. It never switches to someone else: when two people are too close to tell apart it waits,
+and when it loses sight of the person it stops, turns to where they were, and gives up after 8 s. The same
+safety checks as other moves apply: it stops before drops, and if something the LiDAR can't see stops it, it
+backs off and ends. go2-ft-04 hasn't been trained on
+`follow` yet (#16) and doesn't see it in its compact prompt, so try it with `--mock` or a full-prompt model
+(`go2-ft-04@full`). In the simulator, two people (`walker_red`, `walker_blue`) can be made to walk with
+`SimAdapter.walker(name, [[x, y], ...], speed)`; they are parked out of sight otherwise.
 
 ## Use
 
@@ -106,7 +119,7 @@ Use the name of the network interface cabled to the robot. Follow the safety rul
 | `../go2/executor.py` | Runs tool calls safely: clearance checks, queueing, stopping |
 | `../go2/llm.py` | The private Ollama process and tool-calling chat |
 | `../go2/adapters/` | The robot: `sim.py` (room simulation process) and `go2_sdk.py` (real Go2) |
-| `../simulation/` | The room: world, simulated robot (sport mode over the walking policy), LiDAR and camera; `house.py`: multi-room houses |
+| `../simulation/` | The room: world, simulated robot (sport mode over the walking policy), LiDAR and camera; `house.py`: multi-room houses; `hazards.py`: ledge, stairs and glass |
 | `../models/` | The model catalog and checksums (the weights themselves are shared separately) |
 
 ## Troubleshooting

@@ -20,7 +20,13 @@ class MockModel:
         text = re.sub(r"^\[robot update:.*?\]\s*", "", text, flags=re.S)
         calls = []
         number = re.search(r"(\d+(?:\.\d+)?)", text)
-        if "look" in text or "see" in text:
+        if "stop following" in text:
+            calls = [("stop", {})]
+        elif "follow" in text:
+            colour = re.search(r"\b(red|orange|yellow|green|blue|purple|pink|white|grey|black|brown)\b", text)
+            calls = [("follow", {"target": f"the person in {colour[1]}" if colour else "me",
+                                 **({"distance_m": float(number[1])} if number else {})})]
+        elif "look" in text or "see" in text:
             calls = [("look", {})]
         elif "turn" in text:
             calls = [("turn", {"direction": "right" if "right" in text else "left",
