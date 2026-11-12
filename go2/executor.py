@@ -55,6 +55,21 @@ TICK_S = .05
 START_CHECK_S = 1.0
 # A thing this near fills enough of the picture for an ordinary resemblance to be trusted (semantic object memory).
 CLOSE_M = 1.5
+# What the detector (YOLO, COCO classes) can call things. Words that fit none of these labels are translated to the
+# closest one by the semantic object memory's text side ("computer" -> laptop), when it is on.
+DETECTOR_LABELS = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant",
+    "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli",
+    "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet",
+    "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush")
+# The closest label is taken only when it is this much closer to the words than the next one. Measured with SigLIP 2
+# on 44 everyday words: right translations lead by 0.02-0.08 (computer -> laptop, fridge -> refrigerator, telly -> tv),
+# words with no label of their own by under 0.01 (guitar, lamp, my keys); raw closeness alone doesn't separate them.
+LABEL_MARGIN = .02
 SYNONYMS = {"ball": "sports ball", "football": "sports ball", "basketball": "sports ball", "soccer": "sports ball",
             "table": "dining table", "desk": "dining table", "sofa": "couch", "plant": "potted plant",
             "flowerpot": "potted plant", "man": "person", "woman": "person", "human": "person", "guy": "person",
@@ -142,6 +157,7 @@ class Executor:
             Path(memory_path).with_name(Path(memory_path).stem + "-visual.json"))
         self.visual = None
         self._look_vectors = {}     # detection id -> picture vector, from the last look
+        self._label_vectors = {}    # detector label -> its text vector (the words-to-label translation)
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
         self._next_id = 0
         self.detection_filter = None  # optional f(detections) -> detections (training-data noise)
@@ -278,13 +294,21 @@ class Executor:
                                            f"their next message, call acrobatic again with confirmed=true."}
                 del self.confirmations[name]
             self._require_armed()
+            note = {}
+            if command.kind == "approach":
+                meant = self._label_for(command.params["target"])
+                if meant:
+                    # Said in the action, so the model tells the user and a wrong translation is caught at once.
+                    command.params["meant"] = meant
+                    command.summary = f"approach the {meant} (what I take '{command.params['target']}' to mean)"
+                    note = {"looking_for": meant}
             task = Task(command, group, self.generation, user_turn=user_turn)
             self.queue.append(task)
             position = len(self.queue) + (1 if self.current else 0)
             task.awaiting = position == 1 and command.kind in ("velocity", "goto", "approach", "follow")
             self.wake.notify_all()
             return {"status": "queued", "task_id": task.id, "position": position, "action": command.summary,
-                    "_task": task}
+                    **note, "_task": task}
 
     def _after_group(self, group, timeout=90.):
         """Queries run in order with the motions of the same request: 'turn around and look' looks after
@@ -1070,6 +1094,39 @@ class Executor:
         return det, wx, wy
 
     # ---- semantic object memory --------------------------------------------------------------------
+    def _label_for(self, target):
+        """The detector label the words mean, when none fits them as said and the semantic object memory can tell:
+        'computer' -> 'laptop', 'the red mug' -> 'red cup'. None when a label already fits, the memory is off, or
+        no label is clearly closest (words for things the detector has no name for)."""
+        visual = self.visual
+        if visual is None or re.fullmatch(r"obj\d+", str(target)):
+            return None
+        words = self._words(target)
+        with self.lock:
+            seen = {d.label for d, *_ in self.memory}
+        labels = sorted((set(DETECTOR_LABELS) | seen | {o.get("label") or "" for o in self.object_memory.objects}) - {""})
+        if any(self._score(SimpleNamespace(label=label, color=None), words)[0] for label in labels):
+            return None                         # a label fits the words as they are
+        naming = [w for w in words if w not in STOP_WORDS and w not in ADJECTIVES and w not in P.COLOR_WORDS]
+        if not naming:
+            return None
+        try:
+            cache = self._label_vectors
+            if cache.get("embedder") is not visual.embedder:
+                cache.clear()
+                cache["embedder"] = visual.embedder
+            missing = [label for label in labels if label not in cache]
+            if missing:
+                cache.update(zip(missing, np.asarray(visual.embedder.texts(missing), dtype=np.float32)))
+            closeness = np.stack([cache[label] for label in labels]) @ visual.text(" ".join(naming))
+        except Exception:
+            return None
+        first, second = np.argsort(-closeness)[:2]
+        if closeness[first] - closeness[second] < LABEL_MARGIN:
+            return None
+        colours = [w for w in words if w in P.COLOR_WORDS]
+        return " ".join(colours + [labels[first]])
+
     def use_visual_memory(self, embedder):
         """Switch the semantic object memory on with this embedding model (saved beside the object memory), or
         off with None: what it remembered stays saved, and is there again when it is switched back on."""
@@ -1149,7 +1206,9 @@ class Executor:
                               "speed": 0., "turn_rate": rate, "angle": abs(angle)}, cancel, leg=True)
 
     def _approach(self, task, cancel):
-        p = task.command.params
+        p = dict(task.command.params)
+        if p.get("meant"):
+            p["target"] = p["meant"]            # the detector's word for what was asked for
         stop_at = p["stop_distance"]
         searched, recalled, closest, locked, unranged = 0, False, None, None, 0
         for attempt in range(12):
@@ -1183,6 +1242,8 @@ class Executor:
                 with self.lock:
                     names = sorted({_name(d) for d, *_ in self.memory})[:4]
                 text = f"I looked all the way around but can't find a {p['target']}"
+                if p.get("meant"):
+                    text += f" (what I took '{task.command.params['target']}' to mean)"
                 if closest is not None:
                     text += f"; the closest match is the {_name(closest)}"
                 text += f"; I can see: {', '.join(names)}" if names else "; I don't see any objects"

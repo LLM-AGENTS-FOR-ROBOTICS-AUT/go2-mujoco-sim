@@ -338,7 +338,36 @@ class ApproachTests(Looking):
         self.call("approach", {"target": "can"})
         task = self.finished()
         self.assertEqual(task.status, "failed")
-        self.assertIn("can't find a can", task.detail["error"])
+        self.assertIn("can't find a", task.detail["error"])
+
+
+class TranslationTests(Looking):
+    """Words that fit no label are taken to mean the closest detector label, and Go2 says which."""
+
+    def test_a_word_with_no_label_is_taken_to_mean_the_closest_one_and_it_says_so(self):
+        self.things = [("bottle", "green", 1.4, .4)]
+        result = self.call("approach", {"target": "the green can"})
+        self.assertEqual(result["looking_for"], "green bottle")
+        self.assertIn("approach the green bottle (what I take 'the green can' to mean)", result["action"])
+        task = self.finished()
+        self.assertEqual((task.status, task.detail["target"]["label"]), ("completed", "bottle"), task.detail)
+
+    def test_words_that_already_fit_a_label_are_left_alone(self):
+        result = self.call("approach", {"target": "the cup"})
+        self.assertNotIn("looking_for", result)
+        self.assertEqual(self.executor._label_for("sofa"), None)        # its synonym fits: couch
+
+    def test_no_clear_label_means_no_translation(self):
+        self.assertIsNone(self.executor._label_for("guitar"))          # every label is as far from it
+        self.executor.visual = None
+        self.assertIsNone(self.executor._label_for("can"))             # and nothing without the memory
+
+    def test_a_translation_not_found_says_what_it_was_taken_for(self):
+        self.things = [("chair", "blue", 1.4, -.6)]
+        self.call("approach", {"target": "can"})
+        task = self.finished()
+        self.assertEqual(task.status, "failed")
+        self.assertIn("can't find a bottle (what I took 'can' to mean)", task.detail["error"])
 
 
 class SpeedTests(unittest.TestCase):

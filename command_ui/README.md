@@ -56,7 +56,9 @@ this computer only, no Firebase copy), `--check`.
 image-text embedding from SigLIP 2), so "approach the toy" finds what the detector called a teddy bear, even
 once it is out of view. Install `requirements-vision.txt` and fetch the model once (1.54 GB, pinned):
 `.venv/bin/python -m go2.embedder fetch`. It is saved next to the object memory and adds up to about 0.2 s to each
-look. `look` results and the model's tools are unchanged. The model choice and its measurements are in
+look. Words the detector has no label for are taken to mean the closest one ("computer" → laptop, "telly" →
+tv), and Go2 says which it is looking for. It can also be switched on and off on the page. `look` results and the
+model's tools are unchanged. The model choice and its measurements are in
 [docs/visual-memory-models.md](../docs/visual-memory-models.md).
 
 **Follow-me (simulator only).** "Follow me" or "follow the person in red" walks after a person the camera
