@@ -1,6 +1,9 @@
 """Room names from what Go2 sees in them (#35), scored against the houses from #17."""
+import collections
+import math
 import random
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,7 +12,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "simulation"))
 
 import house  # noqa: E402  (plain Python: no simulator needed)
+from go2.executor import Executor  # noqa: E402
+from go2.perception import Detection  # noqa: E402
+from go2.room_map import FREE, OCCUPIED, UNKNOWN, OccupancyGrid  # noqa: E402
 from go2.room_names import EVIDENCE, RoomNamer  # noqa: E402
+from go2.room_regions import RoomRegions  # noqa: E402
+from tests.fakes import FakeRobot  # noqa: E402
 
 
 def name_from_house(h, looks=2):
@@ -120,6 +128,111 @@ class HouseScoringTests(unittest.TestCase):
                     total += 1
                     right += namer.room_type(room["name"]) == room["type"]
         self.assertGreaterEqual(right / total, .8, f"{right} of {total} rooms named correctly")
+
+
+def house_map(h, resolution=.1):
+    """The map a full exploration of house h would give: rooms free; walls, closed doors and furniture
+    occupied; outside unknown."""
+    reach = max(abs(v) for room in h["rooms"] for v in room["rect"])
+    m = OccupancyGrid(resolution=resolution, size=2 * math.ceil(reach / resolution) + 20)
+    m.grid[:] = UNKNOWN
+
+    def mark(x0, y0, x1, y1, value):
+        (r0, c0), (r1, c1) = m.world_to_cell(x0, y0), m.world_to_cell(x1, y1)
+        m.grid[r0:r1 + 1, c0:c1 + 1] = value
+
+    for room in h["rooms"]:
+        mark(*room["rect"], FREE)
+    w = house.WALL_THICK
+    for axis, line, a, b, *_ in house.wall_pieces(h):
+        mark(a, line - w, b, line + w, OCCUPIED) if axis == "x" else mark(line - w, a, line + w, b, OCCUPIED)
+    for door in h["doors"]:
+        if not door["open"]:
+            (dx, dy), half = door["pos"], door["width"] / 2
+            mark(dx - half, dy - w, dx + half, dy + w, OCCUPIED) if door["axis"] == "x" else \
+                mark(dx - w, dy - half, dx + w, dy + half, OCCUPIED)
+    for item in h["objects"]:
+        mark(*house.footprint(item), OCCUPIED)
+    return m
+
+
+def name_from_map(h):
+    """Split house h's map into rooms (#14), name them from its objects, each seen twice; return
+    [(true room type, guessed type)] for its rooms, by the region most of each room's floor fell in."""
+    m = house_map(h)
+    regions = RoomRegions().update(m)
+    namer = RoomNamer()
+    for _ in range(2):
+        for item in h["objects"]:
+            namer.saw(regions.region_near(*item["pos"]), item["label"])
+    out = []
+    for room in h["rooms"]:
+        x0, y0, x1, y1 = room["rect"]
+        (r0, c0), (r1, c1) = m.world_to_cell(x0 + .2, y0 + .2), m.world_to_cell(x1 - .2, y1 - .2)
+        ids = regions.labels[r0:r1 + 1, c0:c1 + 1]
+        top = collections.Counter(ids[ids > 0].tolist()).most_common(1)
+        out.append((room["type"], namer.room_type(top[0][0]) if top else None))
+    return out
+
+
+class HouseMapTests(unittest.TestCase):
+    """The same scoring, but with rooms split from the map (#14's room regions) rather than told."""
+
+    def test_the_demo_house_rooms_are_named_correctly_from_its_map(self):
+        for kind, guess in name_from_map(house.house_demo()):
+            if kind != "hallway":
+                with self.subTest(room_type=kind):
+                    self.assertEqual(guess, kind)
+
+    def test_at_least_80_percent_of_rooms_named_correctly_from_the_map_in_20_random_houses(self):
+        named = [pair for seed in range(20) for pair in name_from_map(house.random_house(random.Random(seed)))
+                 if pair[0] != "hallway"]
+        right = sum(kind == guess for kind, guess in named)
+        self.assertGreaterEqual(right / len(named), .8, f"{right} of {len(named)} rooms named correctly")
+
+
+def seen(label, x, y):
+    return Detection(id=None, label=label, color=None, distance_m=1., bearing_deg=0., x_m=x, y_m=y,
+                     distance_source="lidar", confidence=.9)
+
+
+class ExecutorRoomNameTests(unittest.TestCase):
+    """What Go2 sees during look() names the room it's in; room_at answers with the name."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.robot = FakeRobot()
+        self.robot.connect()
+        self.addCleanup(self.robot.close)
+        self.executor = Executor(memory_path=temp.name + "/memory.json")
+        self.executor.attach(self.robot)
+        self.addCleanup(self.executor.close)
+        m = OccupancyGrid(resolution=.1, size=90)            # two rooms joined by a 1 m doorway
+        m.grid[:] = OCCUPIED
+        m.grid[10:80, 10:80] = FREE
+        m.grid[10:80, 44:46] = OCCUPIED
+        m.grid[40:50, 44:46] = FREE
+        self.executor.room_map = m
+        self.left, self.right = m.cell_to_world(25, 25), m.cell_to_world(25, 65)
+
+    def test_a_bed_seen_twice_names_its_room_and_not_the_other(self):
+        for _ in range(2):
+            self.executor._vote_rooms([seen("bed", *self.left)], (0., 0., 0.))
+        self.assertEqual(self.executor.room_at(*self.left), "bedroom")
+        self.assertRegex(self.executor.room_at(*self.right), r"^room_\d+$")
+
+    def test_the_users_name_wins_over_a_guess(self):
+        for _ in range(2):
+            self.executor._vote_rooms([seen("bed", *self.left)], (0., 0., 0.))
+        self.executor.room_regions.name_room(*self.left, "office")
+        self.assertEqual(self.executor.room_at(*self.left), "office")
+
+    def test_attach_forgets_the_votes(self):
+        for _ in range(2):
+            self.executor._vote_rooms([seen("bed", *self.left)], (0., 0., 0.))
+        self.executor.attach(self.robot)
+        self.assertEqual(self.executor.room_namer.votes, {})
 
 
 if __name__ == "__main__":

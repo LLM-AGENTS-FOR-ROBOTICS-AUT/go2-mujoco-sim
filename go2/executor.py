@@ -34,6 +34,7 @@ from .path_planner import astar, simplify, turning_astar, keep_turns
 from .room_map import OccupancyGrid
 from .exploration import ExplorationMap, next_viewpoint, _pose, _safe_cells, recovery_route
 from .room_regions import RoomRegions
+from .room_names import RoomNamer
 from .exploration_navigation import (ExplorationNavigation,MOVES as EXPLORATION_STEPS,
                                      BODY_HALF_LENGTH_M,BODY_HALF_WIDTH_M)
 from .tools import Command
@@ -157,6 +158,7 @@ class Executor:
         self._cloud_lock = threading.RLock()   # the follow camera thread reads the cloud too
         self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True)
         self.room_regions = RoomRegions()
+        self.room_namer = RoomNamer()   # room names from what's seen in them (#35)
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
         self._places_path = (Path(memory_path).with_name(Path(memory_path).stem + ".places.json")
@@ -198,6 +200,7 @@ class Executor:
             self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True,
                                           detect_low=adapter.kind == "sim")
             self.room_regions = RoomRegions()
+            self.room_namer = RoomNamer()
             self.history.clear()
             self.activity, self.activity_since = [], time.monotonic()
             self.last_detections = []
@@ -273,9 +276,22 @@ class Executor:
                               planning_resolution_m=self.room_map.resolution), visited)
 
     def room_at(self, x, y):
-        """Observed geometric region, optionally explicitly named, or None."""
+        """Observed geometric region, or None: the user's name for it, else its name from what's been seen in it
+        ("kitchen", #35), else room_N."""
         self.room_regions.update(self.room_map)
-        return self.room_regions.room_at(x, y)
+        region = self.room_regions.region_near(x, y, radius_m=0.)
+        if region is None:
+            return None
+        return self.room_regions.names.get(region) or self.room_namer.name(region) or f"room_{region}"
+
+    def _vote_rooms(self, detections, pose):
+        """Each thing in view that tells a room's type (a bed, a fridge) votes for the room it's in."""
+        self.room_regions.update(self.room_map)
+        c, sn = math.cos(pose[2]), math.sin(pose[2])
+        for d in detections:
+            if d.x_m is not None:
+                wx, wy = pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m
+                self.room_namer.saw(self.room_regions.region_near(wx, wy), d.label)
 
     def remember_place(self, name):
         with self.lock:
@@ -613,6 +629,7 @@ class Executor:
                 self._stable_ids(detections, (s.x, s.y, s.yaw))
                 self.last_detections = [(d, (s.x, s.y, s.yaw)) for d in detections]
                 seen_ids = self._remember(detections, (s.x, s.y, s.yaw), save=False)
+                self._vote_rooms(detections, (s.x, s.y, s.yaw))
                 if adapter.kind == "sim":
                     self._verify_saved_objects(frame, camera_floor_cloud, detections, seen_ids)
                 try:
