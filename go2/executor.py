@@ -18,6 +18,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -30,6 +31,7 @@ from .object_memory import ObjectMemory
 from .path_planner import astar, simplify
 from .room_map import OccupancyGrid
 from .tools import Command
+from .visual_memory import crop
 
 DECEL_LINEAR, DECEL_ANGULAR = 1.6, 4.0      # m/s², rad/s² used for braking lead
 # Stall: something the LiDAR can't see (glass, thin chair legs) is stopping the robot. After the ramp-up, a move
@@ -51,6 +53,8 @@ TICK_S = .05
 # A motion that can start right away is held back from the model for up to this long, so that the tool
 # result can say "blocked" when the safety check refuses it instead of "queued".
 START_CHECK_S = 1.0
+# A thing this near fills enough of the picture for an ordinary resemblance to be trusted (semantic object memory).
+CLOSE_M = 1.5
 SYNONYMS = {"ball": "sports ball", "football": "sports ball", "basketball": "sports ball", "soccer": "sports ball",
             "table": "dining table", "desk": "dining table", "sofa": "couch", "plant": "potted plant",
             "flowerpot": "potted plant", "man": "person", "woman": "person", "human": "person", "guy": "person",
@@ -132,6 +136,12 @@ class Executor:
         self.room_map = OccupancyGrid()
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
+        # Semantic object memory (go2/visual_memory.py): what each thing looked like, as an image embedding, so a
+        # remembered thing can be found by words its label doesn't contain. Off until use_visual_memory().
+        self._visual_path = None if memory_path is None else (
+            Path(memory_path).with_name(Path(memory_path).stem + "-visual.json"))
+        self.visual = None
+        self._look_vectors = {}     # detection id -> picture vector, from the last look
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
         self._next_id = 0
         self.detection_filter = None  # optional f(detections) -> detections (training-data noise)
@@ -336,6 +346,8 @@ class Executor:
         with self.lock:
             self.closed = True
             self.wake.notify_all()
+        if self.visual is not None:
+            self.visual.save(force=True)
 
     # ---- queries -------------------------------------------------------------------
     def status_report(self):
@@ -426,6 +438,7 @@ class Executor:
                 self.last_frame = frame.rgb
                 self.last_frame_meta = {"stamp": time.time(), "objects": len(detections),
                                         "boxes": image_boxes(frame.masks, frame.rgb.shape)}
+            self._memorise(frame, detections, (s.x, s.y, s.yaw))     # what each thing looked like (not in the result)
             result["objects"] = [{**d.public(), "direction": P.describe_bearing(d.bearing_deg)} for d in detections]
         except AdapterError as error:
             result["camera_error"] = str(error)
@@ -1012,6 +1025,12 @@ class Executor:
             key = (score, -(det.distance_m or 99))
             if best_key is None or key > best_key:
                 best, best_key = (det, pose), key
+        if best is None:
+            # No label fits. With the semantic object memory, the thing in view that looks most like the words
+            # will do ("can" when the detector said "bottle").
+            alike = self._looks_like(target, detections)
+            if alike:
+                best = alike[0][:2]
         return best, closest
 
 
@@ -1035,10 +1054,86 @@ class Executor:
             candidates.append((self._score(d, words), item.get("last_seen", 0.), d, item["x"], item["y"]))
         candidates = [c for c in candidates if c[0][0] and not c[0][1]]
         if not candidates:
-            return None
+            # Nothing remembered under those words: something that looked like them, if the semantic object
+            # memory has one ("bottle" brings back the can). As with labels, the best fit decides what kind of
+            # thing it is, and of those the latest sighting wins, so a thing that has moved is looked for where
+            # it was last seen.
+            alike = [entry for entry, _ in self._remembered_like(target, 5)]
+            if not alike:
+                return None
+            entry = max((e for e in alike if e.get("label") == alike[0].get("label")), key=lambda e: e.get("t", 0.))
+            thing = SimpleNamespace(id=entry["id"], label=entry.get("label") or self._phrase(target),
+                                    color=entry.get("color"), by_look=bool(entry.get("label")))
+            return thing, entry["x"], entry["y"]
         # Reversed, so a tie goes to the later sighting: Windows' clock can give two sightings the same time.
         _, _, det, wx, wy = max(reversed(candidates), key=lambda c: (c[0][0], c[1]))
         return det, wx, wy
+
+    # ---- semantic object memory --------------------------------------------------------------------
+    def use_visual_memory(self, embedder):
+        """Switch the semantic object memory on with this embedding model (saved beside the object memory)."""
+        from .visual_memory import VisualMemory
+        self.visual = VisualMemory(self._visual_path, embedder)
+        return self.visual
+
+    def _memorise(self, frame, detections, pose):
+        """After a look: turn a crop of each thing in view into a vector, keep it for matching against what
+        is being looked for (_looks_like), and remember the ones with a known position. People are left out."""
+        self._look_vectors = {}
+        if self.visual is None:
+            return
+        things = [(d, crop(frame.rgb, d.box)) for d in detections if d.label != "person" and d.box is not None]
+        things = [(d, c) for d, c in things if c is not None]
+        if not things:
+            return
+        try:
+            vectors = self.visual.embed([c for _, c in things])
+        except Exception:
+            return                          # a model that fails costs the memory, not the look
+        c, sn = math.cos(pose[2]), math.sin(pose[2])
+        for (det, picture_of), vector in zip(things, vectors):
+            self._look_vectors[det.id] = vector
+            if det.x_m is not None:
+                self.visual.add(vector, pose[0] + c * det.x_m - sn * det.y_m, pose[1] + sn * det.x_m + c * det.y_m,
+                                label=det.label, color=det.color, pixels=picture_of.shape[0] * picture_of.shape[1])
+        self.visual.save()
+
+    @staticmethod
+    def _phrase(target):
+        """What to ask the semantic object memory for: the thing's own words, without a leading 'the' or 'my'.
+        The rest is kept as said: 'something to drink from' means more to the model whole than as its nouns."""
+        words = re.findall(r"[a-z0-9']+", str(target).lower())
+        while words and words[0] in ("the", "a", "an", "my", "your", "our", "that", "this", "some"):
+            words = words[1:]
+        return " ".join(words)
+
+    def _looks_like(self, target, detections):
+        """The detections in view whose pictures fit the words well enough to act on, best first:
+        [(detection, pose, score)]. Used only when no label fits, so 'can' finds what the detector called a
+        bottle or a cup. A strong fit counts from anywhere, an ordinary one only from close up (a thing across
+        the room is a few dozen pixels, and what such a picture gets wrong it gets wrong both ways)."""
+        phrase = self._phrase(target) if self.visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
+        seen = [(d, pose) for d, pose in detections if d.id in self._look_vectors]
+        if not phrase or not seen:
+            return []
+        try:
+            scores = self.visual.scores(phrase, np.stack([self._look_vectors[d.id] for d, _ in seen]))
+        except Exception:
+            return []
+        strict, fair = self.visual.strict_threshold, self.visual.threshold
+        fits = [(d, pose, float(score)) for (d, pose), score in zip(seen, scores)
+                if score >= strict or (score >= fair and d.distance_m is not None and d.distance_m <= CLOSE_M)]
+        return sorted(fits, key=lambda fit: -fit[2])
+
+    def _remembered_like(self, target, limit=3):
+        """Remembered things that fit the words by resemblance: [(entry, score)], best first."""
+        phrase = self._phrase(target) if self.visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
+        if not phrase:
+            return []
+        try:
+            return self.visual.search(phrase, limit)
+        except Exception:
+            return []
 
     def _turn_by(self, task, cancel, angle):
         rate = L.default_turn_rate(abs(angle))
@@ -1062,6 +1157,10 @@ class Executor:
                 if memory is not None:
                     # Seen recently but not in view now: turn toward where it was, then look again.
                     recalled = True
+                    if getattr(memory[0], "by_look", False):
+                        # Recalled by what it looked like: from here on it is the thing the detector called
+                        # that, at that spot (its picture from across the room may not fit the words as well).
+                        locked = (memory[0].label, memory[1], memory[2])
                     bearing = _wrap(math.atan2(memory[2] - s.y, memory[1] - s.x) - s.yaw)
                     task.detail["searching"] = f"turned toward where I last saw the {memory[0].label}"
                     if abs(bearing) > math.radians(10):

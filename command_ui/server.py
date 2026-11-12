@@ -87,7 +87,7 @@ class SpokenReply:
 # ---- the robot, the executor and the agent ----------------------------------------------------------------
 class Console:
     def __init__(self, model, adapter, robot_info=None, voice=False, feedback=FEEDBACK, uploader=None,
-                 memory_path=None):
+                 memory_path=None, visual_memory=False):
         self.model, self.adapter = model, adapter
         self.feedback = Path(feedback)
         self.uploader = uploader                # a copy of each flag in Firebase (go2/feedback_upload.py), or None
@@ -99,6 +99,8 @@ class Console:
         self.agent.robot_line = lambda: robot_state_line(self.adapter, self.executor)
         self.agent.robot_snapshot = self._robot_snapshot
         self.executor.attach(adapter)
+        if visual_memory:
+            self._start_visual_memory()
         self.commands = threading.Lock()        # the page shows one card per command, in order
         self.shown = 0                          # transcript rows already shown on a card
         self.loaded = threading.Event()         # set once the model has loaded (or failed to)
@@ -130,6 +132,24 @@ class Console:
             threading.Thread(target=self._warm_up, daemon=True).start()
         else:
             self.loaded.set()
+
+    def _start_visual_memory(self):
+        """Semantic object memory: remember what each thing looked like (an image-text embedding), so that a
+        remembered thing is found by words its label doesn't contain ("bottle" also brings back the can).
+        Without the model or its packages the console runs as before and says why."""
+        try:
+            from go2.embedder import Embedder
+            embedder = Embedder()
+            problem = embedder.available()
+            if problem:
+                print(f"Semantic object memory is off: {problem}")
+                return
+            self.executor.use_visual_memory(embedder)
+            # Load it now, in the background, so that the first look doesn't wait for it.
+            threading.Thread(target=getattr(embedder, "load", lambda: embedder.texts(["a thing"])), daemon=True,
+                             name="embedder").start()
+        except Exception as error:
+            print(f"Semantic object memory is off: {error}")
 
     def _warm_up(self):
         """Load the model in the background so the first command doesn't wait for it (downloading it first, the
@@ -915,6 +935,10 @@ def main():
     parser.add_argument("--robot", metavar="INTERFACE", help="drive the real Go2 on this network interface")
     parser.add_argument("--arm", action="store_true", help="with --robot: allow the real robot to move")
     # macOS's AirPlay Receiver listens on port 5000, so the Mac default is 5050.
+    parser.add_argument("--visual-memory", action="store_true",
+                        help="semantic object memory: remember what things looked like (an image-text embedding of "
+                             "each thing seen), so approach finds a remembered thing by words its label doesn't "
+                             "contain. Fetch the model once with `python -m go2.embedder fetch`")
     parser.add_argument("--port", type=int, default=5050 if sys.platform == "darwin" else 5000)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--no-voice", action="store_true", help="don't load speech recognition or Go2's voice")
@@ -943,7 +967,8 @@ def main():
     except AdapterError as error:
         sys.exit(f"Could not start the robot: {error}")
     console = Console(model, adapter, {"interface": args.robot} if args.robot else {"scene": args.scene},
-                      voice=not args.no_voice, uploader=start_uploader(args), memory_path=memory_file(args))
+                      voice=not args.no_voice, uploader=start_uploader(args), memory_path=memory_file(args),
+                      visual_memory=args.visual_memory)
     if args.robot and args.arm:
         console.executor.set_armed(True)
         print("The real Go2 is ARMED: it will move when told to. Press Stop on the page to halt it.")

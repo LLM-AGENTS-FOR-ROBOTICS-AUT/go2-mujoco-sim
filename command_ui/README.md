@@ -52,6 +52,13 @@ ledge and stall protection. `--headless` (no MuJoCo window), `--port N`, `--no-b
 `--no-voice` (no speech recognition or spoken replies, saving memory), `--no-upload` (keep flagged replies on
 this computer only, no Firebase copy), `--check`.
 
+**Semantic object memory (`--visual-memory`).** Go2 also remembers what each thing it saw looked like (an
+image-text embedding from SigLIP 2), so "approach the toy" finds what the detector called a teddy bear, even
+once it is out of view. Install `requirements-vision.txt` and fetch the model once (1.54 GB, pinned):
+`.venv/bin/python -m go2.embedder fetch`. It is saved next to the object memory and adds up to about 0.2 s to each
+look. `look` results and the model's tools are unchanged. The model choice and its measurements are in
+[docs/visual-memory-models.md](../docs/visual-memory-models.md).
+
 **Follow-me (simulator only).** "Follow me" or "follow the person in red" walks after a person the camera
 can see, keeping 1.2 m (0.8–3 m) behind them; "stop" ends it at once. Following always ends by itself: after
 60 s unless asked for longer (at most 120 s), so a robot nobody is watching doesn't walk on indefinitely. Ask
