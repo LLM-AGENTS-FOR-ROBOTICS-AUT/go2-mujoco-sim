@@ -309,9 +309,13 @@ def _place(rng, house, room, kind, taken):
     hx, hy = KINDS[kind][1]
     big = KINDS[kind][2]
     margin = WALL_THICK + .05
+    open_sides = "".join(side for door in house["doors"] if door.get("opening") and room["name"] in door["rooms"]
+                         for side, axis, line in (("N", "x", y1), ("S", "x", y0), ("E", "y", x1), ("W", "y", x0))
+                         if door["axis"] == axis and abs((door["pos"][1] if axis == "x" else door["pos"][0]) - line) < 1e-6)
+    sides = "".join(side for side in "NSEW" if side not in open_sides)    # nothing to stand against there
     for _ in range(60):
         if big:
-            side = rng.choice("NSEW")
+            side = rng.choice(sides)
             yaw = {"N": 0., "S": math.pi, "E": -math.pi / 2, "W": math.pi / 2}[side]
             turned = kind in LENGTHWISE and rng.random() < .5
             if turned:
@@ -476,6 +480,11 @@ MIN_ROOM = 2.6                             # a room's narrowest side: space to t
 CORNER = .4                                # wall kept either side of a doorway, so it never runs into a corner
 EXTRA_DOOR = .25                           # chance of a second route between rooms that already connect
 ROOM_ORDER = ["living_room", "bedroom", "kitchen", "bathroom", "bedroom", "office", "bedroom"]
+# Shapes beyond a plain rectangle (#21). CARVE: chance a split layout loses one or two corner rooms (an L, T or
+# Z-shaped house). L_HALL: chance a house of five rooms or more has two hallways at right angles. OPEN_PLAN:
+# chance a living room and kitchen that share at least OPEN_PLAN_MIN of wall have no wall between them, and are
+# still two rooms in the description (an "opening" in its doors).
+CARVE, L_HALL, OPEN_PLAN, OPEN_PLAN_MIN = .5, .35, .5, 2.4
 
 
 def _snap(v):
@@ -530,6 +539,52 @@ def _split_layout(rng, n):
     return [(None, r) for r in rects]
 
 
+def _l_hall_layout(rng, n):
+    """Two hallways at right angles, an L, with rooms along both: south of the first, north of it up to the
+    second, and east of the second. The south-east corner stays outside, so the house is L-shaped too."""
+    k1 = rng.randint(1, n - 4)
+    k2 = rng.randint(1, n - 3 - k1)
+    k3 = n - 2 - k1 - k2
+    half = _snap(rng.uniform(.8, 1.1))
+    up = _snap(max(rng.uniform(3., 4.5), k3 * rng.uniform(3., 3.6)))         # the second hallway's length
+    length = _snap(max(k1 * rng.uniform(3., 4.2), k2 * rng.uniform(3., 4.2) + 2 * half))
+    south, east = _snap(rng.uniform(3., 4.5)), _snap(rng.uniform(3., 4.5))
+    rects = [("hallway", (0., -half, length, half)), ("hallway", (length - 2 * half, half, length, half + up))]
+    rects += [(None, (a, -half - south, b, -half)) for a, b in _split(rng, length, k1)]
+    rects += [(None, (a, half, b, half + up)) for a, b in _split(rng, length - 2 * half, k2)]
+    rects += [(None, (length, half + a, length + east, half + b)) for a, b in _split(rng, up, k3)]
+    return rects
+
+
+def _carve(rng, rects, count):
+    """Take `count` rooms off corners of the layout, for an L, T or Z-shaped house."""
+    rects = list(rects)
+    for _ in range(count):
+        xs = [v for _, r in rects for v in r[0::2]]
+        ys = [v for _, r in rects for v in r[1::2]]
+        corners = [(x, y) for x in (min(xs), max(xs)) for y in (min(ys), max(ys))]
+        at_corner = [i for i, (_, (x0, y0, x1, y1)) in enumerate(rects)
+                     if any(abs(cx - x) < 1e-6 and abs(cy - y) < 1e-6 for cx, cy in corners
+                            for x in (x0, x1) for y in (y0, y1))]
+        rects.pop(rng.choice(at_corner))
+    return rects
+
+
+def room_count(house):
+    """Rooms as random_house counts them: two hallways at right angles count as one, so a house of n rooms
+    can list n + 1."""
+    halls = sum(room["type"] == "hallway" for room in house["rooms"])
+    return len(house["rooms"]) - max(halls - 1, 0)
+
+
+def rectangular(house):
+    """True if the rooms fill their bounding rectangle: a plain rectangular house."""
+    xs = [v for room in house["rooms"] for v in room["rect"][0::2]]
+    ys = [v for room in house["rooms"] for v in room["rect"][1::2]]
+    area = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in (room["rect"] for room in house["rooms"]))
+    return abs(area - (max(xs) - min(xs)) * (max(ys) - min(ys))) < 1e-3
+
+
 def _name_rooms(rng, rects):
     """Room types: the biggest room is the living room and the smallest a bathroom (from four rooms up)."""
     others = sorted((r for t, r in rects if t is None), key=lambda r: -(r[2] - r[0]) * (r[3] - r[1]))
@@ -537,11 +592,12 @@ def _name_rooms(rng, rects):
     middle = [t for t in types[1:] if t != "bathroom"]
     rng.shuffle(middle)
     types = types[:1] + middle + (["bathroom"] if "bathroom" in types else [])
-    rooms, bedrooms = [], 0
+    rooms, bedrooms, halls = [], 0, 0
     for kind, rect in [(t, r) for t, r in rects if t == "hallway"] + list(zip(types, others)):
         if kind == "bedroom":
             bedrooms += 1
-        name = f"bedroom_{bedrooms}" if kind == "bedroom" else kind
+        halls += kind == "hallway"
+        name = f"bedroom_{bedrooms}" if kind == "bedroom" else "hallway_2" if kind == "hallway" and halls > 1 else kind
         rooms.append({"name": name, "type": kind, "rect": [round(v, 2) for v in rect]})
     return rooms
 
@@ -567,20 +623,23 @@ def _doorway(rng, axis, line, lo, hi):
     return ((along, line) if axis == "x" else (line, along)), width
 
 
-def _connect(rng, rooms):
+def _connect(rng, rooms, openings=()):
     """Doors: a random spanning tree of open doors from the first room (every room gets a route), a few
-    extra doors open or closed, and a closed front door on an outside wall. None if a room can't connect."""
+    extra doors open or closed, and a closed front door on an outside wall. None if a room can't connect.
+    openings: pairs of room indices with no wall between them at all (open plan, or hallways meeting): an
+    open "door" the length of the wall they share, marked "opening"."""
     walls = {}
     for i, a in enumerate(rooms):
         for j in range(i + 1, len(rooms)):
             shared = _shared_wall(a["rect"], rooms[j]["rect"])
-            if shared and shared[3] - shared[2] + 1e-6 >= DOOR_MIN_WIDTH + 2 * CORNER:
+            if shared and (shared[3] - shared[2] + 1e-6 >= DOOR_MIN_WIDTH + 2 * CORNER or (i, j) in openings):
                 walls[i, j] = walls[j, i] = shared
-    tree, seen, queue = set(), {0}, [0]
+    tree, seen, queue = set(openings), {0}, [0]
     while queue:
         i = queue.pop(0)
         nearby = [j for j in range(len(rooms)) if (i, j) in walls]
         rng.shuffle(nearby)
+        nearby.sort(key=lambda j: (min(i, j), max(i, j)) not in openings)       # through an opening if there is one
         for j in nearby:
             if j not in seen:
                 seen.add(j)
@@ -590,6 +649,14 @@ def _connect(rng, rooms):
         return None
     doors = []
     for (i, j) in sorted({(min(p), max(p)) for p in walls}):
+        if (i, j) in openings:
+            axis, line, lo, hi = walls[i, j]
+            middle = round((lo + hi) / 2, 2)
+            door = _door(f"opening_{rooms[i]['name']}_{rooms[j]['name']}", (rooms[i]["name"], rooms[j]["name"]),
+                         (middle, line) if axis == "x" else (line, middle), axis, round(hi - lo, 2), True)
+            door["opening"] = True
+            doors.append(door)
+            continue
         if (i, j) not in tree and rng.random() >= EXTRA_DOOR:
             continue
         axis, line, lo, hi = walls[i, j]
@@ -624,17 +691,36 @@ def furnished(house):
 
 
 def random_house(rng, n_rooms=None):
-    """A random, furnished house of 2-7 rooms (a hallway counts as one), drawn from `rng` (random.Random):
+    """A random, furnished house of 2-7 rooms (a hallway, or two at right angles, counts as one), drawn from `rng` (random.Random):
     the same seed always gives the same house, so a failing case can be replayed. Go2 starts in the hallway
     or the living room, and every room is reachable from there."""
     n = n_rooms or rng.randint(2, 7)
     for _ in range(100):
-        rects = _corridor_layout(rng, n) if n >= 4 and rng.random() < .6 else _split_layout(rng, n)
+        shape = rng.random()
+        if n >= 5 and shape < L_HALL:
+            rects = _l_hall_layout(rng, n + 1)            # its two hallways count as one, like a single hallway
+        elif n >= 4 and shape < L_HALL + .3:
+            rects = _corridor_layout(rng, n)
+        else:
+            carve = rng.randint(1, 2 if n >= 3 else 1) if rng.random() < CARVE else 0
+            rects = _split_layout(rng, n + carve)
+            if rects is not None and carve:
+                rects = _carve(rng, rects, carve)
         if rects is None:
             continue
         rooms = _name_rooms(rng, rects)
         rooms.sort(key=lambda r: r["type"] not in ("hallway", "living_room"))     # the start room first
-        doors = _connect(rng, rooms)
+        openings = set()
+        for i, a in enumerate(rooms):
+            for j in range(i + 1, len(rooms)):
+                pair = {a["type"], rooms[j]["type"]}
+                shared = _shared_wall(a["rect"], rooms[j]["rect"])
+                if not shared or shared[3] - shared[2] < 1.:
+                    continue
+                if pair == {"hallway"} or (pair == {"living_room", "kitchen"} and shared[3] - shared[2] >= OPEN_PLAN_MIN
+                                           and rng.random() < OPEN_PLAN):
+                    openings.add((i, j))
+        doors = _connect(rng, rooms, openings)
         if doors is None:
             continue
         xs = [v for r in rooms for v in r["rect"][0::2]]
@@ -948,6 +1034,8 @@ def build_house(spec, house, objects):
         W._box(body, size, (0, 0, 0), WALL_RGBA)
         objects.append((body.name, W.WorldObject(body.name, "wall", "white")))
     for door in house["doors"]:
+        if door.get("opening"):
+            continue                            # open plan: no wall at all, so nothing over it either
         (dx, dy), half_w = door["pos"], door["width"] / 2
         along_x = door["axis"] == "x"
         above = spec.worldbody.add_body()       # the wall over the doorway, up to the ceiling

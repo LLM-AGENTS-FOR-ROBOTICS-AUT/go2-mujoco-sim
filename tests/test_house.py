@@ -53,7 +53,7 @@ class HouseDescriptionTests(unittest.TestCase):
                 h = house.random_house(random.Random(seed))
                 self.assertEqual(house.reachability(h), (True, []))
                 self.assertTrue(house.furnished(h))
-                self.assertTrue(2 <= len(h["rooms"]) <= 7)
+                self.assertTrue(2 <= house.room_count(h) <= 7)
                 self.assertEqual(sum(o["kind"] == "teddy" for o in h["objects"]), 1)
                 self.assertTrue(all(d["width"] >= house.DOOR_MIN_WIDTH for d in h["doors"]))
                 front = [d for d in h["doors"] if d["name"] == "front_door"]
@@ -76,7 +76,7 @@ class HouseDescriptionTests(unittest.TestCase):
 
     def test_room_count_can_be_chosen(self):
         for n in range(2, 8):
-            self.assertEqual(len(house.random_house(random.Random(n), n)["rooms"]), n)
+            self.assertEqual(house.room_count(house.random_house(random.Random(n), n)), n)
 
     def test_hallways_are_kept_clear(self):
         for seed in range(30):
@@ -462,6 +462,77 @@ class OnFurnitureMujocoTests(unittest.TestCase):
                         self.assertGreater((bodies == model.body(item["name"]).id).sum(), 40)
             finally:
                 camera.close()
+
+
+class LayoutShapeTests(unittest.TestCase):
+    """L, T and Z-shaped houses, two hallways at right angles, and open-plan living rooms with kitchens (#21)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.houses = [house.random_house(random.Random(seed)) for seed in range(150)]
+
+    def test_at_least_a_third_are_not_plain_rectangles(self):
+        shaped = sum(not house.rectangular(h) for h in self.houses)
+        self.assertGreaterEqual(shaped, len(self.houses) / 3)
+        self.assertTrue(any(sum(r["type"] == "hallway" for r in h["rooms"]) == 2 for h in self.houses))
+        self.assertTrue(any(d.get("opening") and "kitchen" in d["rooms"] for h in self.houses for d in h["doors"]))
+
+    def test_every_house_is_reachable_with_unique_room_names_and_no_overlaps(self):
+        for seed, h in enumerate(self.houses):
+            with self.subTest(seed=seed):
+                self.assertEqual(house.reachability(h), (True, []))
+                names = [r["name"] for r in h["rooms"]]
+                self.assertEqual(len(names), len(set(names)))
+                rects = [r["rect"] for r in h["rooms"]]
+                for i, a in enumerate(rects):
+                    for b in rects[i + 1:]:
+                        overlap_x = min(a[2], b[2]) - max(a[0], b[0])
+                        overlap_y = min(a[3], b[3]) - max(a[1], b[1])
+                        self.assertFalse(overlap_x > 1e-6 and overlap_y > 1e-6, (a, b))
+
+    def test_an_opening_is_the_whole_shared_wall_with_no_wall_left_in_it(self):
+        found = 0
+        for seed, h in enumerate(self.houses):
+            rooms = {r["name"]: r for r in h["rooms"]}
+            pieces = house.wall_pieces(h)
+            for door in (d for d in h["doors"] if d.get("opening")):
+                found += 1
+                with self.subTest(seed=seed, opening=door["name"]):
+                    a, b = (rooms[n] for n in door["rooms"])
+                    self.assertIn({a["type"], b["type"]}, ({"hallway"}, {"living_room", "kitchen"}))
+                    axis, line, lo, hi = house._shared_wall(a["rect"], b["rect"])
+                    self.assertEqual(door["axis"], axis)
+                    self.assertAlmostEqual(door["width"], hi - lo, places=2)
+                    self.assertTrue(door["open"])
+                    for p_axis, p_line, p_a, p_b, *_ in pieces:
+                        if p_axis == axis and abs(p_line - line) < 1e-6:
+                            self.assertFalse(min(p_b, hi) - max(p_a, lo) > 1e-3, "a wall piece in the opening")
+        self.assertGreater(found, 20)
+
+    def test_big_furniture_never_backs_onto_an_opening(self):
+        for seed, h in enumerate(self.houses):
+            for door in (d for d in h["doors"] if d.get("opening")):
+                line = door["pos"][1] if door["axis"] == "x" else door["pos"][0]
+                half = door["width"] / 2
+                along = door["pos"][0] if door["axis"] == "x" else door["pos"][1]
+                for item in h["objects"]:
+                    if not house.KINDS[item["kind"]][2] or item["room"] not in door["rooms"]:
+                        continue
+                    x0, y0, x1, y1 = house.footprint(item)
+                    near, lo, hi = ((min(abs(y0 - line), abs(y1 - line)), x0, x1) if door["axis"] == "x"
+                                    else (min(abs(x0 - line), abs(x1 - line)), y0, y1))
+                    with self.subTest(seed=seed, item=item["name"], opening=door["name"]):
+                        self.assertFalse(near < .2 and hi > along - half and lo < along + half,
+                                         "backed onto the open side")
+
+    @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
+    def test_no_lintel_over_an_opening_in_mujoco(self):
+        import world
+        h = next(h for h in self.houses if any(d.get("opening") for d in h["doors"]))
+        model, _ = world.build("house", h)
+        bodies = {model.body(i).name for i in range(model.nbody)}
+        for door in h["doors"]:
+            self.assertEqual(f"{door['name']}_lintel" in bodies, not door.get("opening"), door["name"])
 
 
 class ColourTests(unittest.TestCase):
