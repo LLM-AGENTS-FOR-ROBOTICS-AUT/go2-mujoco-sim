@@ -104,6 +104,19 @@ class StallAndLedgeExecutorTests(unittest.TestCase):
         self.assertGreater(robot.x, .3, "it walked most of the way")
         self.assertIn("drop ahead", describe_outcome(task, [task]))
 
+    def test_clearance_uses_current_pose_after_scan_processing(self):
+        robot = self.attach(obstacles=[(1.2, 1.4, -1., 1.)])
+        refresh = self.executor._refresh_cloud
+        def robot_moves_during_mapping():
+            captured = refresh()
+            # Represents odometry advancing while a captured scan is processed.
+            with robot.lock:
+                robot.x = .4
+            return captured
+        self.executor._refresh_cloud = robot_moves_during_mapping
+        clearance = self.executor._clearance(1., 0., False)
+        self.assertAlmostEqual(clearance, 1.2-.4-P.HALF_LENGTH, delta=.02)
+
     def test_backwards_and_sideways_ledges_stop_too(self):
         robot = self.attach(drops=[(-9, -1.4, -9, 9), (-9, 9, -9, -1.2)])
         self.submit("move", {"direction": "backward", "distance_m": 3})
@@ -145,6 +158,20 @@ class StallAndLedgeExecutorTests(unittest.TestCase):
         text = describe_outcome(task, [task])
         self.assertNotIn("without touching", text)
         self.assertIn("backed off", text)
+
+    def test_glass_stop_deadline_survives_delayed_mapping(self):
+        robot = self.attach(glass=[(1.2, 1.25, -1, 1)])
+        mark = self.executor.room_map.mark_scan
+        def delayed_mapping(*args, **kwargs):
+            time.sleep(.14)
+            return mark(*args, **kwargs)
+        self.executor.room_map.mark_scan = delayed_mapping
+        self.submit("move", {"direction": "forward", "distance_m": 2.5})
+        task = self.finished()
+        self.assertEqual(task.status, "blocked", task.detail)
+        self.assertTrue(task.detail["blocked"].get("stall"))
+        stops = [stamp for stamp in robot.stop_times if stamp > robot.contact_at]
+        self.assertLess(stops[0]-robot.contact_at, .6, "mapping work must not postpone the stall decision")
 
     def test_asking_again_does_not_walk_back_into_the_glass(self):
         robot = self.attach(glass=[(1.2, 1.25, -1, 1)])

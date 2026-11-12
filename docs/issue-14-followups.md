@@ -1,4 +1,4 @@
-# Remaining issue #14 work
+# Issue #14 follow-up implementation and validation
 
 Branch: `prionti/issue-14-followups`, based on exploration commit `5c77d17`.
 PR #36 and its recorded coverage results are unchanged by this worktree.
@@ -89,7 +89,7 @@ camera inference or movement. Occupied cells survive display downsampling.
 
 ## Acceptance evidence (12 November 2026)
 
-The two final runs use an unfurnished 8 m × 8 m test room, actual MuJoCo physics,
+The two original runs at commit `3fbd1f0` use an unfurnished 8 m × 8 m test room, actual MuJoCo physics,
 the walking policy, L1 rays, and production executor motion/safety checks. The
 stepped clock advances every physics step; it does not teleport the robot or
 replace physics with a grid model. Truth supplies scene construction, the
@@ -107,10 +107,11 @@ requires the 95th percentile to be below 0.15 m, a separate numerical check of
 map sharpness. This establishes the criterion in this test room, not every
 possible house, noise level, or moving-obstacle layout.
 
-Full configurations, runtime versions, samples and source hashes:
-
-- [Seed 0](results/issue-14-drift-seed0-2026-11-12.json)
-- [Seed 1](results/issue-14-drift-seed1-2026-11-12.json)
+Full configurations, runtime versions, samples and source hashes are retained
+locally in the Git-ignored reports `docs/results/issue-14-drift-seed0-2026-11-12.json`
+and `docs/results/issue-14-drift-seed1-2026-11-12.json`. Their hashes identify
+the original validated build, not later CI corrections. Regenerate reports with
+the command below; generated JSON dumps are not committed.
 
 Reproduce each five-minute acceptance run with:
 
@@ -128,7 +129,7 @@ Final local checks:
   detour, saved-place return with real LiDAR and drift, and normal RPC viewpoint.
 - 15 additional API/cleanup and remembered-object revisit checks passed.
 - A final 46-test feature check passed after adding the stable-pose/localisation
-  guard to negative memory evidence; both benchmark source-hash sets match.
+  guard to negative memory evidence, before the CI corrections described below.
 - Browser: saved `door`, looked at room objects, walked away, and returned via
   `query_memory` → `go_to_place`; live map and remembered locations rendered.
 
@@ -138,7 +139,32 @@ MuJoCo 3.10.0, Torch 2.2.2, macOS x86_64. The exploration-only 20-house coverage
 results in PR #36 remain evidence for commit `5c77d17`, not a new twenty-house
 validation of every follow-up feature.
 
-## Existing PR check
+## CI corrections (13 November 2026)
+
+PR #36 now passes all three hosted platform checks at commit `46e02e2`. This
+branch incorporates those fixes and the team's merged semantic-memory work.
+Its full local suite passed 409 tests with 11 optional-dependency/model skips.
+
+The follow-up corrections reproduce and fix each previously reported failure:
+
+- The missing-object test forces asynchronous acknowledgement, then waits for
+  the executor's completion report and final agent turn. It no longer reads the
+  initial "On it" reply as the result of the inspection.
+- Measured turns slow near their target. A slow-braking test that previously
+  overshot by about 11 degrees now passes the unchanged 8-degree bound. The
+  unchanged real-physics move/turn accuracy check passed three consecutive runs.
+- Stall decisions refresh telemetry and time after scan processing, and use
+  current velocity alongside progress integrated over the existing confirmation
+  window. Three delayed-mapping stress runs stopped in 0.36–0.37 seconds, inside
+  the unchanged 0.6-second limit. Slow starts, slow motion and following checks
+  still pass.
+
+All 96 executor/safety/following/place/memory/map/drift regression checks passed
+after these corrections. The semantic-memory integration checks also passed
+(55 checks, 7 optional-model skips). Hosted follow-up CI must confirm the final
+reviewed head on Apple Silicon, Intel and Windows before merging.
+
+## Earlier PR check
 
 An earlier PR #36 Apple Silicon log contained a furniture-detour navigation
 failure: a route waypoint lacked enough room to turn. The latest GitHub status
@@ -150,15 +176,16 @@ that Apple run is green. Rerun CI on the published changes before merging.
 
 ## What still needs team action
 
-- Publish/review the follow-up branch. It is stacked on PR #36, not independent
-  of the exploration code; use that branch as its base until #36 is merged.
-- Get a successful Apple Silicon CI run on the final changes and review the
-  navigation adjustment.
+- Review the follow-up PRs #39 and #40, which share the same head branch. PR #39
+  is stacked on #36; retarget it to main after #36 is merged. No PR is merged
+  automatically by this work.
+- Confirm all three hosted platform checks on the final reviewed follow-up head
+  and review the navigation adjustments.
 - Review the conservative missing-object behaviour and the drift test's
   environment limits before closing #14. Broader furnished-house drift tests
   would extend the evidence beyond the issue's five-minute test case.
 
-Room naming from detected objects (#35), semantic image embeddings (#32), model
-fine-tuning (#16/#19), missions (#18) and physical Go2 tuning (#34) remain their
-respective workstreams. This branch provides their map/place interfaces and the
-simulator-side features requested by #14.
+Semantic image embeddings (#32) have landed on main and are preserved here.
+Room naming (#35), model fine-tuning (#16/#19), missions (#18) and physical Go2
+tuning (#34) remain their respective workstreams. This branch provides their
+map/place interfaces and the simulator-side features requested by #14.

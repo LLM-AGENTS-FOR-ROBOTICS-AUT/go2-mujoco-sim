@@ -37,6 +37,7 @@ from .room_regions import RoomRegions
 from .exploration_navigation import (ExplorationNavigation,MOVES as EXPLORATION_STEPS,
                                      BODY_HALF_LENGTH_M,BODY_HALF_WIDTH_M)
 from .tools import Command
+from .visual_memory import crop
 
 DECEL_LINEAR, DECEL_ANGULAR = 1.6, 4.0      # m/s², rad/s² used for braking lead
 # Stall: something the LiDAR can't see (glass, thin chair legs) is stopping the robot. After the ramp-up, a move
@@ -58,6 +59,23 @@ TICK_S = .05
 # A motion that can start right away is held back from the model for up to this long, so that the tool
 # result can say "blocked" when the safety check refuses it instead of "queued".
 START_CHECK_S = 1.0
+# A thing this near fills enough of the picture for an ordinary resemblance to be trusted (semantic object memory).
+CLOSE_M = 1.5
+# What the detector (YOLO, COCO classes) can call things. Words that fit none of these labels are translated to the
+# closest one by the semantic object memory's text side ("computer" -> laptop), when it is on.
+DETECTOR_LABELS = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant",
+    "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli",
+    "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet",
+    "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush")
+# The closest label is taken only when it is this much closer to the words than the next one. Measured with SigLIP 2
+# on 44 everyday words: right translations lead by 0.02-0.08 (computer -> laptop, fridge -> refrigerator, telly -> tv),
+# words with no label of their own by under 0.01 (guitar, lamp, my keys); raw closeness alone doesn't separate them.
+LABEL_MARGIN = .02
 SYNONYMS = {"ball": "sports ball", "football": "sports ball", "basketball": "sports ball", "soccer": "sports ball",
             "table": "dining table", "desk": "dining table", "sofa": "couch", "plant": "potted plant",
             "flowerpot": "potted plant", "man": "person", "woman": "person", "human": "person", "guy": "person",
@@ -143,6 +161,13 @@ class Executor:
         self._places_path = (Path(memory_path).with_name(Path(memory_path).stem + ".places.json")
                              if memory_path is not None else None)
         self.places = NamedPlaces(self._places_path)
+        # Semantic object memory (go2/visual_memory.py): what each thing looked like, as an image embedding, so a
+        # remembered thing can be found by words its label doesn't contain. Off until use_visual_memory().
+        self._visual_path = None if memory_path is None else (
+            Path(memory_path).with_name(Path(memory_path).stem + "-visual.json"))
+        self.visual = None
+        self._look_vectors = {}     # detection id -> picture vector, from the last look
+        self._label_vectors = {}    # detector label -> its text vector (the words-to-label translation)
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
         self._next_id = 0
         self.detection_filter = None  # optional f(detections) -> detections (training-data noise)
@@ -410,13 +435,21 @@ class Executor:
                                            f"their next message, call acrobatic again with confirmed=true."}
                 del self.confirmations[name]
             self._require_armed()
+            note = {}
+            if command.kind == "approach":
+                meant = self._label_for(command.params["target"])
+                if meant:
+                    # Said in the action, so the model tells the user and a wrong translation is caught at once.
+                    command.params["meant"] = meant
+                    command.summary = f"approach the {meant} (what I take '{command.params['target']}' to mean)"
+                    note = {"looking_for": meant}
             task = Task(command, group, self.generation, user_turn=user_turn)
             self.queue.append(task)
             position = len(self.queue) + (1 if self.current else 0)
             task.awaiting = position == 1 and command.kind in ("velocity", "goto", "approach", "follow", "viewpoint")
             self.wake.notify_all()
             return {"status": "queued", "task_id": task.id, "position": position, "action": command.summary,
-                    "_task": task}
+                    **note, "_task": task}
 
     def _after_group(self, group, timeout=90.):
         """Queries run in order with the motions of the same request: 'turn around and look' looks after
@@ -478,6 +511,8 @@ class Executor:
         with self.lock:
             self.closed = True
             self.wake.notify_all()
+        if self.visual is not None:
+            self.visual.save(force=True)
 
     # ---- queries -------------------------------------------------------------------
     def status_report(self):
@@ -525,9 +560,10 @@ class Executor:
         points, state = self.adapter.lidar()
         level = P.base_to_level(points, state.roll, state.pitch)
         with self._cloud_lock:
-            sensor_time = state.extra.get("sim_time")
-            self.cloud.add(state.stamp if sensor_time is None else sensor_time,
-                           level, (state.x, state.y, state.yaw), state.height)
+            # Following compares scan times with this executor's monotonic
+            # clock. Simulator uptime is a different epoch. Offline evaluators
+            # supply this module's clock explicitly, including scan expiry.
+            self.cloud.add(time.monotonic(), level, (state.x, state.y, state.yaw), state.height)
         localization = state.extra.get("localization")
         if len(level) and (localization is None or localization.get("accepted")):
             # The room map is in odometry coordinates, so a box stays where it is when the robot turns.
@@ -585,6 +621,7 @@ class Executor:
                 self.last_frame = frame.rgb
                 self.last_frame_meta = {"stamp": time.time(), "objects": len(detections),
                                         "boxes": image_boxes(frame.masks, frame.rgb.shape)}
+            self._memorise(frame, detections, (s.x, s.y, s.yaw))     # what each thing looked like (not in the result)
             result["objects"] = [{**d.public(), "direction": P.describe_bearing(d.bearing_deg)} for d in detections]
         except AdapterError as error:
             result["camera_error"] = str(error)
@@ -817,7 +854,10 @@ class Executor:
     def _clearance(self, ux, uy, turning, *, footprint=None):
         """Free distance along the travel direction, limited to what the LiDAR can actually see. Drops (a
         ledge, stairs going down) and spots it recently bumped into count as obstacles."""
-        s = self._refresh_cloud()
+        self._refresh_cloud()
+        # Mapping can take time while the robot keeps moving. Reproject the
+        # captured returns at the current pose before judging stopping space.
+        s = self._fresh_state()
         with self._cloud_lock:
             cloud = self.cloud.level((s.x, s.y, s.yaw))
         cloud = self._with_low_obstacles(cloud, s)
@@ -890,6 +930,7 @@ class Executor:
         # (it started pressed against glass), it starts anyway STALL_START_S later. Only samples from then on
         # are judged, so a slow start can't count against it.
         rate = p["turn_rate"] if turning else speed
+        commanded_turn_rate = rate
         earliest = began + rate / (DECEL_ANGULAR if turning else DECEL_LINEAR) + STALL_GRACE_S
         watch_from = None
         recent = deque()
@@ -915,13 +956,24 @@ class Executor:
                     if now-last_scan >= .1:
                         last_scan = now
                         clear = self._clearance(p["ux"], p["uy"], False, **dimensions)
+                        s = self._fresh_state()
+                        now = time.monotonic()
                         if clear < self._margin(max(s.speed, .1)):
                             outcome = "blocked"
                             at = (s.x-x0)*wx + (s.y-y0)*wy
                             trigger = (clear, self._observed, at, self._why_blocked(clear, toward))
                             break
                 if now - last_send >= .1:
-                    adapter.move(p["vx"], p["vy"], p["wz"])
+                    wz = p["wz"]
+                    if turning and angle is not None:
+                        current = self._fresh_state()
+                        remaining = max(0., angle-abs(turned+_wrap(current.yaw-yaw_prev)))
+                        # Close the last part of a measured turn slowly. The
+                        # walking policy may brake less sharply than odometry's
+                        # nominal model, particularly across physics runtimes.
+                        commanded_turn_rate = min(rate, max(.15, 2.*remaining))
+                        wz = math.copysign(commanded_turn_rate, wz)
+                    adapter.move(p["vx"], p["vy"], wz)
                     last_send = now
                 if s is None:
                     s = self._fresh_state()
@@ -931,6 +983,11 @@ class Executor:
                 if not turning and now - last_scan >= .1:
                     last_scan = now
                     clear=self._clearance(p['ux'],p['uy'],False,**dimensions)
+                    # Sensing/mapping may span the instant contact stops the
+                    # robot. Use the post-scan sample and clock for stall timing.
+                    s = self._fresh_state()
+                    now = time.monotonic()
+                    progress = (s.x-x0)*wx + (s.y-y0)*wy
                     if clear < self._margin(max(s.speed, .1)):
                         outcome = "blocked"
                         trigger = (clear, self._observed, progress, self._why_blocked(clear, toward))
@@ -947,8 +1004,12 @@ class Executor:
                         recent.popleft()        # keep the newest sample at least a window old
                 old_t, old_progress, _ = recent[0] if recent else (now, progress, 0.)
                 if recent and now - old_t >= STALL_WINDOW_S:
-                    expected = rate * STALL_FRACTION
-                    measured = sum(r[2] for r in recent) / len(recent)
+                    expected = (commanded_turn_rate if turning else rate) * STALL_FRACTION
+                    # Progress already integrates the whole confirmation window.
+                    # Use current velocity to distinguish contact from delayed
+                    # position updates; averaging old pre-contact samples would
+                    # add another scan interval when sensing is slow.
+                    measured = moving
                     if progress - old_progress < expected * (now - old_t) and measured < expected:
                         outcome = "stalled"
                         break
@@ -1171,15 +1232,14 @@ class Executor:
             path = (turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .65),
                                   cancelled=None if cancel is None else cancel.is_set,
                                   forbidden_first_steps=initial_forbidden or ()) if known_only else
-                    turning_astar(m.grid, start, goal, blocked, ~m.blocked(.6, extra),
+                    turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .6) & ~m.blocked(.6, extra),
                                   cancelled=None if cancel is None else cancel.is_set,
                                   unknown_cost=UNKNOWN_COST))
             if path is not None:
                 cells = keep_turns(path)
                 if not known_only:
-                    # Every candidate bend came from the wider turning mask.
-                    # Shortcutting only this list cannot create a new corner
-                    # beside furniture that the live turn guard must reject.
+                    # Bends need observed turning space. Unknown cells may be
+                    # traversed in straight legs, with live LiDAR still in charge.
                     cells = simplify(cells, lambda a, b: m.line_clear(blocked, a, b))
                 route = [m.cell_to_world(*c) for c in cells[1:-1]] + [(tx, ty)]
                 points = [(s.x, s.y)] + route
@@ -1436,6 +1496,12 @@ class Executor:
             key = (score, -(det.distance_m or 99))
             if best_key is None or key > best_key:
                 best, best_key = (det, pose), key
+        if best is None:
+            # No label fits. With the semantic object memory, the thing in view that looks most like the words
+            # will do ("can" when the detector said "bottle").
+            alike = self._looks_like(target, detections)
+            if alike:
+                best = alike[0][:2]
         return best, closest
 
 
@@ -1459,10 +1525,127 @@ class Executor:
             candidates.append((self._score(d, words), item.get("last_seen", 0.), d, item["x"], item["y"]))
         candidates = [c for c in candidates if c[0][0] and not c[0][1]]
         if not candidates:
-            return None
+            # Nothing remembered under those words: something that looked like them, if the semantic object
+            # memory has one ("bottle" brings back the can). As with labels, the best fit decides what kind of
+            # thing it is, and of those the latest sighting wins, so a thing that has moved is looked for where
+            # it was last seen.
+            alike = [entry for entry, _ in self._remembered_like(target, 5)]
+            if not alike:
+                return None
+            entry = max((e for e in alike if e.get("label") == alike[0].get("label")), key=lambda e: e.get("t", 0.))
+            thing = SimpleNamespace(id=entry["id"], label=entry.get("label") or self._phrase(target),
+                                    color=entry.get("color"), by_look=bool(entry.get("label")))
+            return thing, entry["x"], entry["y"]
         # Reversed, so a tie goes to the later sighting: Windows' clock can give two sightings the same time.
         _, _, det, wx, wy = max(reversed(candidates), key=lambda c: (c[0][0], c[1]))
         return det, wx, wy
+
+    # ---- semantic object memory --------------------------------------------------------------------
+    def _label_for(self, target):
+        """The detector label the words mean, when none fits them as said and the semantic object memory can tell:
+        'computer' -> 'laptop', 'the red mug' -> 'red cup'. None when a label already fits, the memory is off, or
+        no label is clearly closest (words for things the detector has no name for)."""
+        visual = self.visual
+        if visual is None or re.fullmatch(r"obj\d+", str(target)):
+            return None
+        words = self._words(target)
+        with self.lock:
+            seen = {d.label for d, *_ in self.memory}
+        labels = sorted((set(DETECTOR_LABELS) | seen | {o.get("label") or "" for o in self.object_memory.objects}) - {""})
+        if any(self._score(SimpleNamespace(label=label, color=None), words)[0] for label in labels):
+            return None                         # a label fits the words as they are
+        naming = [w for w in words if w not in STOP_WORDS and w not in ADJECTIVES and w not in P.COLOR_WORDS]
+        if not naming:
+            return None
+        try:
+            cache = self._label_vectors
+            if cache.get("embedder") is not visual.embedder:
+                cache.clear()
+                cache["embedder"] = visual.embedder
+            missing = [label for label in labels if label not in cache]
+            if missing:
+                cache.update(zip(missing, np.asarray(visual.embedder.texts(missing), dtype=np.float32)))
+            closeness = np.stack([cache[label] for label in labels]) @ visual.text(" ".join(naming))
+        except Exception:
+            return None
+        first, second = np.argsort(-closeness)[:2]
+        if closeness[first] - closeness[second] < LABEL_MARGIN:
+            return None
+        colours = [w for w in words if w in P.COLOR_WORDS]
+        return " ".join(colours + [labels[first]])
+
+    def use_visual_memory(self, embedder):
+        """Switch the semantic object memory on with this embedding model (saved beside the object memory), or
+        off with None: what it remembered stays saved, and is there again when it is switched back on."""
+        old, self.visual, self._look_vectors = self.visual, None, {}
+        if old is not None:
+            old.save(force=True)
+        if embedder is not None:
+            from .visual_memory import VisualMemory
+            self.visual = VisualMemory(self._visual_path, embedder)
+        return self.visual
+
+    def _memorise(self, frame, detections, pose):
+        """After a look: turn a crop of each thing in view into a vector, keep it for matching against what
+        is being looked for (_looks_like), and remember the ones with a known position. People are left out."""
+        self._look_vectors = {}
+        visual = self.visual                # one reference: the console's switch may turn it off meanwhile
+        if visual is None:
+            return
+        things = [(d, crop(frame.rgb, d.box)) for d in detections if d.label != "person" and d.box is not None]
+        things = [(d, c) for d, c in things if c is not None]
+        if not things:
+            return
+        try:
+            vectors = visual.embed([c for _, c in things])
+        except Exception:
+            return                          # a model that fails costs the memory, not the look
+        c, sn = math.cos(pose[2]), math.sin(pose[2])
+        for (det, picture_of), vector in zip(things, vectors):
+            self._look_vectors[det.id] = vector
+            if det.x_m is not None:
+                visual.add(vector, pose[0] + c * det.x_m - sn * det.y_m, pose[1] + sn * det.x_m + c * det.y_m,
+                                label=det.label, color=det.color, pixels=picture_of.shape[0] * picture_of.shape[1])
+        visual.save()
+
+    @staticmethod
+    def _phrase(target):
+        """What to ask the semantic object memory for: the thing's own words, without a leading 'the' or 'my'.
+        The rest is kept as said: 'something to drink from' means more to the model whole than as its nouns."""
+        words = re.findall(r"[a-z0-9']+", str(target).lower())
+        while words and words[0] in ("the", "a", "an", "my", "your", "our", "that", "this", "some"):
+            words = words[1:]
+        return " ".join(words)
+
+    def _looks_like(self, target, detections):
+        """The detections in view whose pictures fit the words well enough to act on, best first:
+        [(detection, pose, score)]. Used only when no label fits, so 'can' finds what the detector called a
+        bottle or a cup. A strong fit counts from anywhere, an ordinary one only from close up (a thing across
+        the room is a few dozen pixels, and what such a picture gets wrong it gets wrong both ways)."""
+        visual = self.visual
+        phrase = self._phrase(target) if visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
+        seen = [(d, pose) for d, pose in detections if d.id in self._look_vectors]
+        if not phrase or not seen:
+            return []
+        try:
+            scores = visual.scores(phrase, np.stack([self._look_vectors[d.id] for d, _ in seen]))
+        except Exception:
+            return []
+        strict, fair = visual.strict_threshold, visual.threshold
+        fits = [(d, pose, float(score)) for (d, pose), score in zip(seen, scores)
+                if score >= strict or (score >= fair and d.distance_m is not None and d.distance_m <= CLOSE_M)]
+        return sorted(fits, key=lambda fit: -fit[2])
+
+    def _remembered_like(self, target, limit=3):
+        """Remembered things that fit the words by resemblance: [(entry, score)], best first."""
+        visual = self.visual
+        phrase = self._phrase(target) if visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
+        if not phrase:
+            return []
+        try:
+            return visual.search(phrase, limit)
+        except Exception:
+            return []
 
     def _turn_by(self, task, cancel, angle):
         rate = L.default_turn_rate(abs(angle))
@@ -1470,7 +1653,9 @@ class Executor:
                               "speed": 0., "turn_rate": rate, "angle": abs(angle)}, cancel, leg=True)
 
     def _approach(self, task, cancel):
-        p = task.command.params
+        p = dict(task.command.params)
+        if p.get("meant"):
+            p["target"] = p["meant"]            # the detector's word for what was asked for
         stop_at = p["stop_distance"]
         searched, recalled, closest, locked, unranged = 0, False, None, None, 0
         for attempt in range(40):
@@ -1508,6 +1693,8 @@ class Executor:
                 if memory is not None:
                     # Seen recently but not in view now: turn toward where it was, then look again.
                     recalled = True
+                    # Keep the recalled detector label and map position locked
+                    # through detours, including semantic appearance matches.
                     locked = (memory[0].label, memory[1], memory[2])
                     bearing = _wrap(math.atan2(memory[2] - s.y, memory[1] - s.x) - s.yaw)
                     task.detail["searching"] = f"turned toward where I last saw the {memory[0].label}"
@@ -1523,6 +1710,8 @@ class Executor:
                 with self.lock:
                     names = sorted({_name(d) for d, *_ in self.memory})[:4]
                 text = f"I looked all the way around but can't find a {p['target']}"
+                if p.get("meant"):
+                    text += f" (what I took '{task.command.params['target']}' to mean)"
                 if closest is not None:
                     text += f"; the closest match is the {_name(closest)}"
                 text += f"; I can see: {', '.join(names)}" if names else "; I don't see any objects"

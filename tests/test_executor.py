@@ -55,6 +55,14 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(task.status, "completed")
         self.assertAlmostEqual(math.degrees(robot.yaw), -90, delta=5)
 
+    def test_turn_remains_accurate_when_angular_braking_is_slower(self):
+        robot = self.attach()
+        robot.angular_braking = .6
+        self.submit("turn", {"direction": "left", "angle_deg": 90})
+        task = self.finished()
+        self.assertEqual(task.status, "completed", task.detail)
+        self.assertAlmostEqual(math.degrees(robot.yaw), 90, delta=8)
+
     def test_queued_steps_run_in_order(self):
         robot = self.attach()
         commands = resolve("move", {"direction": "forward", "distance_m": .5}) + resolve("turn", {"direction": "left"})

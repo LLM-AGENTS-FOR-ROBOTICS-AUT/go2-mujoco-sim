@@ -6,7 +6,7 @@ recorded robot/world contacts, no fault and a stopped standing robot.
 Coverage ranged from 90.03% to 93.67%, averaging 91.45%.
 
 This is Prionti's exploration workstream on `prionti/issue-14-exploration`, based
-on `4873df2`. The implementation is local and has not been pushed. It does not
+on `4873df2`, submitted in PR #36. It does not
 complete the broader laptop-search mission or all work in issue #14.
 
 ## Automated checks
@@ -60,10 +60,12 @@ closed doors and furniture footprints. It measures the current observed LiDAR
 occupancy map, not camera coverage or laptop-search success. Ground truth is
 used only for scene construction, clear starts and scoring, never policy input.
 
-The [final machine-readable report](results/issue-14-exploration-final-2026-11-12.json)
+The local machine-readable report `docs/results/issue-14-exploration-final-2026-11-12.json`
 retains starts, room coverage, timings, task failures, collision data, matching
 source hashes and dependency fingerprints. All 20 cases use the same source
-hashes, verified against the final working tree. The pinned policy asset checksum
+hashes, identifying the original validated build `5c77d17`, before subsequent
+CI corrections. Generated reports are ignored by Git; regenerate them with
+the commands above rather than committing new result dumps. The pinned policy asset checksum
 was also verified. Simulator versions: MuJoCo 3.10.0, Torch
 2.2.2 and NumPy 1.26.4.
 
@@ -102,7 +104,7 @@ is not itself a physical collision.
 
 The finite empty-world calibration measured collision half-length below 0.396 m
 and half-width below 0.202 m. Live checks use a 0.42/0.23 m rectangle; planning
-adds one cell. Saved [footprint measurements](results/issue-14-robot-footprint-2026-11-12.json)
+adds one cell. Local footprint measurements in `docs/results/issue-14-robot-footprint-2026-11-12.json`
 are evidence for this simulation configuration, not a formal hardware bound.
 
 | Build | House budget, simulated seconds | Passed | Contacts |
@@ -111,13 +113,30 @@ are evidence for this simulation configuration, not a formal hardware bound.
 | Preceding recovery build | 1200 | 19/20 | 0 |
 | Final selection-order fix | 1200 | 20/20 | 0 |
 
-The [earlier circular baseline](results/issue-14-exploration-2026-11-12.json)
-and [preceding recovery build](results/issue-14-exploration-progress-2026-11-12.json)
-are retained. The changed budget prevents attributing the first comparison
+The earlier circular baseline (`docs/results/issue-14-exploration-2026-11-12.json`)
+and preceding recovery build (`docs/results/issue-14-exploration-progress-2026-11-12.json`)
+are retained locally as ignored reports. The changed budget prevents attributing the first comparison
 solely to planner changes. The final fix exhausts normal coarse/fine plans
 before enabling fine-map recovery; the live collision envelope is unchanged.
 
 ## Integration scope
+
+CI corrections on 13 November keep LiDAR buffer timestamps in the executor's
+clock domain, reproject safety scans at the current pose after map processing,
+and select navigation bends only in observed turning space. Stopping thresholds and
+test tolerances are unchanged. Local checks passed: 29 clock/follow checks
+(3 dependency skips), the existing safety/navigation cases with targeted
+rechecks of the new clearance regression, 17 planner/physics checks, and all
+four real-simulator following/navigation checks, including one minute following
+a moving person. Hosted-platform CI still determines cross-platform acceptance.
+
+The final observed-space correction passed five consecutive opaque-wall runs
+and all 34 clock/safety/navigation checks. The voice regression now checks that
+a typed command creates no speech gate, generates no audio and starts actual
+movement; it does not benchmark unrelated map processing against a 0.4-second
+wall-clock limit on a shared runner. All 29 voice/planner/real-physics checks
+passed after that test change. The full local runs interrupted during diagnosis
+are not reported as passing suites.
 
 The team still needs to agree that LiDAR-mapped exposed floor is the intended
 meaning of "floor seen". Twenty sampled starts do not prove every continuous

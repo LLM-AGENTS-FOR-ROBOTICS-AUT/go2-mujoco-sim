@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -123,11 +125,19 @@ class MissingObjectArrivalTests(unittest.TestCase):
         self.addCleanup(executor.close)
         executor.object_memory.remember("laptop", .9, 0.)
         agent = Agent(MockModel(), executor)
-        executor.on_event = agent.on_task_event
+        reported = threading.Event()
+        def report(task):
+            agent.on_task_event(task)
+            reported.set()
+        executor.on_event = report
         self.addCleanup(agent.close)
         agent.robot_line = lambda: "standing in the room"
-        agent.submit("go to the laptop")
-        self.assertTrue(wait_for(lambda: not agent.busy, 8))
+        # Exercise the asynchronous acknowledgement: the first "On it" reply
+        # can finish while the executor is still inspecting the saved location.
+        with patch("go2.executor.START_CHECK_S", 0.):
+            agent.submit("go to the laptop")
+            self.assertTrue(wait_for(lambda: reported.is_set() and not agent.snapshot()["busy"], 8),
+                            "executor completion report did not finish")
         self.assertIn("may have moved", agent.messages[-1]["content"])
         self.assertEqual(executor.object_memory.snapshot()[0]["state"], "missing")
         self.assertIsNone(executor._recall("laptop"))
