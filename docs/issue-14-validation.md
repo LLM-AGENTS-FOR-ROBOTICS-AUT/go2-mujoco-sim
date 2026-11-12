@@ -123,12 +123,20 @@ before enabling fine-map recovery; the live collision envelope is unchanged.
 
 CI corrections on 13 November keep LiDAR buffer timestamps in the executor's
 clock domain, reproject safety scans at the current pose after map processing,
-and select navigation bends with turning clearance. Stopping thresholds and
+and select navigation bends only in observed turning space. Stopping thresholds and
 test tolerances are unchanged. Local checks passed: 29 clock/follow checks
 (3 dependency skips), the existing safety/navigation cases with targeted
 rechecks of the new clearance regression, 17 planner/physics checks, and all
 four real-simulator following/navigation checks, including one minute following
 a moving person. Hosted-platform CI still determines cross-platform acceptance.
+
+The final observed-space correction passed five consecutive opaque-wall runs
+and all 34 clock/safety/navigation checks. The voice regression now checks that
+a typed command creates no speech gate, generates no audio and starts actual
+movement; it does not benchmark unrelated map processing against a 0.4-second
+wall-clock limit on a shared runner. All 29 voice/planner/real-physics checks
+passed after that test change. The full local runs interrupted during diagnosis
+are not reported as passing suites.
 
 The team still needs to agree that LiDAR-mapped exposed floor is the intended
 meaning of "floor seen". Twenty sampled starts do not prove every continuous

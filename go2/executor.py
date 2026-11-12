@@ -1101,14 +1101,14 @@ class Executor:
             path = (turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .65),
                                   cancelled=None if cancel is None else cancel.is_set,
                                   forbidden_first_steps=initial_forbidden or ()) if known_only else
-                    turning_astar(m.grid, start, goal, blocked, ~m.blocked(.6, extra),
+                    turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .6) & ~m.blocked(.6, extra),
                                   cancelled=None if cancel is None else cancel.is_set,
                                   unknown_cost=UNKNOWN_COST))
             if path is not None:
                 cells = keep_turns(path)
                 if not known_only:
-                    # Shortcut only planned bends, each chosen with enough
-                    # turning space, rather than creating corners beside furniture.
+                    # Bends need observed turning space. Unknown cells may be
+                    # traversed in straight legs, with live LiDAR still in charge.
                     cells = simplify(cells, lambda a, b: m.line_clear(blocked, a, b))
                 route = [m.cell_to_world(*c) for c in cells[1:-1]] + [(tx, ty)]
                 points = [(s.x, s.y)] + route

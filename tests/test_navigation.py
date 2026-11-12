@@ -21,6 +21,15 @@ except ImportError:
 
 
 class GoToRouteTests(unittest.TestCase):
+    def test_planned_turns_stay_in_observed_space_before_an_opaque_wall(self):
+        robot = self.attach(obstacles=[(1.2, 1.4, -30., 30.)])
+        for _ in range(3):
+            self.executor._refresh_cloud()
+        route = self.executor._route(robot.state(), 3., 0.)
+        if route:
+            self.assertTrue(all(x < .7 for x, _ in route[:-1]),
+                            f"turning points must stay clear of the unseen side of the wall: {route}")
+
     def setUp(self):
         self.events = []
         self.executor = Executor(on_event=self.events.append)
