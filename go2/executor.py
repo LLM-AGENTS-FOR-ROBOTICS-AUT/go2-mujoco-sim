@@ -459,9 +459,10 @@ class Executor:
         points, state = self.adapter.lidar()
         level = P.base_to_level(points, state.roll, state.pitch)
         with self._cloud_lock:
-            sensor_time = state.extra.get("sim_time")
-            self.cloud.add(state.stamp if sensor_time is None else sensor_time,
-                           level, (state.x, state.y, state.yaw), state.height)
+            # Following compares scan times with this executor's monotonic
+            # clock. Simulator uptime is a different epoch. Offline evaluators
+            # supply this module's clock explicitly, including scan expiry.
+            self.cloud.add(time.monotonic(), level, (state.x, state.y, state.yaw), state.height)
         if len(level):
             # The room map is in odometry coordinates, so a box stays where it is when the robot turns.
             world = P.level_to_odom(level, (state.x, state.y, state.yaw))
@@ -713,7 +714,10 @@ class Executor:
     def _clearance(self, ux, uy, turning, *, footprint=None):
         """Free distance along the travel direction, limited to what the LiDAR can actually see. Drops (a
         ledge, stairs going down) and spots it recently bumped into count as obstacles."""
-        s = self._refresh_cloud()
+        self._refresh_cloud()
+        # Mapping can take time while the robot keeps moving. Reproject the
+        # captured returns at the current pose before judging stopping space.
+        s = self._fresh_state()
         with self._cloud_lock:
             cloud = self.cloud.level((s.x, s.y, s.yaw))
         cloud = self._with_low_obstacles(cloud, s)
@@ -1060,9 +1064,15 @@ class Executor:
             path = (turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .65),
                                   cancelled=None if cancel is None else cancel.is_set,
                                   forbidden_first_steps=initial_forbidden or ()) if known_only else
-                    astar(m.grid, start, goal, blocked=blocked, unknown_cost=UNKNOWN_COST, diagonal=True))
+                    turning_astar(m.grid, start, goal, blocked, ~m.blocked(.6, extra),
+                                  cancelled=None if cancel is None else cancel.is_set,
+                                  unknown_cost=UNKNOWN_COST))
             if path is not None:
-                cells = keep_turns(path) if known_only else simplify(path, lambda a, b: m.line_clear(blocked, a, b))
+                cells = keep_turns(path)
+                if not known_only:
+                    # Shortcut only planned bends, each chosen with enough
+                    # turning space, rather than creating corners beside furniture.
+                    cells = simplify(cells, lambda a, b: m.line_clear(blocked, a, b))
                 route = [m.cell_to_world(*c) for c in cells[1:-1]] + [(tx, ty)]
                 points = [(s.x, s.y)] + route
                 length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))

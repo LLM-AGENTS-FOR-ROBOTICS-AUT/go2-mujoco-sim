@@ -7,6 +7,17 @@ from go2.path_planner import astar, simplify, turning_astar, keep_turns
 
 class TestAStar(unittest.TestCase):
 
+    def test_turning_route_can_cross_unknown_but_prefers_observed_corridor(self):
+        grid = np.zeros((7, 9), dtype=int)
+        grid[3, 2:7] = -1
+        blocked = grid == 1
+        turning = np.ones_like(grid, dtype=bool)
+        path = turning_astar(grid, (3, 1), (3, 7), blocked, turning, unknown_cost=5.)
+        self.assertTrue(all(grid[cell] == 0 for cell in path))
+        grid[:] = -1
+        self.assertIsNone(turning_astar(grid, (3, 1), (3, 7), blocked, turning))
+        self.assertIsNotNone(turning_astar(grid, (3, 1), (3, 7), blocked, turning, unknown_cost=5.))
+
     def test_turning_route_uses_wide_corners_and_passes_straight_doorways(self):
         grid = np.ones((9, 9), dtype=int)
         grid[1:8, 1:4] = 0
