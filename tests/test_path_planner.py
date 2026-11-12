@@ -2,10 +2,51 @@
 import unittest
 import numpy as np
 
-from go2.path_planner import astar, simplify
+from go2.path_planner import astar, simplify, turning_astar, keep_turns
 
 
 class TestAStar(unittest.TestCase):
+
+    def test_turning_route_uses_wide_corners_and_passes_straight_doorways(self):
+        grid = np.ones((9, 9), dtype=int)
+        grid[1:8, 1:4] = 0
+        grid[1:8, 5:8] = 0
+        grid[4, 4] = 0
+        blocked, turning = grid != 0, np.zeros_like(grid, dtype=bool)
+        turning[2, 2] = turning[4, 2] = turning[4, 6] = turning[6, 6] = True
+        path = turning_astar(grid, (2, 2), (6, 6), blocked, turning)
+        self.assertIsNotNone(path)
+        corners = keep_turns(path)
+        self.assertTrue(all(turning[cell] for cell in corners[1:-1]))
+        self.assertIn((4, 4), path)
+
+    def test_turning_route_refuses_a_bend_without_turning_clearance(self):
+        grid = np.ones((5, 5), dtype=int)
+        grid[1, 1:4] = grid[1:4, 3] = 0
+        self.assertIsNone(turning_astar(grid, (1, 1), (3, 3), grid != 0, np.zeros_like(grid, dtype=bool)))
+
+    def test_turning_route_can_be_cancelled_during_planning(self):
+        grid = np.zeros((20, 20), dtype=int)
+        self.assertIsNone(turning_astar(grid, (0, 0), (19, 19), grid != 0,
+                                      np.ones_like(grid, dtype=bool), cancelled=lambda: True))
+
+    def test_turning_route_escapes_a_live_blocked_initial_direction(self):
+        grid = np.zeros((5, 6), dtype=int)
+        path = turning_astar(grid, (2, 1), (2, 4), grid != 0, np.ones_like(grid, dtype=bool),
+                             forbidden_first_steps={(0, 1)})
+        self.assertIsNotNone(path)
+        self.assertNotEqual(path[1], (2, 2))
+        self.assertEqual(path[-1], (2, 4))
+
+    def test_turning_route_rechecks_cancellation_after_search_has_started(self):
+        grid = np.zeros((400, 400), dtype=int)
+        checks = []
+        def cancelled():
+            checks.append(1)
+            return len(checks) >= 2
+        self.assertIsNone(turning_astar(grid, (0, 0), (399, 399), grid != 0,
+                                      np.ones_like(grid, dtype=bool), cancelled=cancelled))
+        self.assertEqual(len(checks), 2)
 
     def test_finds_path_on_clear_grid(self):
         grid = np.zeros((5, 5), dtype=int)

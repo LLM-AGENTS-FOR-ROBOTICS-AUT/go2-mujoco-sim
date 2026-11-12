@@ -135,7 +135,10 @@ class SimAdapter(RobotAdapter):
                           height=raw["height"], posture=POSTURES.get(raw["mode"], raw["mode"]),
                           action=raw.get("action"), fault=raw.get("fault"),
                           extra={"sim_time": raw.get("sim_time"), "gait": raw.get("gait"),
-                                 "real_time_factor": raw.get("real_time_factor")})
+                                 "world_z": raw.get("z"),
+                                 "real_time_factor": raw.get("real_time_factor"),
+                                 "collision_count": raw.get("collision_count"),
+                                 "collision_events": raw.get("collision_events", [])})
 
     def state(self):
         return self._state(self._rpc("state"))
