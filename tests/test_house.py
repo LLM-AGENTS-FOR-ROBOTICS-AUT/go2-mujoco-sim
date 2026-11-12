@@ -464,6 +464,61 @@ class OnFurnitureMujocoTests(unittest.TestCase):
                 camera.close()
 
 
+class ColourTests(unittest.TestCase):
+    """Random colours by kind, named in the description (#21)."""
+
+    def test_each_palette_word_is_the_colour_the_simulator_reports(self):
+        import colorsys
+        import world
+        for kind, palette in house.PALETTES.items():
+            for word, rgba in palette:
+                self.assertEqual(world.colour_word(*colorsys.rgb_to_hsv(*rgba[:3])), word, (kind, rgba))
+
+    def test_random_houses_vary_colours_and_name_them(self):
+        seen = {}
+        for seed in range(100):
+            for item in house.random_house(random.Random(seed))["objects"]:
+                if "colour" not in item:
+                    continue
+                with self.subTest(seed=seed, item=item["name"]):
+                    self.assertNotIn("gso", item, "a scanned object shows its own texture")
+                    self.assertIn((item["colour"], tuple(item["rgba"])), house.PALETTES[item["kind"]])
+                seen.setdefault(item["kind"], []).append(item["colour"])
+        for kind, palette in house.PALETTES.items():
+            if len(seen.get(kind, [])) >= 15:                   # rare kinds (a second backpack) may show fewer
+                self.assertGreaterEqual(len(set(seen[kind])), min(4, len(palette)), (kind, set(seen[kind])))
+        for kind in ("ball", "book", "dining_table", "refrigerator", "sink"):    # cups: mostly the one scanned mug
+            self.assertIn(kind, seen)
+
+    def test_the_demo_house_keeps_its_colours(self):
+        self.assertFalse([o["name"] for o in house.house_demo()["objects"] if "colour" in o])
+
+    @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
+    @needs_camera
+    def test_go2s_camera_names_each_colour_as_the_description_does(self):
+        import world
+        from go2.perception import color_name
+        from sensors import Camera
+        for kind, palette in house.PALETTES.items():
+            far = 2.6 if house.KINDS[kind][2] else 1.3          # big furniture further off, to fit in view
+            for word, rgba in palette:
+                h = {"scene": "house", "rooms": [{"name": "r", "type": "living_room", "rect": [-1., -3., 5., 3.]}],
+                     "doors": [], "start": [0., 0., 0.],
+                     "objects": [{"name": "thing", "label": kind, "kind": kind, "room": "r", "pos": [far, 0.],
+                                  "yaw": 2., "rgba": list(rgba)}]}
+                model, _ = world.build("house", h)
+                data = mujoco.MjData(model)
+                data.qpos[:3], data.qpos[3:7] = (0, 0, .32), (1, 0, 0, 0)
+                mujoco.mj_forward(model, data)
+                camera = Camera(model)
+                try:
+                    rgb, bodies = camera.capture(data)
+                finally:
+                    camera.close()
+                with self.subTest(kind=kind, colour=word):
+                    self.assertEqual(color_name(rgb[bodies == model.body("thing").id]), word)
+
+
 @unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")
 class HouseWalkingTests(unittest.TestCase):
     """Acceptance: in the demo house Go2 walks from the hallway into every room through the doorways."""

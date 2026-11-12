@@ -90,6 +90,30 @@ COLOURS = {"bed": (.9, .9, .92, 1), "refrigerator": (.88, .88, .9, 1), "oven": (
            "laptop": (.5, .5, .55, 1), "keyboard": (.12, .12, .14, 1), "book": (.85, .1, .1, 1), "clock": (.85, .1, .1, 1),
            "toy_dog": (.55, .38, .22, 1), "toy_elephant": (.55, .55, .6, 1)}
 BALL_COLOURS = [(.85, .1, .1, 1), (.15, .3, .85, 1), (.2, .6, .25, 1), (.95, .8, .1, 1)]
+# Random houses pick each thing's colour from its kind's palette and name it in the description ("colour"), so
+# a mission can ask for "the blue cup" (#21). Each word is what go2.perception.color_name says when Go2's camera
+# sees that colour in a house (tests/test_house.py renders them all). Kinds with a realistic model (beds, couches,
+# chairs, plants, TVs) or a scanned one (its first teddy, mug, laptop...) keep their fixed colour and get no
+# word: the model's own texture is what shows. Laptops have none either: from the front Go2 sees the black screen.
+RED, BLUE, GREEN, YELLOW = (.8, .12, .1, 1), (.15, .3, .8, 1), (.2, .6, .25, 1), (.95, .8, .1, 1)
+ORANGE, PINK, PURPLE = (.95, .45, .1, 1), (.9, .4, .65, 1), (.5, .25, .7, 1)
+WHITE, GREY, BLACK, BROWN = (.95, .95, .93, 1), (.5, .5, .52, 1), (.1, .1, .11, 1), (.45, .3, .17, 1)
+_BRIGHT = [("red", RED), ("blue", BLUE), ("green", GREEN), ("yellow", YELLOW), ("orange", ORANGE)]
+PALETTES = {
+    "cup": _BRIGHT + [("white", WHITE), ("black", BLACK), ("pink", PINK)],
+    "bowl": _BRIGHT + [("white", WHITE), ("black", BLACK)],
+    "ball": _BRIGHT + [("white", WHITE), ("pink", PINK), ("purple", PURPLE)],
+    "backpack": _BRIGHT + [("black", BLACK), ("grey", GREY), ("pink", PINK), ("purple", PURPLE)],
+    "book": _BRIGHT + [("white", WHITE), ("black", BLACK), ("purple", PURPLE)],
+    "clock": [("red", RED), ("blue", BLUE), ("white", WHITE), ("black", BLACK), ("yellow", YELLOW)],
+    "keyboard": [("black", BLACK), ("white", WHITE), ("grey", GREY)],
+    "dining_table": [("brown", BROWN), ("white", WHITE), ("black", BLACK), ("grey", GREY)],
+    "desk": [("brown", BROWN), ("black", BLACK), ("grey", GREY), ("red", RED)],      # its shaded front: no white
+    "refrigerator": [("white", WHITE), ("grey", GREY), ("black", BLACK), ("red", RED)],
+    "oven": [("white", WHITE), ("black", BLACK), ("grey", GREY)],
+    "sink": [("white", WHITE), ("grey", GREY), ("black", BLACK)],
+    "toilet": [("white", WHITE)],
+}
 # Realistic furniture from simulation/fetch_furniture.py: kind -> [(model, lift, shown, turn)]. A model is
 # turned by `turn` quarter turns (anticlockwise) so its back faces local +y like the plain shapes, scaled to
 # its kind's footprint and drawn over the kind's plain shapes, which stay its physical body, faded so the
@@ -318,12 +342,13 @@ def _place(rng, house, room, kind, taken):
     return None
 
 
-def furnish(rng, house, teddy_room=None, on_furniture=False):
+def furnish(rng, house, teddy_room=None, on_furniture=False, colours=False):
     """Fill house["objects"] with furniture that fits each room type, mostly in likely places, plus one
     teddy bear (in `teddy_room` when given). Each scanned object is used once; repeats are plain shapes.
     Kinds with realistic models name one, the styles taking turns. With on_furniture, some small things go
     on a bed, desk or table (ON_TOP), always where Go2 can see them from the floor; otherwise all stay on the
-    floor (the demo house, which must not change)."""
+    floor. With colours, plain-shape things get a colour from PALETTES, named in "colour". The demo house uses
+    neither, so it never changes."""
     objects, taken, used, counts, on_top = [], [], set(), {}, {}
     house["objects"] = objects                     # sight_share looks the furniture up as things are added
 
@@ -350,9 +375,15 @@ def furnish(rng, house, teddy_room=None, on_furniture=False):
         gso = KINDS[kind][3] if KINDS[kind][3] not in used else None
         used.add(gso)
         counts[kind] = counts.get(kind, 0) + 1
-        rgba = rng.choice(BALL_COLOURS) if kind == "ball" else COLOURS[kind]
+        word = None
+        if colours and kind in PALETTES and not gso:
+            word, rgba = rng.choice(PALETTES[kind])
+        else:
+            rgba = rng.choice(BALL_COLOURS) if kind == "ball" else COLOURS[kind]
         item = {"name": gso or f"{kind}_{counts[kind]}", "label": KINDS[kind][0], "kind": kind, "room": room["name"],
                 "pos": [x, y], "yaw": yaw, "rgba": list(rgba)}
+        if word:
+            item["colour"] = word
         if gso:
             item["gso"] = gso
         if kind in MODELS:          # in turn rather than at random, so the houses themselves don't change
@@ -623,7 +654,7 @@ def random_house(rng, n_rooms=None):
         else:
             start, yaw = [_snap((x0 + x1) / 2), _snap((y0 + y1) / 2)], _snap(rng.uniform(-math.pi, math.pi))
         house = {"scene": "house", "rooms": rooms, "doors": doors, "objects": [], "start": start + [round(yaw, 2)]}
-        furnish(rng, house, on_furniture=True)
+        furnish(rng, house, on_furniture=True, colours=True)
         teddies = sum(o["kind"] == "teddy" for o in house["objects"])
         if furnished(house) and teddies == 1 and reachability(house)[0]:
             return house
