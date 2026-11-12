@@ -99,8 +99,14 @@ class Console:
         self.agent.robot_line = lambda: robot_state_line(self.adapter, self.executor)
         self.agent.robot_snapshot = self._robot_snapshot
         self.executor.attach(adapter)
+        # Semantic object memory: off unless --visual-memory or the page's switch turns it on.
+        self.semantic_lock = threading.Lock()
+        self.semantic = {"on": False, "ready": False, "error": None}
         if visual_memory:
-            self._start_visual_memory()
+            try:
+                self.set_semantic_memory(True)
+            except ValueError as error:
+                print(f"Semantic object memory is off: {error}")
         self.commands = threading.Lock()        # the page shows one card per command, in order
         self.shown = 0                          # transcript rows already shown on a card
         self.loaded = threading.Event()         # set once the model has loaded (or failed to)
@@ -133,23 +139,42 @@ class Console:
         else:
             self.loaded.set()
 
-    def _start_visual_memory(self):
-        """Semantic object memory: remember what each thing looked like (an image-text embedding), so that a
-        remembered thing is found by words its label doesn't contain ("bottle" also brings back the can).
-        Without the model or its packages the console runs as before and says why."""
-        try:
-            from go2.embedder import Embedder
-            embedder = Embedder()
-            problem = embedder.available()
-            if problem:
-                print(f"Semantic object memory is off: {problem}")
+    def set_semantic_memory(self, on):
+        """Switch the semantic object memory on or off (the page's switch, or --visual-memory at start): remember
+        what each thing looked like (an image-text embedding), so that a remembered thing is found by words its
+        label doesn't contain ("bottle" also brings back the can). Switched off, what it remembered stays saved for
+        next time and the model's memory is given back. ValueError when it can't be switched on here, saying why."""
+        with self.semantic_lock:
+            if not on:
+                self.executor.use_visual_memory(None)
+                self.semantic = {"on": False, "ready": False, "error": None}
                 return
+            if self.executor.visual is not None:
+                return
+            try:
+                from go2.embedder import Embedder
+                embedder = Embedder()
+                problem = embedder.available()
+            except Exception as error:
+                problem = str(error)
+            if problem:
+                self.semantic = {"on": False, "ready": False, "error": problem}
+                raise ValueError(problem)
             self.executor.use_visual_memory(embedder)
-            # Load it now, in the background, so that the first look doesn't wait for it.
-            threading.Thread(target=getattr(embedder, "load", lambda: embedder.texts(["a thing"])), daemon=True,
-                             name="embedder").start()
-        except Exception as error:
-            print(f"Semantic object memory is off: {error}")
+            self.semantic = {"on": True, "ready": False, "error": None}
+
+        def load():                             # now, in the background, so that the first look doesn't wait
+            try:
+                embedder.load()
+                ready, error = True, None
+            except Exception as failure:
+                ready, error = False, f"the model didn't load: {failure}"
+            with self.semantic_lock:
+                if self.executor.visual is not None and self.executor.visual.embedder is embedder:
+                    if error:
+                        self.executor.use_visual_memory(None)
+                    self.semantic = {"on": ready, "ready": ready, "error": error}
+        threading.Thread(target=load, daemon=True, name="embedder").start()
 
     def _warm_up(self):
         """Load the model in the background so the first command doesn't wait for it (downloading it first, the
@@ -485,6 +510,7 @@ class Console:
                             "recent": executor["recent"]},
                 "conversation": {"id": self.conversation_id, "entries": conversation_entries(agent["transcript"], tasks)},
                 "camera": camera,
+                "semantic_memory": {**self.semantic, "remembered": len(self.executor.visual or ())},
                 # flags leave this computer (Firebase): the page warns before sending one
                 "feedback": {"upload": self.uploader is not None}}
 
@@ -769,6 +795,17 @@ def make_app(console, port):
         try:
             console.reset()
         except (ValueError, AdapterError) as error:
+            return refused(error)
+        return jsonify(console.state())
+
+    @app.route("/api/semantic-memory", methods=["POST"])
+    def api_semantic_memory():
+        value = body()
+        if not isinstance(value.get("on"), bool):
+            return refused('Send {"on": true} or {"on": false}.')
+        try:
+            console.set_semantic_memory(value["on"])
+        except ValueError as error:
             return refused(error)
         return jsonify(console.state())
 

@@ -1071,32 +1071,38 @@ class Executor:
 
     # ---- semantic object memory --------------------------------------------------------------------
     def use_visual_memory(self, embedder):
-        """Switch the semantic object memory on with this embedding model (saved beside the object memory)."""
-        from .visual_memory import VisualMemory
-        self.visual = VisualMemory(self._visual_path, embedder)
+        """Switch the semantic object memory on with this embedding model (saved beside the object memory), or
+        off with None: what it remembered stays saved, and is there again when it is switched back on."""
+        old, self.visual, self._look_vectors = self.visual, None, {}
+        if old is not None:
+            old.save(force=True)
+        if embedder is not None:
+            from .visual_memory import VisualMemory
+            self.visual = VisualMemory(self._visual_path, embedder)
         return self.visual
 
     def _memorise(self, frame, detections, pose):
         """After a look: turn a crop of each thing in view into a vector, keep it for matching against what
         is being looked for (_looks_like), and remember the ones with a known position. People are left out."""
         self._look_vectors = {}
-        if self.visual is None:
+        visual = self.visual                # one reference: the console's switch may turn it off meanwhile
+        if visual is None:
             return
         things = [(d, crop(frame.rgb, d.box)) for d in detections if d.label != "person" and d.box is not None]
         things = [(d, c) for d, c in things if c is not None]
         if not things:
             return
         try:
-            vectors = self.visual.embed([c for _, c in things])
+            vectors = visual.embed([c for _, c in things])
         except Exception:
             return                          # a model that fails costs the memory, not the look
         c, sn = math.cos(pose[2]), math.sin(pose[2])
         for (det, picture_of), vector in zip(things, vectors):
             self._look_vectors[det.id] = vector
             if det.x_m is not None:
-                self.visual.add(vector, pose[0] + c * det.x_m - sn * det.y_m, pose[1] + sn * det.x_m + c * det.y_m,
+                visual.add(vector, pose[0] + c * det.x_m - sn * det.y_m, pose[1] + sn * det.x_m + c * det.y_m,
                                 label=det.label, color=det.color, pixels=picture_of.shape[0] * picture_of.shape[1])
-        self.visual.save()
+        visual.save()
 
     @staticmethod
     def _phrase(target):
@@ -1112,26 +1118,28 @@ class Executor:
         [(detection, pose, score)]. Used only when no label fits, so 'can' finds what the detector called a
         bottle or a cup. A strong fit counts from anywhere, an ordinary one only from close up (a thing across
         the room is a few dozen pixels, and what such a picture gets wrong it gets wrong both ways)."""
-        phrase = self._phrase(target) if self.visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
+        visual = self.visual
+        phrase = self._phrase(target) if visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
         seen = [(d, pose) for d, pose in detections if d.id in self._look_vectors]
         if not phrase or not seen:
             return []
         try:
-            scores = self.visual.scores(phrase, np.stack([self._look_vectors[d.id] for d, _ in seen]))
+            scores = visual.scores(phrase, np.stack([self._look_vectors[d.id] for d, _ in seen]))
         except Exception:
             return []
-        strict, fair = self.visual.strict_threshold, self.visual.threshold
+        strict, fair = visual.strict_threshold, visual.threshold
         fits = [(d, pose, float(score)) for (d, pose), score in zip(seen, scores)
                 if score >= strict or (score >= fair and d.distance_m is not None and d.distance_m <= CLOSE_M)]
         return sorted(fits, key=lambda fit: -fit[2])
 
     def _remembered_like(self, target, limit=3):
         """Remembered things that fit the words by resemblance: [(entry, score)], best first."""
-        phrase = self._phrase(target) if self.visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
+        visual = self.visual
+        phrase = self._phrase(target) if visual is not None and not re.fullmatch(r"obj\d+", str(target)) else ""
         if not phrase:
             return []
         try:
-            return self.visual.search(phrase, limit)
+            return visual.search(phrase, limit)
         except Exception:
             return []
 

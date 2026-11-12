@@ -121,7 +121,7 @@ class ApiTests(unittest.TestCase):
     def test_state_describes_the_robot_the_model_and_the_conversation(self):
         self.make()
         state = self.get("/api/state")
-        self.assertEqual(set(state), {"revision", "robot", "model", "voice", "agent", "actions", "conversation", "camera",
+        self.assertEqual(set(state), {"revision", "robot", "model", "voice", "agent", "actions", "conversation", "camera", "semantic_memory",
                                       "feedback"})
         self.assertEqual(state["feedback"], {"upload": False}, "no uploader: flags stay on this computer")
         robot = state["robot"]
@@ -178,6 +178,40 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: len(self.entries()) == 2, 10))
         code, state = self.post("/api/clear")
         self.assertEqual((code, state["conversation"]), (200, {"id": 1, "entries": []}))
+
+    def test_the_semantic_memory_switch(self):
+        from unittest import mock
+        from tests.test_visual_memory import ToyEmbedder
+
+        class Ready(ToyEmbedder):
+            def available(self):
+                return None
+
+            def load(self):
+                return self
+
+        class Missing(ToyEmbedder):
+            def available(self):
+                return "the model is not downloaded: run python -m go2.embedder fetch"
+
+        self.make()
+        self.assertEqual(self.console.state()["semantic_memory"],
+                         {"on": False, "ready": False, "error": None, "remembered": 0})       # off by default
+        self.assertEqual(self.post("/api/semantic-memory", {"on": "yes"})[0], 400)
+        with mock.patch("go2.embedder.Embedder", Missing):
+            code, answer = self.post("/api/semantic-memory", {"on": True})
+        self.assertEqual(code, 400)
+        self.assertIn("not downloaded", answer["error"])                 # it says why
+        self.assertIsNone(self.console.executor.visual)
+        with mock.patch("go2.embedder.Embedder", Ready):
+            code, state = self.post("/api/semantic-memory", {"on": True})
+        self.assertEqual((code, state["semantic_memory"]["on"], state["semantic_memory"]["error"]), (200, True, None))
+        self.assertTrue(wait_for(lambda: self.console.state()["semantic_memory"]["ready"], 5))
+        self.assertIsNotNone(self.console.executor.visual)
+        code, state = self.post("/api/semantic-memory", {"on": False})
+        self.assertEqual((code, state["semantic_memory"]["on"]), (200, False))
+        self.assertIsNone(self.console.executor.visual)
+        self.assertEqual(self.post("/api/semantic-memory", {"on": False})[0], 200)       # off twice is fine
 
     def test_reset_and_arming_only_where_they_apply(self):
         self.make()

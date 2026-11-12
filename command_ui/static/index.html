@@ -82,6 +82,12 @@
   .btn-stop:hover{background:rgba(226,75,74,.28);}
   .btn-soft{background:var(--panel2);color:var(--white);border-color:var(--border);font-weight:500;font-size:14px;padding:9px;}
   .btn-soft:hover{border-color:var(--teal);}
+  .switch{display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;}
+  .switch .knob{flex:none;width:34px;height:20px;border-radius:10px;background:var(--border);position:relative;transition:background .15s;}
+  .switch .knob::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--white);transition:left .15s;}
+  .switch[aria-checked="true"] .knob{background:var(--teal);}
+  .switch[aria-checked="true"] .knob::after{left:17px;}
+  .switch .sub{display:block;font-size:12px;opacity:.75;font-weight:400;margin-top:2px;}
   .bar{display:flex;gap:8px;padding:12px 18px;border-top:1px solid var(--border);max-width:1080px;margin:0 auto;align-items:center;}
   #text{flex:1;background:var(--panel2);border:1px solid var(--border);color:var(--white);border-radius:9px;padding:11px 13px;font-size:15px;outline:none;}
   #text:focus{border-color:var(--teal);}#text:disabled{opacity:.6;}
@@ -149,6 +155,7 @@
       <button class="btn-stop" id="stop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop <span style="font-weight:400;font-size:12px;opacity:.8">(Esc)</span></button>
       <button class="btn-soft" id="reset" hidden>Reset simulation</button>
       <button class="btn-soft" id="disarm" hidden>Disarm robot</button>
+      <button class="btn-soft switch" id="semantic" role="switch" aria-checked="false" title="Also remember what each thing looked like, so Go2 finds things by words their label doesn't contain (&quot;toy&quot; finds the teddy bear)"><span>Semantic object memory<span class="sub" id="semanticSub">Off</span></span><span class="knob"></span></button>
       <button class="btn-soft" id="clear">Clear conversation</button>
     </div>
   </div>
@@ -214,6 +221,13 @@ function renderSide(s){
   // buttons
   $('reset').hidden=(r.kind!=='sim');
   $('disarm').hidden=!(r.requires_arming&&r.armed);
+  renderSemantic(s.semantic_memory||{});
+}
+function renderSemantic(m){
+  const b=$('semantic');
+  if(b.dataset.busy) return;               // a click is on its way: its answer redraws it
+  b.setAttribute('aria-checked',m.on?'true':'false');
+  $('semanticSub').textContent=m.on?(m.ready?`On — ${m.remembered||0} things remembered`:'Loading the model…'):(m.error?'Off — '+m.error:'Off');
 }
 function renderCamera(cam){
   const box=$('cambox');
@@ -346,6 +360,17 @@ $('stop').onclick=()=>stopRobot();
 document.addEventListener('keydown',e=>{if(e.key==='Escape')stopRobot();});
 $('reset').onclick=()=>fetch('/api/reset',{method:'POST'}).catch(()=>{});
 $('clear').onclick=()=>{speaker.cancel();fetch('/api/clear',{method:'POST'}).catch(()=>{});};
+$('semantic').onclick=async()=>{
+  const b=$('semantic');if(b.dataset.busy)return;
+  const on=b.getAttribute('aria-checked')!=='true';
+  b.dataset.busy='1';b.setAttribute('aria-checked',on?'true':'false');$('semanticSub').textContent=on?'Switching on…':'Switching off…';
+  try{
+    const r=await fetch('/api/semantic-memory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on})});
+    const d=await r.json();delete b.dataset.busy;
+    if(!r.ok){flashError('Semantic object memory: '+(d.error||'could not switch'));}
+    if(d.semantic_memory)renderSemantic(d.semantic_memory);
+  }catch(e){delete b.dataset.busy;flashError('Semantic object memory: the console did not answer');}
+};
 $('disarm').onclick=()=>fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({armed:false})}).catch(()=>{});
 // delegated clicks: chips, Yes/No
 document.addEventListener('click',e=>{const el=e.target.closest('[data-send]');if(el){send(el.dataset.send);}});
