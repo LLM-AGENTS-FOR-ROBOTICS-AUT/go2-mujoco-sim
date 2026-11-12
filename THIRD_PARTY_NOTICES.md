@@ -64,6 +64,17 @@ the final walking setup.
   use at a pinned revision) through the `kokoro` package (Apache 2.0). Its pronunciation uses `misaki`
   (Apache 2.0) with spaCy and `en_core_web_sm` (MIT), and for unusual words `phonemizer-fork` and eSpeak NG
   (**GPL-3.0**), installed as dependencies; this repository doesn't include any of them.
+- Semantic object memory (`go2/embedder.py`, docs/visual-memory-models.md): **SigLIP 2 ViT-B/16** by Google
+  (**Apache 2.0**, <https://huggingface.co/google/siglip2-base-patch16-224>, commit
+  `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2`), downloaded by `python -m go2.embedder fetch` into
+  `models/siglip2-base-patch16-224/` and pinned by SHA-256 in `go2/embedder.py`. The fallback, downloaded only if
+  chosen, is **SigLIP ViT-B/16** by Google (**Apache 2.0**, <https://huggingface.co/google/siglip-base-patch16-224>).
+  Both run through Hugging Face **transformers**, **tokenizers** and **safetensors** (Apache 2.0).
+  The benchmark that chose them (`experiments/embedding_models.py`) also downloads, into `_deps/embedding-cache/`
+  only: OpenAI **CLIP** ViT-B/16 (MIT), Apple **MobileCLIP2-B** (Apple Machine Learning Research Model License,
+  research only) with **open_clip** (MIT) and **timm** (Apache 2.0) in a separate venv, and a few dozen
+  **COCO val2017** images with their annotations (annotations CC BY 4.0; images under their Flickr licences,
+  <https://cocodataset.org/#termsofuse>).
 - Optional, for the real robot only (`requirements-robot.txt`, `requirements-vision.txt`):
   `unitree_sdk2py` (BSD 3-Clause), CycloneDDS (EPL-2.0 / EDL-1.0), OpenCV (Apache 2.0) and
   `ultralytics` with YOLO weights (**AGPL-3.0**: using it in a distributed or networked product has

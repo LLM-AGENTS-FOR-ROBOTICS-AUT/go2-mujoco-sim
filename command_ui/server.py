@@ -87,7 +87,7 @@ class SpokenReply:
 # ---- the robot, the executor and the agent ----------------------------------------------------------------
 class Console:
     def __init__(self, model, adapter, robot_info=None, voice=False, feedback=FEEDBACK, uploader=None,
-                 memory_path=None):
+                 memory_path=None, visual_memory=False):
         self.model, self.adapter = model, adapter
         self.feedback = Path(feedback)
         self.uploader = uploader                # a copy of each flag in Firebase (go2/feedback_upload.py), or None
@@ -99,6 +99,14 @@ class Console:
         self.agent.robot_line = lambda: robot_state_line(self.adapter, self.executor)
         self.agent.robot_snapshot = self._robot_snapshot
         self.executor.attach(adapter)
+        # Semantic object memory: off unless --visual-memory or the page's switch turns it on.
+        self.semantic_lock = threading.Lock()
+        self.semantic = {"on": False, "ready": False, "error": None}
+        if visual_memory:
+            try:
+                self.set_semantic_memory(True)
+            except ValueError as error:
+                print(f"Semantic object memory is off: {error}")
         self.commands = threading.Lock()        # the page shows one card per command, in order
         self.shown = 0                          # transcript rows already shown on a card
         self.loaded = threading.Event()         # set once the model has loaded (or failed to)
@@ -130,6 +138,43 @@ class Console:
             threading.Thread(target=self._warm_up, daemon=True).start()
         else:
             self.loaded.set()
+
+    def set_semantic_memory(self, on):
+        """Switch the semantic object memory on or off (the page's switch, or --visual-memory at start): remember
+        what each thing looked like (an image-text embedding), so that a remembered thing is found by words its
+        label doesn't contain ("bottle" also brings back the can). Switched off, what it remembered stays saved for
+        next time and the model's memory is given back. ValueError when it can't be switched on here, saying why."""
+        with self.semantic_lock:
+            if not on:
+                self.executor.use_visual_memory(None)
+                self.semantic = {"on": False, "ready": False, "error": None}
+                return
+            if self.executor.visual is not None:
+                return
+            try:
+                from go2.embedder import Embedder
+                embedder = Embedder()
+                problem = embedder.available()
+            except Exception as error:
+                problem = str(error)
+            if problem:
+                self.semantic = {"on": False, "ready": False, "error": problem}
+                raise ValueError(problem)
+            self.executor.use_visual_memory(embedder)
+            self.semantic = {"on": True, "ready": False, "error": None}
+
+        def load():                             # now, in the background, so that the first look doesn't wait
+            try:
+                embedder.load()
+                ready, error = True, None
+            except Exception as failure:
+                ready, error = False, f"the model didn't load: {failure}"
+            with self.semantic_lock:
+                if self.executor.visual is not None and self.executor.visual.embedder is embedder:
+                    if error:
+                        self.executor.use_visual_memory(None)
+                    self.semantic = {"on": ready, "ready": ready, "error": error}
+        threading.Thread(target=load, daemon=True, name="embedder").start()
 
     def _warm_up(self):
         """Load the model in the background so the first command doesn't wait for it (downloading it first, the
@@ -465,6 +510,7 @@ class Console:
                             "recent": executor["recent"]},
                 "conversation": {"id": self.conversation_id, "entries": conversation_entries(agent["transcript"], tasks)},
                 "camera": camera,
+                "semantic_memory": {**self.semantic, "remembered": len(self.executor.visual or ())},
                 # flags leave this computer (Firebase): the page warns before sending one
                 "feedback": {"upload": self.uploader is not None}}
 
@@ -752,6 +798,17 @@ def make_app(console, port):
             return refused(error)
         return jsonify(console.state())
 
+    @app.route("/api/semantic-memory", methods=["POST"])
+    def api_semantic_memory():
+        value = body()
+        if not isinstance(value.get("on"), bool):
+            return refused('Send {"on": true} or {"on": false}.')
+        try:
+            console.set_semantic_memory(value["on"])
+        except ValueError as error:
+            return refused(error)
+        return jsonify(console.state())
+
     @app.route("/api/arm", methods=["POST"])
     def api_arm():
         value = body()
@@ -915,6 +972,10 @@ def main():
     parser.add_argument("--robot", metavar="INTERFACE", help="drive the real Go2 on this network interface")
     parser.add_argument("--arm", action="store_true", help="with --robot: allow the real robot to move")
     # macOS's AirPlay Receiver listens on port 5000, so the Mac default is 5050.
+    parser.add_argument("--visual-memory", action="store_true",
+                        help="semantic object memory: remember what things looked like (an image-text embedding of "
+                             "each thing seen), so approach finds a remembered thing by words its label doesn't "
+                             "contain. Fetch the model once with `python -m go2.embedder fetch`")
     parser.add_argument("--port", type=int, default=5050 if sys.platform == "darwin" else 5000)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--no-voice", action="store_true", help="don't load speech recognition or Go2's voice")
@@ -943,7 +1004,8 @@ def main():
     except AdapterError as error:
         sys.exit(f"Could not start the robot: {error}")
     console = Console(model, adapter, {"interface": args.robot} if args.robot else {"scene": args.scene},
-                      voice=not args.no_voice, uploader=start_uploader(args), memory_path=memory_file(args))
+                      voice=not args.no_voice, uploader=start_uploader(args), memory_path=memory_file(args),
+                      visual_memory=args.visual_memory)
     if args.robot and args.arm:
         console.executor.set_armed(True)
         print("The real Go2 is ARMED: it will move when told to. Press Stop on the page to halt it.")
