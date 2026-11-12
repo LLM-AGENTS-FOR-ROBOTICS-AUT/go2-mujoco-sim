@@ -310,6 +310,160 @@ class HouseMujocoTests(unittest.TestCase):
         self.assertGreater(home, .6 * room, f"house {home:.1f}x vs room {room:.1f}x real time")
 
 
+def on_furniture(seeds):
+    """(house, thing, furniture) for every thing standing on furniture in the random houses of `seeds`."""
+    out = []
+    for seed in seeds:
+        h = house.random_house(random.Random(seed))
+        for item in h["objects"]:
+            if item.get("on"):
+                out.append((h, item, next(o for o in h["objects"] if o["name"] == item["on"])))
+    return out
+
+
+class OnFurnitureTests(unittest.TestCase):
+    """Things on beds, desks and tables (#21), and whether Go2's camera, 0.36 m up, can see them."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.found = on_furniture(range(120))
+
+    def test_teddy_bears_beds_cups_tables_and_laptops_desks(self):
+        pairs = {(item["kind"], furniture["kind"]) for _, item, furniture in self.found}
+        self.assertTrue({("teddy", "bed"), ("cup", "dining_table"), ("laptop", "desk"), ("book", "bed")} <= pairs,
+                        pairs)
+        for _, item, furniture in self.found:
+            self.assertIn(item["kind"], house.ON_TOP[furniture["kind"]])
+
+    def test_each_thing_is_on_top_of_its_furniture_in_the_same_room(self):
+        for h, item, furniture in self.found:
+            with self.subTest(item=item["name"], on=furniture["name"]):
+                self.assertEqual(item["room"], furniture["room"])
+                self.assertEqual(house.room_at(h, *item["pos"]), item["room"])
+                _, (x0, y0, x1, y1) = house.SURFACES[furniture["kind"]]
+                u, v = house._local(furniture, *item["pos"])
+                self.assertTrue(x0 <= u <= x1 and y0 <= v <= y1, (u, v))
+                fx0, fy0, fx1, fy1 = house.footprint(furniture)
+                self.assertTrue(fx0 <= item["pos"][0] <= fx1 and fy0 <= item["pos"][1] <= fy1)
+
+    def test_things_on_the_same_furniture_dont_overlap(self):
+        groups = {}
+        for h, item, furniture in self.found:
+            groups.setdefault((id(h), furniture["name"]), []).append(item)
+        for items in groups.values():
+            for i, a in enumerate(items):
+                for b in items[i + 1:]:
+                    gap = math.dist(a["pos"], b["pos"])
+                    self.assertGreaterEqual(gap, .95 * (math.hypot(*house.KINDS[a["kind"]][1]) +
+                                                        math.hypot(*house.KINDS[b["kind"]][1])) - .1)
+
+    def test_every_thing_on_furniture_can_be_seen_from_the_floor(self):
+        for h, item, _ in self.found:
+            with self.subTest(item=item["name"]):
+                share, (x, y, yaw) = house.views(h, item)[0]
+                self.assertGreaterEqual(share, house.VISIBLE_SHARE)
+                self.assertEqual(house.room_at(h, x, y), item["room"], "Go2 looks from inside the room")
+
+    def test_the_demo_house_keeps_everything_on_the_floor(self):
+        self.assertFalse([o["name"] for o in house.house_demo()["objects"] if "on" in o])
+
+    def test_a_house_is_still_quick_to_make(self):
+        for seed in range(30):
+            t = time.perf_counter()
+            house.random_house(random.Random(seed))
+            self.assertLess(time.perf_counter() - t, 1.)
+
+
+class SightLineTests(unittest.TestCase):
+    """The sight-line check on one hand-made room: a table in the middle of a 6 x 6 m room."""
+
+    def room(self, *things):
+        table = {"name": "table", "label": "dining table", "kind": "dining_table", "room": "r", "pos": [0., 0.],
+                 "yaw": 0., "rgba": [.6, .5, .3, 1]}
+        objects = [table] + [{"name": f"{kind}_{i}", "label": kind, "kind": kind, "room": "r", "pos": list(pos),
+                              "yaw": 0., "rgba": [1, 1, 1, 1], **({"on": "table"} if up else {})}
+                             for i, (kind, pos, up) in enumerate(things)]
+        return {"scene": "house", "rooms": [{"name": "r", "type": "kitchen", "rect": [-3., -3., 3., 3.]}],
+                "doors": [], "objects": objects, "start": [-2., -2., 0.]}
+
+    def share(self, h):
+        return house.sight_share(h, h["objects"][1])
+
+    def test_a_cup_at_the_front_shows_one_in_the_middle_does_not(self):
+        self.assertGreater(self.share(self.room(("cup", (0., -.3), True))), house.VISIBLE_SHARE)
+        self.assertEqual(self.share(self.room(("cup", (0., 0.), True))), 0.)
+
+    def test_a_flat_thing_a_little_way_in_is_hidden_by_the_edge(self):
+        self.assertEqual(self.share(self.room(("book", (0., -.2), True))), 0.)     # 4 cm tall, 18 cm in
+
+    def test_furniture_in_the_way_hides_it_from_that_side(self):
+        open_ = self.room(("cup", (.53, 0.), True))           # near the east end: seen from the east
+        self.assertGreater(self.share(open_), house.VISIBLE_SHARE)
+        blocked = self.room(("cup", (.53, 0.), True), ("chair", (1.3, 0.), False), ("chair", (1.3, .6), False),
+                            ("chair", (1.3, -.6), False))
+        self.assertLess(self.share(blocked), self.share(open_))
+
+    def test_things_on_the_floor_are_not_checked(self):
+        h = self.room(("cup", (1.5, 1.5), False))
+        self.assertEqual(self.share(h), 1.)
+
+
+@unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
+class OnFurnitureMujocoTests(unittest.TestCase):
+    def test_things_rest_on_the_furniture_not_in_it_or_above_it(self):
+        import numpy as np
+        import world
+        for h, item, furniture in on_furniture(range(6)):
+            model, _ = world.build("house", h)
+            data = mujoco.MjData(model)
+            mujoco.mj_forward(model, data)
+            body = model.body(item["name"]).id
+            lowest = math.inf
+            for g in range(model.ngeom):
+                if model.geom_bodyid[g] != body:
+                    continue
+                if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:          # a scanned object: its vertices
+                    mesh = model.geom_dataid[g]
+                    points = model.mesh_vert[model.mesh_vertadr[mesh]:model.mesh_vertadr[mesh] + model.mesh_vertnum[mesh]]
+                else:                                                         # a plain shape: its box
+                    centre, half = model.geom_aabb[g][:3], model.geom_aabb[g][3:]
+                    points = centre + half * np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+                world_z = data.geom_xpos[g][2] + points @ data.geom_xmat[g].reshape(3, 3)[2]
+                lowest = min(lowest, world_z.min())
+            hit = np.array([-1], dtype=np.int32)
+            top = 2. - mujoco.mj_ray(model, data, np.array([*item["pos"], 2.]), np.array([0., 0, -1]),
+                                     np.array([1, 1, 1, 0, 0, 0], np.uint8), 1, body, hit)    # under the ceiling
+            with self.subTest(item=item["name"], on=furniture["name"]):
+                if (house.FURNITURE_DIR / str(furniture.get("model")) / "model.json").exists():
+                    continue         # the ray would stop on the faded shapes under the model, not what is drawn
+                self.assertEqual(model.geom_bodyid[hit[0]], model.body(furniture["name"]).id)
+                self.assertAlmostEqual(lowest, top, delta=.02)
+
+    @needs_camera
+    def test_go2s_camera_sees_each_thing_from_where_views_says(self):
+        import world
+        from sensors import Camera
+        for seed in range(8):
+            h = house.random_house(random.Random(seed))
+            items = [o for o in h["objects"] if o.get("on")]
+            if not items:
+                continue
+            model, _ = world.build("house", h)
+            data = mujoco.MjData(model)
+            camera = Camera(model)
+            try:
+                for item in items:
+                    _, (x, y, yaw) = house.views(h, item)[0]
+                    data.qpos[:3] = (x, y, .32)             # standing height
+                    data.qpos[3:7] = (math.cos(yaw / 2), 0, 0, math.sin(yaw / 2))
+                    mujoco.mj_forward(model, data)
+                    _, bodies = camera.capture(data)
+                    with self.subTest(seed=seed, item=item["name"]):
+                        self.assertGreater((bodies == model.body(item["name"]).id).sum(), 40)
+            finally:
+                camera.close()
+
+
 @unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")
 class HouseWalkingTests(unittest.TestCase):
     """Acceptance: in the demo house Go2 walks from the hallway into every room through the doorways."""
