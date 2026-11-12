@@ -6,18 +6,21 @@ import math
 SQRT2 = math.sqrt(2)
 
 
-def turning_astar(grid, start, goal, blocked, turning, cancelled=None, forbidden_first_steps=()):
-    """Known-free route whose direction changes have room to brake and turn.
+def turning_astar(grid, start, goal, blocked, turning, cancelled=None, forbidden_first_steps=(), unknown_cost=None):
+    """Route whose direction changes have room to brake and turn.
 
     Straight sections can pass through a narrow doorway. Bends use the wider
     turning mask, avoiding waypoints that live clearance checks cannot reach.
     The returned cell path retains direction changes; simplify only collinear
     runs so an unsafe new corner is not introduced afterward.
     """
+    if unknown_cost is not None and (not math.isfinite(unknown_cost) or unknown_cost < 1.):
+        raise ValueError("unknown cost must be finite and at least one")
     rows, cols = grid.shape
     def free(cell):
         r, c = cell
-        return 0 <= r < rows and 0 <= c < cols and grid[cell] == 0 and not blocked[cell]
+        return (0 <= r < rows and 0 <= c < cols and not blocked[cell]
+                and (grid[cell] == 0 or (grid[cell] == -1 and unknown_cost is not None)))
     if not free(start) or not free(goal):
         return None
     moves = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
@@ -50,7 +53,7 @@ def turning_astar(grid, start, goal, blocked, turning, cancelled=None, forbidden
             # In open turning space the arrival direction is irrelevant. Merge
             # those states instead of expanding the same room eight times.
             nxt = (*cell, -1 if turning[cell] else d)
-            distance = cost[state] + (SQRT2 if dr and dc else 1.)
+            distance = cost[state] + (SQRT2 if dr and dc else 1.) * (unknown_cost if grid[cell] == -1 else 1.)
             if distance < cost.get(nxt, math.inf):
                 cost[nxt], parent[nxt] = distance, state
                 counter += 1

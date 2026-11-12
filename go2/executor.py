@@ -17,7 +17,8 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -27,6 +28,8 @@ from . import limits as L
 from . import perception as P
 from .adapters.base import AdapterError, LOW_POSTURES
 from .object_memory import ObjectMemory
+from .memory_visibility import clear_saved_location
+from .places import NamedPlaces
 from .path_planner import astar, simplify, turning_astar, keep_turns
 from .room_map import OccupancyGrid
 from .exploration import ExplorationMap, next_viewpoint, _pose, _safe_cells, recovery_route
@@ -137,6 +140,9 @@ class Executor:
         self.room_regions = RoomRegions()
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
+        self._places_path = (Path(memory_path).with_name(Path(memory_path).stem + ".places.json")
+                             if memory_path is not None else None)
+        self.places = NamedPlaces(self._places_path)
         self.memory = []            # [(Detection, world_x, world_y, seen_at)] from recent looks
         self._next_id = 0
         self.detection_filter = None  # optional f(detections) -> detections (training-data noise)
@@ -157,6 +163,10 @@ class Executor:
         self.stop("robot changed")
         with self.lock:
             self.adapter = adapter
+            # Real odometry resets between connections. Until its frame is
+            # relocalised, names on hardware are connection-local, like memory.
+            self.places = NamedPlaces(None if adapter.kind == "go2" else self._places_path)
+            self.object_memory.reset_observation_evidence()
             self.armed = False
             self.cloud.clear()
             self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True,
@@ -241,6 +251,53 @@ class Executor:
         self.room_regions.update(self.room_map)
         return self.room_regions.room_at(x, y)
 
+    def remember_place(self, name):
+        with self.lock:
+            self._require_adapter()
+            state = self._fresh_state()
+            place = self.places.remember(name, state.x, state.y, state.yaw)
+        return {"name": place.name, "x_m": place.x, "y_m": place.y,
+                "heading_deg": math.degrees(place.yaw), "frame": "map",
+                "persisted": self.places.path is not None}
+
+    def memory_report(self, target="", limit=3, *, places_only=False):
+        """Bounded saved information; never scan or move while answering."""
+        words = re.findall(r"\w+", target.casefold())
+        places = [p for p in self.places.all()
+                  if not words or all(w in p.name.casefold() for w in words)]
+        result = {"places": [{"name": p.name, "x_m": p.x, "y_m": p.y,
+                              "heading_deg": math.degrees(p.yaw), "frame": "map"}
+                             for p in places[:limit]], "places_total": len(places)}
+        if self.places.load_error:
+            result["warning"] = self.places.load_error
+        if places_only:
+            return result
+        candidates = []
+        for item in self.object_memory.snapshot():
+            detection = SimpleNamespace(label=item.get("label", ""), color=item.get("color"))
+            score, mismatch = self._score(detection, words) if words else (1, False)
+            if score and not mismatch:
+                candidates.append((score, float(item.get("last_seen", 0.)), item))
+        candidates.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        unavailable = [row for row in candidates if row[2].get("state") == "missing"]
+        candidates = [row for row in candidates if row[2].get("state") != "missing"]
+        now = time.time()
+        result["objects"] = [{"label": item["label"], "color": item.get("color"),
+                              "x_m": item["x"], "y_m": item["y"], "frame": "map",
+                              "seen_seconds_ago": max(0., now-item.get("last_seen", now)),
+                              "confidence": item.get("confidence"), "state": "remembered"}
+                             for _, _, item in candidates[:limit]]
+        result["objects_total"] = len(candidates)
+        result["unavailable_objects"] = [{"label": item["label"], "color": item.get("color"),
+                    "x_m": item["x"], "y_m": item["y"], "frame": "map", "state": "missing",
+                    "reason": item.get("missing_reason", "not found at its saved location")}
+                    for _, _, item in unavailable[:limit]]
+        result["unavailable_total"] = len(unavailable)
+        warning = self.object_memory.save_error or self.object_memory.load_error
+        if warning:
+            result["warning"] = warning
+        return result
+
     def submit_viewpoint(self, viewpoint, *, group="exploration", user_turn=0, timeout_s=90):
         """Queue one world-frame exploration stop through the normal safety worker.
 
@@ -324,8 +381,17 @@ class Executor:
         if command.kind == "look":
             self._after_group(group)
             return {"status": "done", **self.look()}
+        if command.kind in ("remember_place", "places", "memory"):
+            self._after_group(group)
+            if command.kind == "remember_place":
+                return {"status": "done", "place": self.remember_place(command.params["name"])}
+            return {"status": "done", **self.memory_report(command.params["target"],
+                    command.params["limit"], places_only=command.kind == "places")}
         with self.lock:
             self._require_adapter()
+            if command.tool == "go_to_place":
+                place = self.places.get(command.params["name"])
+                command = replace(command, params={**command.params, "x": place.x, "y": place.y})
             if command.kind == "sport":
                 missing = self.adapter.supports(command.params["name"])
                 if missing:
@@ -462,7 +528,8 @@ class Executor:
             sensor_time = state.extra.get("sim_time")
             self.cloud.add(state.stamp if sensor_time is None else sensor_time,
                            level, (state.x, state.y, state.yaw), state.height)
-        if len(level):
+        localization = state.extra.get("localization")
+        if len(level) and (localization is None or localization.get("accepted")):
             # The room map is in odometry coordinates, so a box stays where it is when the robot turns.
             world = P.level_to_odom(level, (state.x, state.y, state.yaw))
             # Flat simulator rooms have a fixed world floor at z=0. The local
@@ -478,6 +545,7 @@ class Executor:
         with self.lock:
             adapter = self._require_adapter()
         result = {}
+        memory_warning = None
         try:
             for _ in range(3):  # a few scans so the non-repetitive L1 pattern fills in
                 state = self._refresh_cloud()
@@ -493,9 +561,11 @@ class Executor:
             frame = adapter.camera()
             s = frame.state
             cloud_base = np.zeros((0, 3))
+            camera_floor_cloud = None
             if floor_cloud is not None and len(floor_cloud):
                 with self._cloud_lock:
-                    local = self.cloud.level((s.x, s.y, s.yaw))
+                    camera_floor_cloud = self.cloud.level((s.x, s.y, s.yaw))
+                    local = camera_floor_cloud.copy()
                 local[:, 2] -= s.height
                 cloud_base = local @ P.rotation_rp(s.roll, s.pitch)
             detections = P.fuse(frame.masks, frame.rgb, cloud_base, frame.intrinsics, frame.camera_pos,
@@ -505,7 +575,13 @@ class Executor:
             with self.lock:
                 self._stable_ids(detections, (s.x, s.y, s.yaw))
                 self.last_detections = [(d, (s.x, s.y, s.yaw)) for d in detections]
-                self._remember(detections, (s.x, s.y, s.yaw))
+                seen_ids = self._remember(detections, (s.x, s.y, s.yaw), save=False)
+                if adapter.kind == "sim":
+                    self._verify_saved_objects(frame, camera_floor_cloud, detections, seen_ids)
+                try:
+                    self.object_memory.save()
+                except (OSError, ValueError):
+                    memory_warning = self.object_memory.save_error
                 self.last_frame = frame.rgb
                 self.last_frame_meta = {"stamp": time.time(), "objects": len(detections),
                                         "boxes": image_boxes(frame.masks, frame.rgb.shape)}
@@ -513,7 +589,32 @@ class Executor:
         except AdapterError as error:
             result["camera_error"] = str(error)
         result["note"] = "objects come from the front camera (about 120° wide); free_space_m is the free distance from the body on each side, 'clear' meaning nothing within 5 m"
+        if memory_warning:
+            result["note"] += "; " + memory_warning
         return result
+
+    def _verify_saved_objects(self, frame, floor_cloud, detections, seen_ids):
+        clear = []
+        s = frame.state
+        for item in self.object_memory.snapshot(include_missing=False):
+            if item["id"] in seen_ids:
+                continue
+            bearing = math.atan2(item["y"]-s.y, item["x"]-s.x)-s.yaw
+            distance = math.hypot(item["x"]-s.x, item["y"]-s.y)
+            # A visible but unranged detection still protects its memory.
+            visible = any(d.label == item["label"] and
+                          (d.color is None or item.get("color") is None or d.color == item["color"]) and
+                          abs(_wrap(math.radians(d.bearing_deg)-bearing)) < math.radians(20) and
+                          (d.distance_m is None or abs(d.distance_m-distance) < .6)
+                          for d in detections)
+            if not visible and clear_saved_location(item, frame, floor_cloud):
+                clear.append(item["id"])
+        missing = self.object_memory.observe_empty(clear, observed_at=time.monotonic(),
+                                                   seen_ids=seen_ids, save=False)
+        if missing:
+            self.memory = [row for row in self.memory if not any(
+                row[0].label == item["label"] and row[0].color == item.get("color") and
+                math.hypot(row[1]-item["x"], row[2]-item["y"]) < .6 for item in missing)]
 
     # ---- worker ----------------------------------------------------------------------
     def _require_adapter(self):
@@ -598,6 +699,8 @@ class Executor:
             raise AdapterError(f"robot telemetry is {s.age:.1f} s old; stopped for safety")
         if s.posture == "fallen":
             raise AdapterError("the robot has fallen" + (f" ({s.fault})" if s.fault else "") + "; it needs a recovery stand")
+        if s.extra.get("localization", {}).get("state") == "lost":
+            raise AdapterError("scan localisation lost; stop and obtain clear LiDAR scans before navigating")
         return s
 
     def _run(self, task, cancel):
@@ -610,8 +713,9 @@ class Executor:
         elif kind == "wait":
             self._sleep(task.command.params["duration"], cancel)
         elif kind == "goto":
-            self._ensure_standing(task, cancel)
-            self._goto(task, cancel)
+            budget = _MotionDeadline(cancel, 180) if task.command.params["target"] == "place" else cancel
+            self._ensure_standing(task, budget)
+            self._goto(task, budget)
         elif kind == "approach":
             budget = _MotionDeadline(cancel, 180)
             self._ensure_standing(task, budget)
@@ -974,6 +1078,11 @@ class Executor:
             if self.start_pose is None:
                 raise AdapterError("the start position is unknown")
             tx, ty = self.start_pose[:2]
+        elif p["target"] == "place":
+            tx, ty = p["x"], p["y"]
+            if math.hypot(tx-s.x, ty-s.y) > 20.:
+                raise AdapterError("the named place is over the 20 m go_to limit; use intermediate places")
+            task.detail["destination"] = {"name": p["name"], "x_m": tx, "y_m": ty, "frame": "map"}
         else:
             c, sn = math.cos(s.yaw), math.sin(s.yaw)
             tx, ty = s.x + c * p["x"] - sn * p["y"], s.y + sn * p["x"] + c * p["y"]
@@ -1009,6 +1118,8 @@ class Executor:
                     self._refresh_cloud()
         s = self._fresh_state()
         task.detail["remaining_m"] = round(math.hypot(tx - s.x, ty - s.y), 2)
+        if math.hypot(tx - s.x, ty - s.y) >= .12:
+            raise AdapterError("navigation reached its movement limit before arriving")
 
     def _route(self, s, tx, ty, *, known_only=False, cancel=None):
         """Waypoints in odometry coordinates from the robot to (tx, ty) around obstacles on the room map, ending
@@ -1060,9 +1171,16 @@ class Executor:
             path = (turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .65),
                                   cancelled=None if cancel is None else cancel.is_set,
                                   forbidden_first_steps=initial_forbidden or ()) if known_only else
-                    astar(m.grid, start, goal, blocked=blocked, unknown_cost=UNKNOWN_COST, diagonal=True))
+                    turning_astar(m.grid, start, goal, blocked, ~m.blocked(.6, extra),
+                                  cancelled=None if cancel is None else cancel.is_set,
+                                  unknown_cost=UNKNOWN_COST))
             if path is not None:
-                cells = keep_turns(path) if known_only else simplify(path, lambda a, b: m.line_clear(blocked, a, b))
+                cells = keep_turns(path)
+                if not known_only:
+                    # Every candidate bend came from the wider turning mask.
+                    # Shortcutting only this list cannot create a new corner
+                    # beside furniture that the live turn guard must reject.
+                    cells = simplify(cells, lambda a, b: m.line_clear(blocked, a, b))
                 route = [m.cell_to_world(*c) for c in cells[1:-1]] + [(tx, ty)]
                 points = [(s.x, s.y)] + route
                 length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
@@ -1227,20 +1345,24 @@ class Executor:
                 self._next_id += 1
                 d.id = f"obj{self._next_id}"
 
-    def _remember(self, detections, pose):
+    def _remember(self, detections, pose, *, save=True):
         now = time.monotonic()
         c, sn = math.cos(pose[2]), math.sin(pose[2])
         kept = [m for m in self.memory if now - m[3] <= MEMORY_S]
+        seen_ids = []
         for d in detections:
             if d.x_m is None:
                 continue
             wx, wy = pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m
             kept = [m for m in kept if not (m[0].label == d.label and math.hypot(m[1] - wx, m[2] - wy) < .6)]
             kept.append((d, wx, wy, now))
-            self.object_memory.remember(label=d.label, x=wx, y=wy, color=d.color, confidence=d.confidence,
-                                        save=False)
+            item = self.object_memory.remember(label=d.label, x=wx, y=wy, color=d.color, confidence=d.confidence,
+                                               save=False)
+            seen_ids.append(item["id"])
         self.memory = kept[-60:]
-        self.object_memory.save()             # once per look, not once per object
+        if save:
+            self.object_memory.save()
+        return seen_ids
 
     @staticmethod
     def _score(det, words):
@@ -1331,7 +1453,7 @@ class Executor:
         for d, wx, wy, t in self.memory:
             if now - t <= MEMORY_S:
                 candidates.append((self._score(d, words), wall - (now - t), d, wx, wy))
-        for item in self.object_memory.objects:
+        for item in self.object_memory.snapshot(include_missing=False):
             d = SimpleNamespace(id=item.get("id", item.get("label", "")), label=item.get("label", ""),
                                 color=item.get("color"))
             candidates.append((self._score(d, words), item.get("last_seen", 0.), d, item["x"], item["y"]))
@@ -1362,7 +1484,22 @@ class Executor:
                 if locked is not None:
                     s = self._fresh_state()
                     if math.hypot(locked[1] - s.x, locked[2] - s.y) <= stop_at + P.HALF_LENGTH + .2:
-                        raise AdapterError(f"the {locked[0]} is no longer visible at its last-seen position")
+                        bearing = _wrap(math.atan2(locked[2]-s.y, locked[1]-s.x)-s.yaw)
+                        if abs(bearing) > math.radians(6):
+                            self._turn_by(task, cancel, bearing)
+                        for _ in range(2):
+                            self._check(cancel)
+                            self.look()
+                            if self._track(locked) or self._match(p["target"])[0]:
+                                break
+                        else:
+                            missing = any(item["label"] == locked[0] and item.get("state") == "missing" and
+                                          math.hypot(item["x"]-locked[1], item["y"]-locked[2]) < .6
+                                          for item in self.object_memory.snapshot())
+                            if missing:
+                                raise AdapterError(f"the {locked[0]} is no longer at its remembered position; it may have moved")
+                            raise AdapterError(f"the {locked[0]} is not visible at its last-seen position; I could not verify whether it moved")
+                        continue
                     task.detail["searching"] = f"following a route to the last-seen {locked[0]}"
                     self._approach_route(task, cancel, s, locked[1], locked[2], stop_at, force=True)
                     continue

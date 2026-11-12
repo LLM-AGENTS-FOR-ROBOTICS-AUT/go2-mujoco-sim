@@ -12,6 +12,8 @@ from go2.adapters.base import AdapterError, RobotAdapter
 from go2.adapters.sim import SimAdapter
 from robot import SimGo2
 from sensors import Lidar
+from odometry import DriftConfig, DriftingOdometry
+from go2.localization import ScanLocalizer
 
 
 class SimulationClock:
@@ -39,14 +41,22 @@ class SimulationClock:
                     self.adapter.sim.StopMove()
                     self.adapter.last_move = None
                 self.adapter.sim.step()
+                if self.adapter.odometry is not None:
+                    state = self.adapter.sim.state()
+                    self.adapter.odometry.update([state["x"], state["y"], state["yaw"]])
 
 
 class SteppedSimAdapter(RobotAdapter):
     kind, label = "sim", "Offline MuJoCo exploration evaluation"
     scene = "house"
 
-    def __init__(self, world):
+    def __init__(self, world, *, odometry_drift=None, correct_odometry=True):
         self.sim = SimGo2("house", world)
+        self.odometry = DriftingOdometry(DriftConfig(**odometry_drift)) if odometry_drift is not None else None
+        self.localizer = ScanLocalizer() if self.odometry is not None and correct_odometry else None
+        if self.odometry is not None:
+            state = self.sim.state()
+            self.odometry.update([state["x"], state["y"], state["yaw"]])
         self.sensor = Lidar(self.sim.model)
         self.closed = threading.Event()
         self.clock = SimulationClock(self)
@@ -67,7 +77,13 @@ class SteppedSimAdapter(RobotAdapter):
     def state(self):
         if self.error:
             raise AdapterError(self.error)
-        return SimAdapter._state(self.sim.state())
+        return SimAdapter._local_state(self, self._raw_state())
+
+    def _raw_state(self):
+        raw = self.sim.state()
+        if self.odometry is not None:
+            raw["odometry"] = self.odometry.report()
+        return raw
 
     def move(self, vx, vy, wz):
         with self.sim.lock:
@@ -90,7 +106,8 @@ class SteppedSimAdapter(RobotAdapter):
 
     def lidar(self):
         with self.sim.lock:
-            return self.sensor.scan(self.sim.data).astype(float), self.state()
+            points = self.sensor.scan(self.sim.data).astype(float)
+            return points, SimAdapter._local_state(self, self._raw_state(), points)
 
     def camera(self):
         raise AdapterError("coverage evaluation uses LiDAR; RGB search is evaluated separately")

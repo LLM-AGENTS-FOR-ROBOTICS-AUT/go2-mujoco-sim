@@ -53,6 +53,7 @@ from go2.agent import Agent, is_stop, robot_state_line  # noqa: E402
 from go2.executor import Executor  # noqa: E402
 from go2.llm import CATALOG, ModelError, OllamaModel  # noqa: E402
 from go2.mock_model import MockModel  # noqa: E402
+from go2.map_view import map_view  # noqa: E402
 from go2.stt import MAX_BYTES as STT_MAX_BYTES  # noqa: E402
 from go2.stt import Listener  # noqa: E402
 from go2.tts import DEFAULT_VOICE, VOICES, Speaker  # noqa: E402
@@ -110,6 +111,8 @@ class Console:
         self.revision, self.last_state = 0, None
         self.state_lock = threading.Lock()
         self.closed = False
+        self.map_error = None
+        self._map_stop = threading.Event()
         self.listener = self.speaker = None     # speech recognition and Go2's voice (both load in the background)
         self.voice_name = None                  # the voice the page plays replies in; None while it doesn't
         self.spoken = None                      # the latest user turn the page speaks the reply of (SpokenReply)
@@ -130,6 +133,23 @@ class Console:
             threading.Thread(target=self._warm_up, daemon=True).start()
         else:
             self.loaded.set()
+        # Sensor acquisition is separate from the read-only map endpoint.
+        # Hardware continues to use its existing executor sensing until #34.
+        if adapter.kind == "sim":
+            self._map_thread = threading.Thread(target=self._map_scans, daemon=True, name="console-map")
+            self._map_thread.start()
+
+    def _map_scans(self):
+        while not self._map_stop.is_set():
+            try:
+                with self.executor.lock:
+                    idle = self.executor.current is None
+                if idle and self.adapter.connected:
+                    self.executor._refresh_cloud()
+                    self.map_error = None
+            except AdapterError as error:
+                self.map_error = str(error)
+            self._map_stop.wait(.5)
 
     def _warm_up(self):
         """Load the model in the background so the first command doesn't wait for it (downloading it first, the
@@ -494,6 +514,9 @@ class Console:
 
     def close(self):
         self.closed = True
+        self._map_stop.set()
+        if hasattr(self, "_map_thread"):
+            self._map_thread.join(timeout=2.)
         with self.preparing:
             self.preparing.notify_all()
         self.agent.close()
@@ -711,6 +734,13 @@ def make_app(console, port):
     def api_state():
         return jsonify(console.state())
 
+    @app.route("/api/map")
+    def api_map():
+        result = map_view(console.executor)
+        if console.map_error:
+            result["error"] = console.map_error
+        return jsonify(result), 200, {"Cache-Control": "no-store"}
+
     @app.route("/api/events")
     def api_events():
         return Response(console.events(), mimetype="text/event-stream",
@@ -841,7 +871,12 @@ def connect_robot(args):
         if args.scene == "house" and args.seed is not None:
             from simulation.house import random_house
             world = random_house(random.Random(args.seed))
-        adapter = SimAdapter(scene=args.scene, headless=args.headless, world=world)
+        drift_option = getattr(args, "odometry_drift", None)
+        drift = (json.loads(drift_option) if isinstance(drift_option, str) else {}) if drift_option else None
+        if drift is not None and getattr(args, "odometry_seed", None) is not None:
+            drift["seed"] = args.odometry_seed
+        adapter = SimAdapter(scene=args.scene, headless=args.headless, world=world, odometry_drift=drift,
+                             correct_odometry=not getattr(args, "no_scan_correction", False))
     adapter.connect()
     return adapter
 
@@ -914,6 +949,10 @@ def main():
     parser.add_argument("--headless", action="store_true", help="simulate without the MuJoCo window")
     parser.add_argument("--robot", metavar="INTERFACE", help="drive the real Go2 on this network interface")
     parser.add_argument("--arm", action="store_true", help="with --robot: allow the real robot to move")
+    parser.add_argument("--odometry-drift", nargs="?", const="{}", metavar="JSON",
+                        help="simulate odometry drift with scan correction; optional JSON overrides error parameters")
+    parser.add_argument("--odometry-seed", type=int, help="repeatable simulator odometry noise seed (default: 0)")
+    parser.add_argument("--no-scan-correction", action="store_true", help="with drift: show the uncorrected baseline")
     # macOS's AirPlay Receiver listens on port 5000, so the Mac default is 5050.
     parser.add_argument("--port", type=int, default=5050 if sys.platform == "darwin" else 5000)
     parser.add_argument("--no-browser", action="store_true")
@@ -923,6 +962,21 @@ def main():
     parser.add_argument("--check", action="store_true", help="check the simulator and model, then exit")
     parser.add_argument("--fetch-model", action="store_true", help="download the model now (once), then exit")
     args = parser.parse_args()
+    if args.robot and (args.odometry_drift or args.no_scan_correction):
+        parser.error("odometry drift and scan correction options are simulator-only")
+    if args.no_scan_correction and not args.odometry_drift:
+        parser.error("--no-scan-correction needs --odometry-drift")
+    if args.odometry_seed is not None and args.odometry_seed < 0:
+        parser.error("--odometry-seed must be nonnegative")
+    if args.odometry_drift:
+        try:
+            from simulation.odometry import DriftConfig
+            configuration = json.loads(args.odometry_drift)
+            if not isinstance(configuration, dict):
+                raise ValueError("configuration must be a JSON object")
+            DriftConfig(**configuration)
+        except (ValueError, TypeError) as error:
+            parser.error(f"invalid --odometry-drift: {error}")
     if args.seed is not None and args.scene != "house":
         parser.error("--seed needs --scene house")
     if args.check:
