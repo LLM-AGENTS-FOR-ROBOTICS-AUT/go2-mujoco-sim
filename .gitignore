@@ -14,6 +14,8 @@ build/
 # LLM command console (command_ui/server.py)
 runtime/
 models/*.gguf
+# Semantic object memory weights (go2/embedder.py; python -m go2.embedder fetch): pinned, never committed
+models/siglip*
 
 # Flagged replies are committed (feedback/README.md); only their temporary files are not
 feedback/*.tmp

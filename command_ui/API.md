@@ -48,6 +48,7 @@ If server-sent events don't suit, poll `GET /api/state` (every 300 to 500 ms): s
 | `POST /api/feedback` | `{"entry": 12}`, then optionally `{"id": "...", "note": "..."}` | **201** `{"id", "path"}`: the turn behind reply entry 12 is saved for training (see "Bad reply"); the second call adds a note |
 | `POST /api/clear` | | The state, with an empty conversation and a new `conversation.id` |
 | `POST /api/reset` | | Simulation only: the robot back at its start. The state |
+| `POST /api/semantic-memory` | `{"on": true}` or `{"on": false}` | Switch the semantic object memory on or off (`--visual-memory` starts with it on). 400 with the reason when it can't be switched on (the model isn't downloaded). The state's `semantic_memory` says `on`, `ready`, `error` and how many things it `remembered`. |
 | `POST /api/arm` | `{"armed": true}` or `{"armed": false}` | Real robot only: allow or forbid motion. The state |
 | `GET /api/camera.png` | `?size=full` for full size | The last camera frame Go2 looked at (640 x 360, or 1280 x 720 full). **404** before the first look |
 

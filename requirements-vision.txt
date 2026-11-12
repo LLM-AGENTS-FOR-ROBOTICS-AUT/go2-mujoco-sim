@@ -4,3 +4,10 @@ ultralytics==8.4.175
 torchvision==0.23.0
 # Weights: models/yolo11n-seg.pt (sha256 55ed65c56c91713d23e8402371c6c49a6fd84f257f7dce452e8d70e41dcbe152)
 # from https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n-seg.pt
+# Semantic object memory (go2/embedder.py, docs/visual-memory-models.md): image and text embeddings from Google's
+# SigLIP 2 ViT-B/16 through Hugging Face transformers (Apache 2.0; brings tokenizers and safetensors). The version
+# already installed with the voice (kokoro, command_ui/requirements.txt), pinned here. No sentencepiece needed: the model's tokenizer.json is used.
+transformers==5.22.2
+# Weights: `python -m go2.embedder fetch` downloads google/siglip2-base-patch16-224 at commit
+# 75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2 (1.54 GB, SHA-256 pinned in go2/embedder.py) into
+# models/siglip2-base-patch16-224/. Apache 2.0.
