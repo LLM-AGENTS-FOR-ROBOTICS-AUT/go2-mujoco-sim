@@ -22,3 +22,6 @@ feedback/*.tmp
 
 # Firebase CLI cache (firebase/README.md)
 firebase/.firebase/
+
+# Generated evaluation reports; keep summaries and reproduction steps in docs.
+/docs/results/

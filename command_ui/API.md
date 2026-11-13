@@ -24,6 +24,36 @@ fetch('/api/stop', {method: 'POST'});
 
 If server-sent events don't suit, poll `GET /api/state` (every 300 to 500 ms): same object.
 
+The top-down map is a separate bounded payload: poll `GET /api/map` once per
+second. It is not included in every conversation/state event.
+
+## Live map (`GET /api/map`)
+
+This read-only endpoint uses the same Host/Origin guards as the other APIs and
+returns `Cache-Control: no-store`. It never starts movement, camera inference,
+or sensor acquisition. An idle simulator sensor loop and normal executor
+sensing populate the map independently.
+
+- `frame`: `"map"`; all positions below use metres in that common frame.
+- `generated_at`: wall-clock seconds; `error`: a telemetry/sensor error or null.
+- `grid`: `width`, `height` (each at most 384), `resolution_m`, `origin_m: [x,y]`,
+  `encoding: "base64-u8"`, and `data`. Decode to `width*height` bytes, row-major:
+  0 unknown, 1 free, 2 occupied. Row zero is the lowest y; `origin_m` is the
+  lower-left **edge** of that cell. Flip rows for a normal screen canvas.
+  Downsampling keeps an occupied cell if any contributing cell is occupied.
+- `robot`: x/y/yaw (radians), telemetry `age_s`, optional `localization` status;
+  null when disconnected. A localisation report includes state, accepted,
+  matches, failure count, reference size, sensor scan timestamp, and fit error
+  when available.
+- `route`: up to 512 `[x,y]` map waypoints for the current task; empty when idle.
+- `places`: up to 200 `{name,x,y,yaw}` records, plus `places_total`.
+- `objects`: up to 200 `{id,label,color,x,y,state,last_seen}` records, including
+  `state: "missing"` for a verified-empty past location, plus `objects_total`.
+
+An empty map is unknown space, not a floor plan inferred from simulator truth.
+The endpoint can remain readable when telemetry is unavailable; check `error`
+and `robot` before treating its contents as current.
+
 ## Rules for every request
 
 - The console only listens on `127.0.0.1` (port 5050 on macOS, 5000 on Windows; `--port` changes it).

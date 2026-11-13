@@ -28,6 +28,8 @@ class FakeRobot(RobotAdapter):
         self.stop_times = []
         self.paused_until = 0.             # simulate a busy computer: the world stops advancing, readings don't change
         self.start_lag = 0.                # legs take this long to get going after a move from standstill
+        self.angular_braking = 4.          # rad/s²; tests can model a slower physical yaw response
+        self.linear_braking = 1.6          # m/s²; independently model slower translational braking
         self._moving_since = None
         self.people = list(people)         # FakePerson: walk paths, seen by the LiDAR and (patched fuse) the camera
         self.has_camera = camera
@@ -72,7 +74,9 @@ class FakeRobot(RobotAdapter):
                 if self.last_move is not None and time.monotonic() - self.last_move > .5:
                     self.cmd[:] = 0
                     self.last_move = None
-                step = np.array([1.6, 1.6, 4.0]) * dt
+                angular = self.angular_braking if abs(self.cmd[2]) < abs(self.v[2]) else 4.
+                linear = np.where(np.abs(self.cmd[:2]) < np.abs(self.v[:2]), self.linear_braking, 1.6)
+                step = np.array([*linear, angular]) * dt
                 if self.cmd.any() and self._moving_since is None:
                     self._moving_since = now
                 elif not self.cmd.any():

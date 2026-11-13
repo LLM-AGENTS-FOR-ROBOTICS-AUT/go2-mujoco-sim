@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,12 +28,19 @@ from . import limits as L
 from . import perception as P
 from .adapters.base import AdapterError, LOW_POSTURES
 from .object_memory import ObjectMemory
-from .path_planner import astar, simplify
+from .memory_visibility import clear_saved_location
+from .places import NamedPlaces
+from .path_planner import astar, simplify, turning_astar, keep_turns
 from .room_map import OccupancyGrid
+from .exploration import ExplorationMap, next_viewpoint, _pose, _safe_cells, recovery_route
+from .room_regions import RoomRegions
+from .exploration_navigation import (ExplorationNavigation,MOVES as EXPLORATION_STEPS,
+                                     BODY_HALF_LENGTH_M,BODY_HALF_WIDTH_M)
 from .tools import Command
 from .visual_memory import crop
 
 DECEL_LINEAR, DECEL_ANGULAR = 1.6, 4.0      # m/s², rad/s² used for braking lead
+FINAL_DECEL_LINEAR = .8                   # conservative terminal speed profile for distance moves
 # Stall: something the LiDAR can't see (glass, thin chair legs) is stopping the robot. After the ramp-up, a move
 # or turn that makes less than a third of the progress its commanded speed should give over 0.4 s stops.
 STALL_WINDOW_S, STALL_FRACTION, STALL_GRACE_S = .4, 1 / 3, .3
@@ -148,9 +155,13 @@ class Executor:
         self.start_pose = None
         self.cloud = P.CloudBuffer()
         self._cloud_lock = threading.RLock()   # the follow camera thread reads the cloud too
-        self.room_map = OccupancyGrid()
+        self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True)
+        self.room_regions = RoomRegions()
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
+        self._places_path = (Path(memory_path).with_name(Path(memory_path).stem + ".places.json")
+                             if memory_path is not None else None)
+        self.places = NamedPlaces(self._places_path)
         # Semantic object memory (go2/visual_memory.py): what each thing looked like, as an image embedding, so a
         # remembered thing can be found by words its label doesn't contain. Off until use_visual_memory().
         self._visual_path = None if memory_path is None else (
@@ -178,8 +189,15 @@ class Executor:
         self.stop("robot changed")
         with self.lock:
             self.adapter = adapter
+            # Real odometry resets between connections. Until its frame is
+            # relocalised, names on hardware are connection-local, like memory.
+            self.places = NamedPlaces(None if adapter.kind == "go2" else self._places_path)
+            self.object_memory.reset_observation_evidence()
             self.armed = False
             self.cloud.clear()
+            self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True,
+                                          detect_low=adapter.kind == "sim")
+            self.room_regions = RoomRegions()
             self.history.clear()
             self.activity, self.activity_since = [], time.monotonic()
             self.last_detections = []
@@ -204,6 +222,121 @@ class Executor:
                 self.stop("motion disarmed")
 
     # ---- public API --------------------------------------------------------------
+    def exploration_viewpoint(self, visited):
+        """Refresh observations and choose a world-frame viewpoint for the mission.
+
+        The mission queues it with submit_viewpoint, waits for its task outcome,
+        then scans and records it as visited. No motion is started by this query.
+        """
+        with self.lock:
+            self._require_adapter()
+        for _ in range(8):
+            self._refresh_cloud()
+        s = self._fresh_state()
+        forbidden = self._exploration_forbidden(s)
+        with self.lock:
+            bumps = [pts[:, :2] for t, pts in self.bumps if time.monotonic() - t <= BUMP_MEMORY_S]
+        context = ExplorationMap(self.room_map, (s.x, s.y, s.yaw), clearance_m=.42,
+                                 visited_radius_m=.5,
+                                 extra_obstacles=np.concatenate(bumps) if bumps else None,
+                                 turn_clearance_m=.65, heading_aware=True, forbidden_steps=forbidden,
+                                 allow_recovery=False)
+        for _ in range(3):
+            goal = next_viewpoint(context, visited)
+            if goal is not None:
+                return goal
+            # A few non-repetitive L1 scans can fill tiny unknown holes. Never
+            # infer that exploration is complete from one sparse observation.
+            for _ in range(5):
+                self._refresh_cloud()
+        # At the end of a sweep, closer viewpoints can reveal small occluded
+        # pockets. Keep a finite exclusion radius instead of repeatedly choosing
+        # the same pose, but don't suppress an entire doorway after one look.
+        for resolution,turning in ((.1,.65),(.1,.6),(.05,.65),(.05,.55)):
+            goal = next_viewpoint(ExplorationMap(self.room_map, (s.x, s.y, s.yaw), clearance_m=.42,
+                                                 visited_radius_m=.25,
+                                                 extra_obstacles=context.extra_obstacles,
+                                                 turn_clearance_m=turning, heading_aware=True,
+                                                 forbidden_steps=forbidden,
+                                                 planning_resolution_m=resolution,
+                                                 allow_recovery=False), visited)
+            if goal is not None:
+                return goal
+        # A coarse recovery can bypass a valid fine-map route. Exhaust normal
+        # plans first, then refresh observations and use the finest map for the
+        # bounded retreat. The query itself still starts no movement.
+        s = self._fresh_state()
+        navigation = self._exploration_navigation(s, planning_resolution_m=self.room_map.resolution)
+        return next_viewpoint(ExplorationMap(navigation.source_map, (s.x, s.y, s.yaw),
+                              clearance_m=.42, visited_radius_m=.25, turn_clearance_m=.55,
+                              heading_aware=True, forbidden_steps=navigation.forbidden,
+                              planning_resolution_m=self.room_map.resolution), visited)
+
+    def room_at(self, x, y):
+        """Observed geometric region, optionally explicitly named, or None."""
+        self.room_regions.update(self.room_map)
+        return self.room_regions.room_at(x, y)
+
+    def remember_place(self, name):
+        with self.lock:
+            self._require_adapter()
+            state = self._fresh_state()
+            place = self.places.remember(name, state.x, state.y, state.yaw)
+        return {"name": place.name, "x_m": place.x, "y_m": place.y,
+                "heading_deg": math.degrees(place.yaw), "frame": "map",
+                "persisted": self.places.path is not None}
+
+    def memory_report(self, target="", limit=3, *, places_only=False):
+        """Bounded saved information; never scan or move while answering."""
+        words = re.findall(r"\w+", target.casefold())
+        places = [p for p in self.places.all()
+                  if not words or all(w in p.name.casefold() for w in words)]
+        result = {"places": [{"name": p.name, "x_m": p.x, "y_m": p.y,
+                              "heading_deg": math.degrees(p.yaw), "frame": "map"}
+                             for p in places[:limit]], "places_total": len(places)}
+        if self.places.load_error:
+            result["warning"] = self.places.load_error
+        if places_only:
+            return result
+        candidates = []
+        for item in self.object_memory.snapshot():
+            detection = SimpleNamespace(label=item.get("label", ""), color=item.get("color"))
+            score, mismatch = self._score(detection, words) if words else (1, False)
+            if score and not mismatch:
+                candidates.append((score, float(item.get("last_seen", 0.)), item))
+        candidates.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        unavailable = [row for row in candidates if row[2].get("state") == "missing"]
+        candidates = [row for row in candidates if row[2].get("state") != "missing"]
+        now = time.time()
+        result["objects"] = [{"label": item["label"], "color": item.get("color"),
+                              "x_m": item["x"], "y_m": item["y"], "frame": "map",
+                              "seen_seconds_ago": max(0., now-item.get("last_seen", now)),
+                              "confidence": item.get("confidence"), "state": "remembered"}
+                             for _, _, item in candidates[:limit]]
+        result["objects_total"] = len(candidates)
+        result["unavailable_objects"] = [{"label": item["label"], "color": item.get("color"),
+                    "x_m": item["x"], "y_m": item["y"], "frame": "map", "state": "missing",
+                    "reason": item.get("missing_reason", "not found at its saved location")}
+                    for _, _, item in unavailable[:limit]]
+        result["unavailable_total"] = len(unavailable)
+        warning = self.object_memory.save_error or self.object_memory.load_error
+        if warning:
+            result["warning"] = warning
+        return result
+
+    def submit_viewpoint(self, viewpoint, *, group="exploration", user_turn=0, timeout_s=90):
+        """Queue one world-frame exploration stop through the normal safety worker.
+
+        This internal mission API does not add a model tool or change its prompt.
+        """
+        x, y, yaw = _pose(viewpoint, "viewpoint")
+        if not math.isfinite(timeout_s) or not 0 < timeout_s <= 300:
+            raise ValueError("viewpoint timeout must be between 0 and 300 seconds")
+        command = Command("viewpoint", "exploration", {},
+                          {"x": x, "y": y, "yaw": yaw, "timeout_s": timeout_s},
+                          summary=f"visit exploration viewpoint ({x:.2f}, {y:.2f})")
+        return self.submit([command], group, user_turn)[0]
+
     def submit(self, commands, group, user_turn):
         """Queue resolved commands from one model reply; queries run immediately. Returns results.
         A motion that starts right away is reported as blocked or failed if its first safety check
@@ -274,8 +407,17 @@ class Executor:
         if command.kind == "look":
             self._after_group(group)
             return {"status": "done", **self.look()}
+        if command.kind in ("remember_place", "places", "memory"):
+            self._after_group(group)
+            if command.kind == "remember_place":
+                return {"status": "done", "place": self.remember_place(command.params["name"])}
+            return {"status": "done", **self.memory_report(command.params["target"],
+                    command.params["limit"], places_only=command.kind == "places")}
         with self.lock:
             self._require_adapter()
+            if command.tool == "go_to_place":
+                place = self.places.get(command.params["name"])
+                command = replace(command, params={**command.params, "x": place.x, "y": place.y})
             if command.kind == "sport":
                 missing = self.adapter.supports(command.params["name"])
                 if missing:
@@ -305,7 +447,7 @@ class Executor:
             task = Task(command, group, self.generation, user_turn=user_turn)
             self.queue.append(task)
             position = len(self.queue) + (1 if self.current else 0)
-            task.awaiting = position == 1 and command.kind in ("velocity", "goto", "approach", "follow")
+            task.awaiting = position == 1 and command.kind in ("velocity", "goto", "approach", "follow", "viewpoint")
             self.wake.notify_all()
             return {"status": "queued", "task_id": task.id, "position": position, "action": command.summary,
                     **note, "_task": task}
@@ -419,11 +561,20 @@ class Executor:
         points, state = self.adapter.lidar()
         level = P.base_to_level(points, state.roll, state.pitch)
         with self._cloud_lock:
-            self.cloud.add(state.stamp, level, (state.x, state.y, state.yaw), state.height)
-        if len(level):
+            # Following compares scan times with this executor's monotonic
+            # clock. Simulator uptime is a different epoch. Offline evaluators
+            # supply this module's clock explicitly, including scan expiry.
+            self.cloud.add(time.monotonic(), level, (state.x, state.y, state.yaw), state.height)
+        localization = state.extra.get("localization")
+        if len(level) and (localization is None or localization.get("accepted")):
             # The room map is in odometry coordinates, so a box stays where it is when the robot turns.
             world = P.level_to_odom(level, (state.x, state.y, state.yaw))
-            world[:, 2] += state.height                  # height above the floor, as in the cloud
+            # Flat simulator rooms have a fixed world floor at z=0. The local
+            # ground ray can hit a book under the belly; using that as the map
+            # floor would make the book disappear and shift all floor heights.
+            world_z = state.extra.get("world_z")
+            flat = getattr(self.adapter, "scene", None) in ("room", "empty", "house", "procedural")
+            world[:, 2] += world_z if flat and world_z is not None else state.height
             self.room_map.mark_scan((state.x, state.y), world)
         return state
 
@@ -431,13 +582,14 @@ class Executor:
         with self.lock:
             adapter = self._require_adapter()
         result = {}
+        memory_warning = None
         try:
             for _ in range(3):  # a few scans so the non-repetitive L1 pattern fills in
                 state = self._refresh_cloud()
                 time.sleep(.05)
             with self._cloud_lock:
                 floor_cloud = self.cloud.level((state.x, state.y, state.yaw))
-            free = P.sector_free_space(self._with_bumps(floor_cloud, state))
+            free = P.sector_free_space(self._with_bumps(self._with_low_obstacles(floor_cloud, state), state))
             result["free_space_m"] = {side: ("clear" if v is None else v) for side, v in free.items()}
         except AdapterError as error:
             result["lidar_error"] = str(error)
@@ -446,9 +598,11 @@ class Executor:
             frame = adapter.camera()
             s = frame.state
             cloud_base = np.zeros((0, 3))
+            camera_floor_cloud = None
             if floor_cloud is not None and len(floor_cloud):
                 with self._cloud_lock:
-                    local = self.cloud.level((s.x, s.y, s.yaw))
+                    camera_floor_cloud = self.cloud.level((s.x, s.y, s.yaw))
+                    local = camera_floor_cloud.copy()
                 local[:, 2] -= s.height
                 cloud_base = local @ P.rotation_rp(s.roll, s.pitch)
             detections = P.fuse(frame.masks, frame.rgb, cloud_base, frame.intrinsics, frame.camera_pos,
@@ -458,7 +612,13 @@ class Executor:
             with self.lock:
                 self._stable_ids(detections, (s.x, s.y, s.yaw))
                 self.last_detections = [(d, (s.x, s.y, s.yaw)) for d in detections]
-                self._remember(detections, (s.x, s.y, s.yaw))
+                seen_ids = self._remember(detections, (s.x, s.y, s.yaw), save=False)
+                if adapter.kind == "sim":
+                    self._verify_saved_objects(frame, camera_floor_cloud, detections, seen_ids)
+                try:
+                    self.object_memory.save()
+                except (OSError, ValueError):
+                    memory_warning = self.object_memory.save_error
                 self.last_frame = frame.rgb
                 self.last_frame_meta = {"stamp": time.time(), "objects": len(detections),
                                         "boxes": image_boxes(frame.masks, frame.rgb.shape)}
@@ -467,7 +627,32 @@ class Executor:
         except AdapterError as error:
             result["camera_error"] = str(error)
         result["note"] = "objects come from the front camera (about 120° wide); free_space_m is the free distance from the body on each side, 'clear' meaning nothing within 5 m"
+        if memory_warning:
+            result["note"] += "; " + memory_warning
         return result
+
+    def _verify_saved_objects(self, frame, floor_cloud, detections, seen_ids):
+        clear = []
+        s = frame.state
+        for item in self.object_memory.snapshot(include_missing=False):
+            if item["id"] in seen_ids:
+                continue
+            bearing = math.atan2(item["y"]-s.y, item["x"]-s.x)-s.yaw
+            distance = math.hypot(item["x"]-s.x, item["y"]-s.y)
+            # A visible but unranged detection still protects its memory.
+            visible = any(d.label == item["label"] and
+                          (d.color is None or item.get("color") is None or d.color == item["color"]) and
+                          abs(_wrap(math.radians(d.bearing_deg)-bearing)) < math.radians(20) and
+                          (d.distance_m is None or abs(d.distance_m-distance) < .6)
+                          for d in detections)
+            if not visible and clear_saved_location(item, frame, floor_cloud):
+                clear.append(item["id"])
+        missing = self.object_memory.observe_empty(clear, observed_at=time.monotonic(),
+                                                   seen_ids=seen_ids, save=False)
+        if missing:
+            self.memory = [row for row in self.memory if not any(
+                row[0].label == item["label"] and row[0].color == item.get("color") and
+                math.hypot(row[1]-item["x"], row[2]-item["y"]) < .6 for item in missing)]
 
     # ---- worker ----------------------------------------------------------------------
     def _require_adapter(self):
@@ -552,6 +737,8 @@ class Executor:
             raise AdapterError(f"robot telemetry is {s.age:.1f} s old; stopped for safety")
         if s.posture == "fallen":
             raise AdapterError("the robot has fallen" + (f" ({s.fault})" if s.fault else "") + "; it needs a recovery stand")
+        if s.extra.get("localization", {}).get("state") == "lost":
+            raise AdapterError("scan localisation lost; stop and obtain clear LiDAR scans before navigating")
         return s
 
     def _run(self, task, cancel):
@@ -564,11 +751,19 @@ class Executor:
         elif kind == "wait":
             self._sleep(task.command.params["duration"], cancel)
         elif kind == "goto":
-            self._ensure_standing(task, cancel)
-            self._goto(task, cancel)
+            budget = _MotionDeadline(cancel, 180) if task.command.params["target"] == "place" else cancel
+            self._ensure_standing(task, budget)
+            self._goto(task, budget)
         elif kind == "approach":
-            self._ensure_standing(task, cancel)
-            self._approach(task, cancel)
+            budget = _MotionDeadline(cancel, 180)
+            self._ensure_standing(task, budget)
+            self._approach(task, budget)
+        elif kind == "viewpoint":
+            if self.adapter.kind == "go2":
+                raise AdapterError("exploration viewpoints are currently validated only in simulation")
+            budget = _MotionDeadline(cancel, task.command.params["timeout_s"])
+            self._ensure_standing(task, budget)
+            self._visit_viewpoint(task, budget)
         elif kind == "follow":
             if self.adapter.kind == "go2":
                 raise AdapterError("following people only works in the simulator for now; it hasn't been tried "
@@ -638,6 +833,13 @@ class Executor:
             return cloud
         return np.concatenate([cloud, P.odom_to_level(np.concatenate(spots), (s.x, s.y, s.yaw))])
 
+    def _with_low_obstacles(self, cloud, s):
+        """Add confirmed low surfaces to safety checks, preserving raw camera depth."""
+        low = self.room_map.low_obstacles()
+        if not len(low):
+            return cloud
+        return np.concatenate([cloud, P.odom_to_level(low, (s.x, s.y, s.yaw))])
+
     def _remember_bump(self, s, ux, uy):
         """Mark a short wall across the travel direction just past the body edge, in odom coordinates."""
         extent = abs(ux) * P.HALF_LENGTH + abs(uy) * P.HALF_WIDTH + .05
@@ -650,19 +852,24 @@ class Executor:
         with self.lock:
             self.bumps.append((time.monotonic(), pts))
 
-    def _clearance(self, ux, uy, turning):
+    def _clearance(self, ux, uy, turning, *, footprint=None):
         """Free distance along the travel direction, limited to what the LiDAR can actually see. Drops (a
         ledge, stairs going down) and spots it recently bumped into count as obstacles."""
-        s = self._refresh_cloud()
+        self._refresh_cloud()
+        # Mapping can take time while the robot keeps moving. Reproject the
+        # captured returns at the current pose before judging stopping space.
+        s = self._fresh_state()
         with self._cloud_lock:
             cloud = self.cloud.level((s.x, s.y, s.yaw))
+        cloud = self._with_low_obstacles(cloud, s)
+        dimensions={} if footprint is None else {'footprint':footprint}
         if turning:
-            return P.turn_clearance(self._with_bumps(cloud, s))
-        self._observed = P.observed_along(cloud, ux, uy)
-        self._drop = P.drop_along(cloud, ux, uy)
-        self._obstacle = P.obstacle_along(cloud, ux, uy)
+            return P.turn_clearance(self._with_bumps(cloud,s),**dimensions)
+        self._observed=P.observed_along(cloud,ux,uy,**dimensions)
+        self._drop=P.drop_along(cloud,ux,uy,**dimensions)
+        self._obstacle=P.obstacle_along(cloud,ux,uy,**dimensions)
         bumped = self._with_bumps(cloud, s)
-        self._bump = P.obstacle_along(bumped, ux, uy) if len(bumped) > len(cloud) else math.inf
+        self._bump=P.obstacle_along(bumped,ux,uy,**dimensions) if len(bumped)>len(cloud) else math.inf
         return min(self._obstacle, self._drop, self._bump, self._observed)
 
     def _why_blocked(self, clear, toward):
@@ -684,13 +891,18 @@ class Executor:
         """Run one velocity segment; returns measured progress (m or rad)."""
         adapter = self.adapter
         turning = p.get("angle") is not None or (p["vx"] == 0 and p["vy"] == 0)
+        tracking = (task.command.kind == "viewpoint" or p.get("track_line", False)) and not turning
+        if tracking:
+            p = dict(p)
         start = self._fresh_state()
         x0, y0, yaw0 = start.x, start.y, start.yaw
         c0, s0 = math.cos(yaw0), math.sin(yaw0)
         wx, wy = c0 * p["ux"] - s0 * p["uy"], s0 * p["ux"] + c0 * p["uy"]   # travel direction in odom
         speed = p["speed"]
+        dimensions=({'footprint':(BODY_HALF_LENGTH_M,BODY_HALF_WIDTH_M)}
+                    if task.command.kind=='viewpoint' else {})
         try:
-            clear = self._clearance(p["ux"], p["uy"], turning)
+            clear=self._clearance(p['ux'],p['uy'],turning,**dimensions)
         except AdapterError as error:
             raise AdapterError(f"no LiDAR data, so I can't check the path ({error})") from None
         toward = None if turning else _toward(p["ux"], p["uy"])
@@ -719,44 +931,107 @@ class Executor:
         # (it started pressed against glass), it starts anyway STALL_START_S later. Only samples from then on
         # are judged, so a slow start can't count against it.
         rate = p["turn_rate"] if turning else speed
+        commanded_turn_rate = rate
+        commanded_speed = speed
         earliest = began + rate / (DECEL_ANGULAR if turning else DECEL_LINEAR) + STALL_GRACE_S
         watch_from = None
         recent = deque()
+
+        def stalled(state, stamp, at):
+            nonlocal watch_from
+            moving = abs(state.wz) if turning else state.vx*p["ux"] + state.vy*p["uy"]
+            if watch_from is None and stamp >= earliest and (moving >= rate/2 or stamp >= earliest+STALL_START_S):
+                watch_from = stamp
+            if watch_from is None:
+                return False
+            recent.append((stamp, at))
+            while len(recent) > 1 and stamp-recent[1][0] >= STALL_WINDOW_S:
+                recent.popleft()
+            old_t, old_progress = recent[0]
+            expected = (commanded_turn_rate if turning else commanded_speed)*STALL_FRACTION
+            # Confirm poor progress over the whole window and low current
+            # velocity, so delayed position updates alone do not cause a stop.
+            return (stamp-old_t >= STALL_WINDOW_S and
+                    at-old_progress < expected*(stamp-old_t) and moving < expected)
+
         try:
             while True:
                 self._check(cancel)
                 now = time.monotonic()
-                if now - last_send >= .1:
-                    adapter.move(p["vx"], p["vy"], p["wz"])
+                s = None
+                if not turning:
+                    s = self._fresh_state()
+                    progress = (s.x-x0)*wx + (s.y-y0)*wy
+                    # Check both sides of potentially slow scan processing.
+                    # A confirmed contact must not wait for another map update.
+                    if stalled(s, now, progress):
+                        outcome = "stalled"
+                        break
+                send_due = now - last_send >= .1
+                if tracking and send_due:
+                    s = self._fresh_state()
+                    # Follow the planned line in odometry coordinates. Small
+                    # gait/yaw errors otherwise accumulate against a side wall
+                    # even while the requested body velocity stays constant.
+                    cross = -(s.x-x0)*wy + (s.y-y0)*wx
+                    correction = max(-.4*speed, min(.4*speed, -2.*cross))
+                    forward = math.sqrt(max(0., speed*speed-correction*correction))
+                    vxw, vyw = forward*wx-correction*wy, forward*wy+correction*wx
+                    co, sn = math.cos(s.yaw), math.sin(s.yaw)
+                    p["vx"], p["vy"] = co*vxw+sn*vyw, -sn*vxw+co*vyw
+                    p["ux"], p["uy"] = p["vx"]/speed, p["vy"]/speed
+                    # Keep direction updates and their safety check together.
+                    # Mapping can shift the scan/send timers apart; no corrected
+                    # velocity may be sent using a check for the previous one.
+                    clear = self._clearance(p["ux"], p["uy"], False, **dimensions)
+                    s = self._fresh_state()
+                    now = time.monotonic()
+                    last_scan = now
+                    if clear < self._margin(max(s.speed, .1)):
+                        outcome = "blocked"
+                        at = (s.x-x0)*wx + (s.y-y0)*wy
+                        trigger = (clear, self._observed, at, self._why_blocked(clear, toward))
+                        break
+                if send_due:
+                    wz = p["wz"]
+                    if not turning and distance is not None:
+                        current = self._fresh_state()
+                        remaining = max(0., distance-((current.x-x0)*wx+(current.y-y0)*wy))
+                        # Slow before the final stop rather than relying on one
+                        # nominal braking impulse across physics runtimes.
+                        commanded_speed = min(speed, max(L.DEFAULT_SPEED_MPS,
+                            math.sqrt(2*FINAL_DECEL_LINEAR*max(0., remaining-.05))))
+                    if turning and angle is not None:
+                        current = self._fresh_state()
+                        remaining = max(0., angle-abs(turned+_wrap(current.yaw-yaw_prev)))
+                        # Close the last part of a measured turn slowly. The
+                        # walking policy may brake less sharply than odometry's
+                        # nominal model, particularly across physics runtimes.
+                        commanded_turn_rate = min(rate, max(.15, 2.*remaining))
+                        wz = math.copysign(commanded_turn_rate, wz)
+                    scale = commanded_speed/speed if not turning else 1.
+                    adapter.move(p["vx"]*scale, p["vy"]*scale, wz)
                     last_send = now
-                s = self._fresh_state()
+                if s is None:
+                    s = self._fresh_state()
                 turned += _wrap(s.yaw - yaw_prev)
                 yaw_prev = s.yaw
                 progress = abs(turned) if turning else (s.x - x0) * wx + (s.y - y0) * wy
-                if not turning and now - last_scan >= .1:
+                if not turning and not tracking and now - last_scan >= .1:
                     last_scan = now
-                    clear = self._clearance(p["ux"], p["uy"], False)
+                    clear=self._clearance(p['ux'],p['uy'],False,**dimensions)
+                    # Sensing/mapping may span the instant contact stops the
+                    # robot. Use the post-scan sample and clock for stall timing.
+                    s = self._fresh_state()
+                    now = time.monotonic()
+                    progress = (s.x-x0)*wx + (s.y-y0)*wy
                     if clear < self._margin(max(s.speed, .1)):
                         outcome = "blocked"
                         trigger = (clear, self._observed, progress, self._why_blocked(clear, toward))
                         break
-                # A stall needs both: little progress over the window (wall clock) and a low measured body
-                # speed. The robot's own speed reading doesn't drop when a busy computer briefly slows the
-                # simulator or delays telemetry, so those hiccups aren't mistaken for touching something.
-                moving = abs(s.wz) if turning else s.vx * p["ux"] + s.vy * p["uy"]
-                if watch_from is None and now >= earliest and (moving >= rate / 2 or now >= earliest + STALL_START_S):
-                    watch_from = now
-                if watch_from is not None:
-                    recent.append((now, progress, moving))
-                    while len(recent) > 1 and now - recent[1][0] >= STALL_WINDOW_S:
-                        recent.popleft()        # keep the newest sample at least a window old
-                old_t, old_progress, _ = recent[0] if recent else (now, progress, 0.)
-                if recent and now - old_t >= STALL_WINDOW_S:
-                    expected = rate * STALL_FRACTION
-                    measured = sum(r[2] for r in recent) / len(recent)
-                    if progress - old_progress < expected * (now - old_t) and measured < expected:
-                        outcome = "stalled"
-                        break
+                if stalled(s, now, progress):
+                    outcome = "stalled"
+                    break
                 if distance is not None and progress >= distance - s.speed ** 2 / (2 * DECEL_LINEAR) - .01:
                     break
                 if angle is not None and progress >= angle - s.wz ** 2 / (2 * DECEL_ANGULAR) - .01:
@@ -840,36 +1115,50 @@ class Executor:
             adapter.stop_move()
         return max(0., moved)
 
-    def _goto_leg(self, task, cancel, tx, ty):
+    def _goto_leg(self, task, cancel, tx, ty, *, max_speed=None, arrival_tolerance=.08):
         """Turn toward (tx, ty) in odom, then walk there in legs within the per-call limits."""
         s = self._fresh_state()
         dx, dy = tx - s.x, ty - s.y
         distance = math.hypot(dx, dy)
-        if distance < .08:
+        if distance < arrival_tolerance:
             return 0.
         bearing = _wrap(math.atan2(dy, dx) - s.yaw)
         if math.cos(bearing) < -.7 and distance <= 2.0:   # short way back: reverse instead of turning around
             ux, uy = math.cos(bearing), math.sin(bearing)
             speed = L.default_speed(distance)
+            if max_speed is not None:
+                speed = min(speed, max_speed)
             self._velocity(task, {"vx": ux * speed, "vy": uy * speed, "wz": 0., "ux": ux, "uy": uy, "speed": speed,
-                                  "distance": min(distance, L.MAX_DISTANCE_M)}, cancel, leg=True)
+                                  "distance": min(distance, L.MAX_DISTANCE_M), "track_line": True}, cancel, leg=True)
             return distance
         if distance < .35:   # short hop: side-step instead of turning on the spot
             ux, uy = math.cos(bearing), math.sin(bearing)
             speed = L.DEFAULT_SPEED_MPS
+            if max_speed is not None:
+                speed = min(speed, max_speed)
             self._velocity(task, {"vx": ux * speed, "vy": uy * speed, "wz": 0., "ux": ux, "uy": uy, "speed": speed,
-                                  "distance": distance}, cancel, leg=True)
+                                  "distance": distance, "track_line": True}, cancel, leg=True)
             return distance
         if abs(bearing) > math.radians(8):
             rate = L.default_turn_rate(abs(bearing))
             self._velocity(task, {"vx": 0., "vy": 0., "wz": math.copysign(rate, bearing), "ux": 0., "uy": 0.,
                                   "speed": 0., "turn_rate": rate, "angle": abs(bearing)}, cancel, leg=True)
         s = self._fresh_state()
-        distance = math.hypot(tx - s.x, ty - s.y)
+        dx, dy = tx-s.x, ty-s.y
+        distance = math.hypot(dx, dy)
+        if distance < arrival_tolerance:
+            return 0.
         leg = min(distance, L.MAX_GOTO_LEG_M)
         speed = L.default_speed(leg)
-        self._velocity(task, {"vx": speed, "vy": 0., "wz": 0., "ux": 1., "uy": 0., "speed": speed,
-                              "distance": leg}, cancel, leg=True)
+        if max_speed is not None:
+            speed = min(speed, max_speed)
+        # Turns have a measured tolerance. Aim the translation at the waypoint
+        # from the actual post-turn pose, rather than extending a heading error
+        # into the obstacle beside the planned line.
+        co, sn = math.cos(s.yaw), math.sin(s.yaw)
+        ux, uy = (co*dx+sn*dy)/distance, (-sn*dx+co*dy)/distance
+        self._velocity(task, {"vx": ux*speed, "vy": uy*speed, "wz": 0., "ux": ux, "uy": uy, "speed": speed,
+                              "distance": leg, "track_line": True}, cancel, leg=True)
         return leg
 
     def _goto(self, task, cancel):
@@ -879,6 +1168,11 @@ class Executor:
             if self.start_pose is None:
                 raise AdapterError("the start position is unknown")
             tx, ty = self.start_pose[:2]
+        elif p["target"] == "place":
+            tx, ty = p["x"], p["y"]
+            if math.hypot(tx-s.x, ty-s.y) > 20.:
+                raise AdapterError("the named place is over the 20 m go_to limit; use intermediate places")
+            task.detail["destination"] = {"name": p["name"], "x_m": tx, "y_m": ty, "frame": "map"}
         else:
             c, sn = math.cos(s.yaw), math.sin(s.yaw)
             tx, ty = s.x + c * p["x"] - sn * p["y"], s.y + sn * p["x"] + c * p["y"]
@@ -886,25 +1180,37 @@ class Executor:
         for _ in range(3):                  # a few scans first, so the map shows what's around
             self._refresh_cloud()
         replans = 0
+        waypoints = None
         for _ in range(12):
             s = self._fresh_state()
             remaining = math.hypot(tx - s.x, ty - s.y)
             if remaining < .12:
                 break
-            # Head for the next waypoint of a route around what the map shows, or straight for the target when
-            # the straight line is clear (or no route is known: then the LiDAR checks stop it safely).
-            route = self._route(s, tx, ty)
-            wx, wy = route[0] if route else (tx, ty)
-            if route:
-                task.detail["route"] = [[round(x, 2), round(y, 2)] for x, y in route]
+            # Keep the remaining checked waypoints between successful legs.
+            # A new live obstruction invalidates the route below; a temporary
+            # gap in map coverage alone must not discard a valid detour.
+            if waypoints is None:
+                route = self._route(s, tx, ty)
+                waypoints = list(route) if route else [(tx, ty)]
+                if route:
+                    task.detail["route"] = [[round(x, 2), round(y, 2)] for x, y in route]
+            wx, wy = waypoints[0]
             task.detail["legs"].append({})
             try:
-                self._goto_leg(task, cancel, wx, wy)
+                self._goto_leg(task, cancel, wx, wy, arrival_tolerance=.02 if len(waypoints)>1 else .08)
+                if task.status == "failed":
+                    raise AdapterError(task.detail.get("error", "navigation motion failed"))
+                arrived = self._fresh_state()
+                if math.hypot(wx-arrived.x, wy-arrived.y) < .08:
+                    waypoints.pop(0)
+                    if not waypoints:
+                        waypoints = None
             except _BlockedError:
                 # Something the map didn't show yet is in the way: the scans have now added it, so plan again.
                 if replans >= MAX_REPLANS:
                     raise
                 replans += 1
+                waypoints = None
                 task.status = "running"
                 task.detail["replanned"] = replans
                 task.detail.pop("blocked", None)
@@ -912,12 +1218,33 @@ class Executor:
                     self._refresh_cloud()
         s = self._fresh_state()
         task.detail["remaining_m"] = round(math.hypot(tx - s.x, ty - s.y), 2)
+        if math.hypot(tx - s.x, ty - s.y) >= .12:
+            raise AdapterError("navigation reached its movement limit before arriving")
 
-    def _route(self, s, tx, ty):
+    def _route(self, s, tx, ty, *, known_only=False, cancel=None):
         """Waypoints in odometry coordinates from the robot to (tx, ty) around obstacles on the room map, ending
         at the target; [] when the straight line is already clear; None when the map has no route (the target is
         off the map, inside an obstacle, or walled off)."""
-        m = self.room_map
+        m = self.room_map.snapshot()
+        m.grow = False
+        start, goal = m.world_to_cell(s.x, s.y), m.world_to_cell(tx, ty)
+        if start is None or goal is None:
+            return None
+        initial_forbidden = set()
+        co, sn = math.cos(s.yaw), math.sin(s.yaw)
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+            if cancel is not None:
+                self._check(cancel)
+            nx, ny = m.cell_to_world(start[0]+dr, start[1]+dc)
+            dx, dy = nx-s.x, ny-s.y
+            length = max(math.hypot(dx, dy), 1e-9)
+            ux, uy = (co*dx+sn*dy)/length, (-sn*dx+co*dy)/length
+            if self._clearance(ux, uy, False) < self._margin(.2):
+                initial_forbidden.add((dr, dc))
+        # Each live probe also observes floor/obstacles. Plan on that completed
+        # evidence rather than the snapshot taken before the scans arrived.
+        m = self.room_map.snapshot()
+        m.grow = False
         start, goal = m.world_to_cell(s.x, s.y), m.world_to_cell(tx, ty)
         if start is None or goal is None:
             return None
@@ -926,21 +1253,183 @@ class Executor:
             bumps = [pts for t, pts in self.bumps if now - t <= BUMP_MEMORY_S]
         extra = np.concatenate(bumps) if bumps else None
         for clearance in ROUTE_CLEARANCE_M:
-            blocked = m.blocked(clearance, extra)
+            if known_only:
+                if extra is not None:
+                    m.mark_obstacles(extra[:, :2])
+                blocked = ~_safe_cells(m, clearance)
+                if blocked[start] or blocked[goal]:
+                    continue
+            else:
+                blocked = m.blocked(clearance, extra)
             k = int(math.ceil(clearance / m.resolution))         # it may already stand closer than that
-            blocked[max(0, start[0] - k):start[0] + k + 1, max(0, start[1] - k):start[1] + k + 1] = False
+            if not known_only:
+                blocked[max(0, start[0] - k):start[0] + k + 1, max(0, start[1] - k):start[1] + k + 1] = False
             if m.line_clear(blocked, start, goal):
-                return []
-            path = astar(m.grid, start, goal, blocked=blocked, unknown_cost=UNKNOWN_COST, diagonal=True)
+                distance = math.hypot(tx - s.x, ty - s.y)
+                co, sn = math.cos(s.yaw), math.sin(s.yaw)
+                dx, dy = tx - s.x, ty - s.y
+                ux, uy = (co * dx + sn * dy) / max(distance, 1e-9), (-sn * dx + co * dy) / max(distance, 1e-9)
+                if distance < .01 or self._clearance(ux, uy, False) >= self._margin(.2):
+                    return []
+            path = (turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .65),
+                                  cancelled=None if cancel is None else cancel.is_set,
+                                  forbidden_first_steps=initial_forbidden or ()) if known_only else
+                    turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .6) & ~m.blocked(.6, extra),
+                                  cancelled=None if cancel is None else cancel.is_set,
+                                  forbidden_first_steps=initial_forbidden or (),
+                                  unknown_cost=UNKNOWN_COST))
             if path is not None:
-                cells = simplify(path, lambda a, b: m.line_clear(blocked, a, b))
+                cells = keep_turns(path)
+                if not known_only:
+                    # Bends need observed turning space. Unknown cells may be
+                    # traversed in straight legs, with live LiDAR still in charge.
+                    # Keep the first planned bend: simplifying from the carved
+                    # start area could restore a direction the live probe just
+                    # refused, even when the rest of that line looks map-free.
+                    cells = cells[:1] + simplify(cells[1:], lambda a, b: m.line_clear(blocked, a, b))
                 route = [m.cell_to_world(*c) for c in cells[1:-1]] + [(tx, ty)]
                 points = [(s.x, s.y)] + route
                 length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
-                if length > MAX_DETOUR * math.hypot(tx - s.x, ty - s.y) + 2.:
+                if not known_only and length > MAX_DETOUR * math.hypot(tx - s.x, ty - s.y) + 2.:
                     return None               # a long way round, probably through unmapped space: don't wander
                 return route
         return None
+
+    def _exploration_forbidden(self, s, cancel=None):
+        """Probe the same world directions as the navigation graph.
+
+        A tiny step to a cell centre can point diagonally when the robot is off
+        centre. Do not forbid an entire straight corridor on that basis; the
+        velocity worker still checks the exact executed segment independently.
+        """
+        m = self.room_map
+        cell = m.world_to_cell(s.x, s.y)
+        if cell is None:
+            return tuple(EXPLORATION_STEPS)
+        co, sn = math.cos(s.yaw), math.sin(s.yaw)
+        forbidden = []
+        for dr, dc in EXPLORATION_STEPS:
+            if cancel is not None:
+                self._check(cancel)
+            distance = math.hypot(dr,dc)
+            ux, uy = (co*dc+sn*dr)/distance, (-sn*dc+co*dr)/distance
+            if self._clearance(ux,uy,False,footprint=(BODY_HALF_LENGTH_M,BODY_HALF_WIDTH_M))<self._margin(.15):
+                forbidden.append((dr, dc))
+        return tuple(forbidden)
+
+    def _exploration_navigation(self, s, cancel=None, planning_resolution_m=.1):
+        forbidden = self._exploration_forbidden(s, cancel)
+        m = self.room_map.snapshot()
+        with self.lock:
+            bumps = [pts[:, :2] for t, pts in self.bumps if time.monotonic()-t <= BUMP_MEMORY_S]
+        if bumps:
+            m.mark_obstacles(np.concatenate(bumps))
+        return ExplorationNavigation(m, (s.x, s.y, s.yaw), forbidden_steps=forbidden,
+                                     cancelled=None if cancel is None else cancel.is_set,
+                                     planning_resolution_m=planning_resolution_m)
+
+    def _viewpoint_recovery_leg(self, task, s, navigation):
+        m = navigation.source_map
+        path = recovery_route(m, (s.x, s.y, s.yaw), clearance=navigation.turning_radius,
+                              forbidden_steps=navigation.forbidden)
+        if path is None or len(path) < 2:
+            raise _blocked(task, "no observed translation route to turning space", math.inf, 0.)
+        first = path[1]
+        delta = first[0]-path[0][0], first[1]-path[0][1]
+        last = first
+        for a, b in zip(path[1:4], path[2:5]):
+            if (b[0]-a[0], b[1]-a[1]) != delta:
+                break
+            last = b
+        # Recovery retains the measured subcell offset and fixed body heading.
+        wx = s.x + (last[1] - path[0][1]) * m.resolution
+        wy = s.y + (last[0] - path[0][0]) * m.resolution
+        task.detail["recovering"] = "translating to observed turning space"
+        return wx, wy, s.yaw
+
+    def _visit_viewpoint(self, task, cancel):
+        p = task.command.params
+        task.detail["legs"] = []
+        replans, recovered, no_progress, prefer_fine = 0, False, 0, False
+        for _ in range(8):
+            self._check(cancel)
+            self._refresh_cloud()
+        for _ in range(400):
+            self._check(cancel)
+            for _ in range(3):
+                self._refresh_cloud()
+            s = self._fresh_state()
+            navigation = self._exploration_navigation(s,cancel,.05 if prefer_fine else .1)
+            if not navigation.start_fits and navigation.can_refine:
+                refined=navigation.refined()
+                if refined.start_fits:
+                    navigation=refined
+                    prefer_fine=True
+            m = navigation.map
+            if not navigation.start_fits:
+                wx, wy, heading = self._viewpoint_recovery_leg(task, s, navigation)
+                recovered = True
+            else:
+                remaining = math.hypot(p["x"]-s.x, p["y"]-s.y)
+                if recovered and remaining > .12 and navigation.turning[navigation.start_cell]:
+                    task.detail["recovered_pose"] = [s.x, s.y, s.yaw]
+                    raise _blocked(task, "recovered turning space; request a fresh viewpoint", math.inf, 0.)
+                angle = _wrap(p["yaw"]-s.yaw)
+                if remaining<.12 and abs(angle)>math.radians(6) and not navigation.turning[navigation.start_cell] and navigation.can_refine:
+                    prefer_fine=True
+                    continue
+                if remaining < .12 and (abs(angle) < math.radians(6) or navigation.turning[navigation.start_cell]):
+                    if abs(angle) > math.radians(6):
+                        task.detail["legs"].append({})
+                        self._turn_by(task, cancel, angle)
+                    task.detail["remaining_m"] = round(remaining, 2)
+                    task.detail["room"] = self.room_at(s.x, s.y)
+                    return
+                path = navigation.route(p["x"], p["y"])
+                self._check(cancel)
+                if path is None or len(path) < 2:
+                    if navigation.can_refine:
+                        prefer_fine=True
+                        continue
+                    if navigation.turning[navigation.start_cell]:
+                        raise _blocked(task, "no safe route through observed free space", math.inf, 0.)
+                    wx, wy, heading = self._viewpoint_recovery_leg(task, s, navigation)
+                    recovered = True
+                else:
+                    wx, wy, heading = navigation.first_leg(path)
+                    task.detail["route"] = [[*m.cell_to_world(*cell[:2]), navigation.headings[cell[2]]]
+                                            for cell in path[::max(1, len(path)//50)]]
+                    if path[0][:2] == path[1][:2]:
+                        task.detail["legs"].append({})
+                        self._turn_by(task, cancel, _wrap(heading-s.yaw))
+                        if task.status == "failed":
+                            raise AdapterError(task.detail.get("error", "viewpoint turn failed"))
+                        continue
+            dx, dy = wx-s.x, wy-s.y
+            distance = math.hypot(dx, dy)
+            if distance < .005:
+                raise _blocked(task, "route has no remaining translation", math.inf, 0.)
+            co, sn = math.cos(s.yaw), math.sin(s.yaw)
+            ux, uy = (co*dx+sn*dy)/distance, (-sn*dx+co*dy)/distance
+            task.detail["legs"].append({})
+            try:
+                moved = self._velocity(task, {"vx": ux*.15, "vy": uy*.15, "wz": 0., "ux": ux, "uy": uy,
+                                             "speed": .15, "distance": distance}, cancel, leg=True)
+                if task.status == "failed":
+                    raise AdapterError(task.detail.get("error", "viewpoint motion failed"))
+                no_progress = no_progress+1 if moved < .005 else 0
+                if no_progress >= 3:
+                    raise _blocked(task, "viewpoint route tracking made no progress", math.inf, 0.)
+            except _BlockedError:
+                if navigation.can_refine:
+                    prefer_fine=True
+                if replans >= MAX_REPLANS:
+                    raise
+                replans += 1
+                task.status = "running"
+                task.detail.pop("blocked", None)
+                task.detail["replanned"] = replans
+        raise AdapterError("exploration viewpoint exceeded its movement limit")
 
     def _stable_ids(self, detections, pose):
         """Keep an object's id across looks (same label within 0.6 m of where it was seen), so an id the
@@ -962,20 +1451,24 @@ class Executor:
                 self._next_id += 1
                 d.id = f"obj{self._next_id}"
 
-    def _remember(self, detections, pose):
+    def _remember(self, detections, pose, *, save=True):
         now = time.monotonic()
         c, sn = math.cos(pose[2]), math.sin(pose[2])
         kept = [m for m in self.memory if now - m[3] <= MEMORY_S]
+        seen_ids = []
         for d in detections:
             if d.x_m is None:
                 continue
             wx, wy = pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m
             kept = [m for m in kept if not (m[0].label == d.label and math.hypot(m[1] - wx, m[2] - wy) < .6)]
             kept.append((d, wx, wy, now))
-            self.object_memory.remember(label=d.label, x=wx, y=wy, color=d.color, confidence=d.confidence,
-                                        save=False)
+            item = self.object_memory.remember(label=d.label, x=wx, y=wy, color=d.color, confidence=d.confidence,
+                                               save=False)
+            seen_ids.append(item["id"])
         self.memory = kept[-60:]
-        self.object_memory.save()             # once per look, not once per object
+        if save:
+            self.object_memory.save()
+        return seen_ids
 
     @staticmethod
     def _score(det, words):
@@ -1072,7 +1565,7 @@ class Executor:
         for d, wx, wy, t in self.memory:
             if now - t <= MEMORY_S:
                 candidates.append((self._score(d, words), wall - (now - t), d, wx, wy))
-        for item in self.object_memory.objects:
+        for item in self.object_memory.snapshot(include_missing=False):
             d = SimpleNamespace(id=item.get("id", item.get("label", "")), label=item.get("label", ""),
                                 color=item.get("color"))
             candidates.append((self._score(d, words), item.get("last_seen", 0.), d, item["x"], item["y"]))
@@ -1211,7 +1704,7 @@ class Executor:
             p["target"] = p["meant"]            # the detector's word for what was asked for
         stop_at = p["stop_distance"]
         searched, recalled, closest, locked, unranged = 0, False, None, None, 0
-        for attempt in range(12):
+        for attempt in range(40):
             self._check(cancel)
             self.look()
             match, near_miss = (self._track(locked), None) if locked else self._match(p["target"])
@@ -1219,15 +1712,36 @@ class Executor:
                 match, near_miss = self._match(p["target"])
             closest = closest or near_miss
             if match is None:
+                if locked is not None:
+                    s = self._fresh_state()
+                    if math.hypot(locked[1] - s.x, locked[2] - s.y) <= stop_at + P.HALF_LENGTH + .2:
+                        bearing = _wrap(math.atan2(locked[2]-s.y, locked[1]-s.x)-s.yaw)
+                        if abs(bearing) > math.radians(6):
+                            self._turn_by(task, cancel, bearing)
+                        for _ in range(2):
+                            self._check(cancel)
+                            self.look()
+                            if self._track(locked) or self._match(p["target"])[0]:
+                                break
+                        else:
+                            missing = any(item["label"] == locked[0] and item.get("state") == "missing" and
+                                          math.hypot(item["x"]-locked[1], item["y"]-locked[2]) < .6
+                                          for item in self.object_memory.snapshot())
+                            if missing:
+                                raise AdapterError(f"the {locked[0]} is no longer at its remembered position; it may have moved")
+                            raise AdapterError(f"the {locked[0]} is not visible at its last-seen position; I could not verify whether it moved")
+                        continue
+                    task.detail["searching"] = f"following a route to the last-seen {locked[0]}"
+                    self._approach_route(task, cancel, s, locked[1], locked[2], stop_at, force=True)
+                    continue
                 memory = None if recalled else self._recall(p["target"])
                 s = self._fresh_state()
                 if memory is not None:
                     # Seen recently but not in view now: turn toward where it was, then look again.
                     recalled = True
-                    if getattr(memory[0], "by_look", False):
-                        # Recalled by what it looked like: from here on it is the thing the detector called
-                        # that, at that spot (its picture from across the room may not fit the words as well).
-                        locked = (memory[0].label, memory[1], memory[2])
+                    # Keep the recalled detector label and map position locked
+                    # through detours, including semantic appearance matches.
+                    locked = (memory[0].label, memory[1], memory[2])
                     bearing = _wrap(math.atan2(memory[2] - s.y, memory[1] - s.x) - s.yaw)
                     task.detail["searching"] = f"turned toward where I last saw the {memory[0].label}"
                     if abs(bearing) > math.radians(10):
@@ -1266,6 +1780,8 @@ class Executor:
                 try:
                     self._velocity(task, {"vx": .3, "vy": 0., "wz": 0., "ux": 1., "uy": 0., "speed": .3,
                                           "distance": 1.0}, cancel, leg=True)
+                    if task.status == "failed":
+                        raise AdapterError(task.detail.get("error", "approach motion failed"))
                 except _BlockedError:
                     task.detail.pop("blocked", None)
                     task.status = "running"       # look again: maybe that was the object itself
@@ -1278,6 +1794,8 @@ class Executor:
             x, y = pose[0], pose[1]
             c, sn = math.cos(pose[2]), math.sin(pose[2])
             ox, oy = x + c * det.x_m - sn * det.y_m, y + sn * det.x_m + c * det.y_m
+            if gap > .1 and self._approach_route(task, cancel, s, ox, oy, stop_at):
+                continue
             bearing = _wrap(math.atan2(oy - s.y, ox - s.x) - s.yaw)
             if abs(bearing) > math.radians(6):
                 self._turn_by(task, cancel, bearing)
@@ -1288,6 +1806,8 @@ class Executor:
             try:
                 self._velocity(task, {"vx": speed, "vy": 0., "wz": 0., "ux": 1., "uy": 0., "speed": speed,
                                       "distance": leg}, cancel, leg=True)
+                if task.status == "failed":
+                    raise AdapterError(task.detail.get("error", "approach motion failed"))
             except _BlockedError:
                 # The object itself is in the corridor: being blocked close to it means we arrived.
                 self.look()
@@ -1298,9 +1818,60 @@ class Executor:
                     task.status = "running"
                     break
                 raise
+        else:
+            raise AdapterError("approach did not reach and confirm its target within the movement limit")
         final = self._track(locked) if locked else self._match(p["target"])[0]
         if final and final[0].distance_m is not None:
             task.detail["final_gap_m"] = round(final[0].distance_m - P.HALF_LENGTH, 2)
+
+    def _approach_route(self, task, cancel, s, ox, oy, stop_at, *, force=False):
+        """Follow one planned leg to a free stand-off point, never into the object.
+
+        On a clear direct approach return False so the existing slow final
+        visual servo controls the requested gap. On detours, retain the locked
+        world position even when the target temporarily leaves the camera.
+        """
+        distance = math.hypot(ox - s.x, oy - s.y)
+        stand_off = max(stop_at + P.HALF_LENGTH, .46)
+        if distance <= stand_off + .08:
+            return False
+        bearing = math.atan2(s.y - oy, s.x - ox)
+        selected = None
+        for offset in (0., math.pi / 6, -math.pi / 6, math.pi / 3, -math.pi / 3, math.pi / 2, -math.pi / 2):
+            gx = ox + stand_off * math.cos(bearing + offset)
+            gy = oy + stand_off * math.sin(bearing + offset)
+            route = self._route(s, gx, gy)
+            if route is not None:
+                selected = route, gx, gy
+                break
+        if selected is None:
+            raise _blocked(task, "no route to a free stand-off position near the object", math.inf, 0.)
+        route, gx, gy = selected
+        if not route and not force:
+            return False
+        task.detail["route"] = [[round(x, 2), round(y, 2)] for x, y in (route or [(gx, gy)])]
+        wx, wy = route[0] if route else (gx, gy)
+        leg = math.hypot(wx - s.x, wy - s.y)
+        if leg > 1.5:
+            wx, wy = s.x + (wx - s.x) * 1.5 / leg, s.y + (wy - s.y) * 1.5 / leg
+        task.detail.setdefault("legs", []).append({})
+        try:
+            # A nearby intermediate bend still needs to be reached. Otherwise
+            # replanning can choose the same bend forever inside the ordinary
+            # destination tolerance without issuing any movement.
+            self._goto_leg(task, cancel, wx, wy, arrival_tolerance=.02 if route else .08)
+            if task.status == "failed":
+                raise AdapterError(task.detail.get("error", "approach motion failed"))
+        except _BlockedError:
+            replans = task.detail.get("replanned", 0)
+            if replans >= MAX_REPLANS:
+                raise
+            task.detail["replanned"] = replans + 1
+            task.detail.pop("blocked", None)
+            task.status = "running"
+            for _ in range(3):
+                self._refresh_cloud()
+        return True
 
 
     # ---- follow-me (#15) -----------------------------------------------------------------
@@ -1454,6 +2025,25 @@ class Executor:
             near = [(math.hypot(wx - x, wy - y), d) for d, wx, wy, _ in self.memory if d.label != "person"]
         near = [n for n in near if n[0] < 2.5]
         return f" near the {_name(min(near, key=lambda n: n[0])[1])}" if near else ""
+
+
+class _MotionDeadline:
+    """An event-compatible budget checked inside every motion tick."""
+    def __init__(self, event, timeout):
+        self.event, self.deadline = event, time.monotonic() + timeout
+
+    def is_set(self):
+        if self.event.is_set():
+            return True
+        if time.monotonic() >= self.deadline:
+            raise AdapterError("motion timed out")
+        return False
+
+    def wait(self, seconds):
+        if self.is_set():
+            return True
+        result = self.event.wait(min(seconds, max(0., self.deadline - time.monotonic())))
+        return result or self.is_set()
 
 
 class _BlockedError(AdapterError):
