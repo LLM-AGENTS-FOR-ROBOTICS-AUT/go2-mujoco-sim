@@ -254,6 +254,26 @@ class RoomSplittingTests(unittest.TestCase):
         regions = RoomRegions().update(m)
         self.assertNotEqual(regions.region_near(*m.cell_to_world(25, 40), 0.), regions.region_near(*m.cell_to_world(65, 40), 0.))
 
+    def test_two_doorways_between_two_rooms_dont_make_them_one(self):
+        m = OccupancyGrid(resolution=.1, size=90)          # two 7 x 3.4 m rooms, a thin wall between them
+        m.grid[:] = OCCUPIED
+        m.grid[10:80, 10:80] = FREE
+        m.grid[44:46, 10:80] = OCCUPIED
+        m.grid[44:46, 15:25] = FREE                        # with a 1 m doorway near each end, 4 m apart:
+        m.grid[44:46, 65:75] = FREE                        # together they span more than any doorway
+        regions = RoomRegions().update(m)
+        self.assertNotEqual(regions.region_near(*m.cell_to_world(25, 40), 0.), regions.region_near(*m.cell_to_world(65, 40), 0.))
+
+    def test_a_border_whose_middle_is_far_from_one_rooms_floor_still_has_a_way_through(self):
+        import numpy as np
+        from go2.room_regions import _way_through
+        labels = np.zeros((40, 40), dtype=np.int32)
+        labels[5:15, 5:35] = 1                             # region 1 is 2 m of rows away from the border's middle
+        labels[30:35, 5:35] = 2
+        across = _way_through(labels, 1, 2, np.array([30., 20.]), 6)
+        self.assertTrue(np.isfinite(across).all())
+        self.assertGreater(across[0], .9, "from region 1's floor towards region 2's")
+
     def test_a_rooms_spot_is_in_it_and_clear_of_walls(self):
         m = house_map(house.house_demo())
         regions = RoomRegions().update(m)
