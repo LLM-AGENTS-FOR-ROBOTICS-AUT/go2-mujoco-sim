@@ -22,6 +22,7 @@ OBSTACLE_MIN_Z, OBSTACLE_MAX_Z = .06, .55   # height above the floor that can bl
 STEP_DOWN_Z = .06
 # Beyond this the floor-contact estimate is unreliable (one pixel is metres of distance): say "unknown".
 GROUND_PLANE_MAX_M = 6.
+SUPPORT_MIN_POINTS = 3     # LiDAR points on what an object stands on, to range the object by it
 NO_COLOR = {"person", "wall"}   # a person's "colour" is just their clothes; don't name people by it
 SECTORS = ("front", "front-left", "left", "back-left", "back", "back-right", "right", "front-right")
 
@@ -42,7 +43,7 @@ class Detection:
     bearing_deg: float          # positive = to the robot's left
     x_m: float | None           # level frame position of the object's near surface
     y_m: float | None
-    distance_source: str        # "lidar", "ground_plane" or "unknown"
+    distance_source: str        # "lidar", "ground_plane", "support" (what it's on) or "unknown"
     confidence: float
     # Internal only (not shown to the model, whose look results stay as trained): a person's shirt colour, used
     # to tell people apart while following, and where the object is in the image as [left, top, right, bottom].
@@ -347,6 +348,23 @@ def fuse(masks, rgb, cloud_base, intrinsics, camera_pos, camera_rot, roll, pitch
                 if math.hypot(gx, gy) <= GROUND_PLANE_MAX_M:
                     x, y, distance, source = gx, gy, math.hypot(gx, gy), "ground_plane"
                 bearing = math.degrees(math.atan2(gy, gx))
+            else:
+                # Its lowest pixel is level with the camera or above it, so it isn't on the floor: it's on
+                # something (a teddy bear on a bed, a laptop on a desk), higher than the LiDAR looks. What it's
+                # on is in the LiDAR's view, straight below it in the image: the range to that is how far the
+                # object is, give or take how far back on it the object sits.
+                below = inside.copy()
+                below[inside] = ((u[inside] >= cols.min()) & (u[inside] <= cols.max()) & (v[inside] > bottom)
+                                 & (level_cloud[inside, 2] + height > OBSTACLE_MIN_Z))
+                under = level_cloud[below]
+                if len(under) >= SUPPORT_MIN_POINTS:
+                    horizontal = np.hypot(under[:, 0], under[:, 1])
+                    distance = float(np.median(horizontal[horizontal <= np.percentile(horizontal, 20) + .25]))
+                    if distance <= GROUND_PLANE_MAX_M:
+                        x, y = distance * math.cos(math.radians(bearing)), distance * math.sin(math.radians(bearing))
+                        source = "support"
+                    else:
+                        distance = None
         clothing = None
         if item.label == "person":
             top, bottom = rows.min(), rows.max()
