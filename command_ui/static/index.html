@@ -70,6 +70,9 @@
   .telem .tk{color:var(--mute);}
   .acard .a-cur{font-size:14px;margin-top:4px;}
   .acard .a-q{font-size:13px;color:var(--mute);margin-top:4px;}
+  #roomMap{display:block;width:100%;aspect-ratio:1;background:#122535;border-radius:8px;margin-top:8px;}
+  .maplegend{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11px;color:var(--mute);margin-top:7px;}
+  .mapnote{font-size:12px;color:var(--mute);margin-top:6px;overflow-wrap:anywhere;}
   .cambox{position:relative;width:100%;border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-top:8px;}
   .cambox img{display:block;width:100%;}
   .cambox .bx{position:absolute;border:1.5px solid var(--teal);border-radius:3px;}
@@ -150,6 +153,12 @@
     </div>
     <div class="stat"><div class="k">Model</div><div class="v" id="modelLabel">&mdash;</div></div>
     <div class="stat acard"><div class="k">Now running</div><div class="a-cur" id="aCurrent">&mdash;</div><div class="a-q" id="aQueued"></div></div>
+    <div class="stat"><div class="k">Live room map</div>
+      <canvas id="roomMap" width="512" height="512" role="img" aria-label="Top-down map of observed space, robot, route and remembered locations"></canvas>
+      <div class="maplegend"><span>▲ Robot</span><span style="color:#38bdf8">━ Route</span><span style="color:#fbbf24">◆ Place</span><span style="color:#c084fc">● Object</span><span>× Missing</span></div>
+      <div class="mapnote" id="mapNote" aria-live="polite">Waiting for map…</div>
+      <div class="mapnote" id="mapPlaces"></div>
+    </div>
     <div id="cameraCard" hidden class="stat"><div class="k">Last camera view</div><div class="cambox" id="cambox"></div></div>
     <div class="btns">
       <button class="btn-stop" id="stop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop <span style="font-weight:400;font-size:12px;opacity:.8">(Esc)</span></button>
@@ -170,6 +179,7 @@
 </div>
 
 <script src="/static/live-voice.js"></script>
+<script src="/static/room-map.js" defer></script>
 <script>
 const $=id=>document.getElementById(id);
 const log=$('log'), txt=$('text');
