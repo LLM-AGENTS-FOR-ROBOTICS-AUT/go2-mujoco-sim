@@ -51,3 +51,19 @@ Progress updates read `Robot: search for the teddy bear: checked bedroom 1: no t
 random houses on simulated time (the offline simulator from #14, with the camera added) and print a line per house and
 a summary. The #18 targets: search finds the teddy bear in at least 90% of 50 houses with no collisions; explore names
 at least 80% of rooms correctly.
+
+Results (houses 0-49 and 0-9, 14 November 2026):
+
+| Mission | Result | Target |
+|---|---|---|
+| search, 50 houses | found in 43 of the 45 houses where the teddy bear can be reached (95.6%); 0 collisions; 265 s of simulated time on average | 90%, no collisions |
+| search, unreachable teddy bear | 4 of 5 ended `blocked` (seen, no way to it); 1 was reached anyway (the plan check, `reachable()`, is slightly cautious) | says so, doesn't loop |
+| explore, 10 houses | 36 of 37 rooms named right (97.3%); 0 collisions | 80% |
+
+A teddy bear counts as reachable when, by the house plan, Go2's centre can get within 1.1 m of it (`reachable()`).
+
+Known limits:
+- Houses 32 and 46 (search): small two-room houses with the teddy bear in a tight spot in the bedroom; Go2 sees it
+  but can't find a clear spot near enough, so the search ends `blocked`.
+- House 9 (explore): the kitchen stayed `room_N`; not enough kitchen things were seen from where Go2 looked.
+- Rooms of one type are numbered in the order they were found (`bedroom_1`, `bedroom_2`), not the house plan's order.

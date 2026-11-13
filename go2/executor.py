@@ -303,10 +303,15 @@ class Executor:
 
     def _room_names(self):
         """{region: name} from what's been seen where: each sighting votes for the region it's in now, so names
-        follow the regions as the map grows. Run when asked, not on every look (updating the regions is slow)."""
+        follow the regions as the map grows. Run when asked, not on every look (updating the regions is slow).
+        Only regions big enough to be listed as rooms take votes: a pocket behind the fridge named "kitchen" too
+        would make the kitchen "kitchen_1" with no kitchen_2 on the list."""
+        rooms = {region for region, area in self.room_regions.areas().items() if area >= MIN_ROOM_M2}
         namer = RoomNamer()
         for x, y, label in list(self.room_sightings):
-            namer.saw(self.room_regions.region_near(x, y), label)
+            region = self.room_regions.region_near(x, y, among=rooms)
+            if region is not None:
+                namer.saw(region, label)
         return namer.names()
 
     def rooms(self, fresh=False):

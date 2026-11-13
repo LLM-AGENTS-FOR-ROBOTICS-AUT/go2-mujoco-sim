@@ -323,6 +323,20 @@ class ExecutorRoomNameTests(unittest.TestCase):
         self.executor.attach(self.robot)
         self.assertEqual(list(self.executor.room_sightings), [])
 
+    def test_a_pocket_too_small_to_be_a_room_takes_no_votes(self):
+        m = self.executor.room_map                           # a 1.2 x 1.2 m walled-off pocket in the left room's corner
+        m.grid[10:23, 10:23] = OCCUPIED
+        m.grid[10:22, 10:22] = FREE
+        pocket = m.cell_to_world(16, 16)
+        self.executor.room_regions.update(m)
+        self.assertNotEqual(self.executor.room_regions.region_near(*pocket, 0.),
+                            self.executor.room_regions.region_near(*self.left, 0.), "the pocket is a region of its own")
+        for _ in range(2):                                   # a fridge in (by) the pocket, an oven in the room
+            self.executor._note_room_sightings([seen("refrigerator", *pocket), seen("oven", *self.left)], (0., 0., 0.))
+        names = [room["name"] for room in self.executor.rooms(fresh=True)]
+        self.assertIn("kitchen", names, "one kitchen, not kitchen_1 with no kitchen_2 listed")
+        self.assertFalse(any(name.startswith("kitchen_") for name in names), names)
+
     def test_names_stay_with_their_rooms_as_the_map_grows(self):
         grown = OccupancyGrid(resolution=.1, size=90, grow=True)
         grown.grid[:] = self.executor.room_map.grid
