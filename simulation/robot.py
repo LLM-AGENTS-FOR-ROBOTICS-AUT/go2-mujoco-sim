@@ -129,6 +129,9 @@ class SimGo2:
         self.ranges = self.model.jnt_range[ids]
         free = np.flatnonzero(self.model.jnt_type == int(mujoco.mjtJoint.mjJNT_FREE))[0]
         self.base_q, self.base_d = int(self.model.jnt_qposadr[free]), int(self.model.jnt_dofadr[free])
+        base = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+        self._robot_geoms = self.model.body_rootid[self.model.geom_bodyid] == self.model.body_rootid[base]
+        self._floor_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
         self.lock = threading.RLock()
         self.reset()
 
@@ -137,6 +140,8 @@ class SimGo2:
         with self.lock:
             x, y, yaw = pose or self.start_pose
             mujoco.mj_resetData(self.model, self.data)
+            self.collision_count, self._contact_pairs = 0, set()
+            self.collision_events = []
             mujoco.mj_forward(self.model, self.data)
             z = .35 + self._ground_z(x, y, 5.)    # standing height above whatever is under the start (a platform)
             self.data.qpos[self.base_q:self.base_q + 7] = (x, y, z, np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
@@ -377,6 +382,29 @@ class SimGo2:
             self.data.qfrc_applied[:] = 0
             self.data.qfrc_applied[self.dadr] = np.clip(torque, -23.5, 23.5)
             mujoco.mj_step(self.model, self.data)
+            # Count robot/world contact onsets at every physics substep, not
+            # just when the evaluator polls state. Ground and self contact are
+            # normal; contact with house walls/furniture is a collision.
+            pairs = set()
+            for contact in self.data.contact:
+                a, b = int(contact.geom1), int(contact.geom2)
+                if contact.dist <= 0 and self._robot_geoms[a] != self._robot_geoms[b]:
+                    other = b if self._robot_geoms[a] else a
+                    if other != self._floor_geom:
+                        pairs.add(tuple(sorted((a, b))))
+            self.collision_count += len(pairs - self._contact_pairs)
+            for pair in sorted(pairs - self._contact_pairs):
+                if len(self.collision_events) < 30:
+                    other = pair[1] if self._robot_geoms[pair[0]] else pair[0]
+                    own = pair[0] if self._robot_geoms[pair[0]] else pair[1]
+                    self.collision_events.append({
+                        "sim_time": round(float(self.data.time), 3),
+                        "robot_body": mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY,
+                                                        int(self.model.geom_bodyid[own])),
+                        "world_body": mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY,
+                                                        int(self.model.geom_bodyid[other])),
+                    })
+            self._contact_pairs = pairs
 
     def _reset_reference(self):
         self.reference_xy = self.data.qpos[self.base_q:self.base_q + 2].copy()
@@ -501,7 +529,7 @@ class SimGo2:
         vx, vy = self.data.qvel[da:da + 2]
         bx, by, bz = (float(v) for v in self.data.qpos[qa:qa + 3])
         height = bz - self._ground_z(bx, by, bz)            # above the ground under the robot, as on the real Go2
-        return dict(x=bx, y=by, height=height,
+        return dict(x=bx, y=by, z=bz, height=height,
                     yaw=yaw, roll=float(np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))),
                     pitch=float(np.arcsin(np.clip(2 * (w * y - z * x), -1, 1))),
                     tilt_deg=float(np.degrees(np.arccos(np.clip(1 - 2 * (x * x + y * y), -1, 1)))),
@@ -513,4 +541,5 @@ class SimGo2:
             return {**m, "sim_time": float(self.data.time), "mode": self.mode,
                     "action": self.anim.name if self.anim else None, "command": list(self.command),
                     "gait": self.gait, "euler": list(self.euler), "speed_level": self.speed_level,
-                    "fault": self.fault, "stamp": time.monotonic()}
+                    "fault": self.fault, "collision_count": self.collision_count,
+                    "collision_events": list(self.collision_events), "stamp": time.monotonic()}
