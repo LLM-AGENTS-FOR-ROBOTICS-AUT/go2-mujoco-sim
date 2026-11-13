@@ -27,6 +27,7 @@ import numpy as np  # noqa: E402
 from robot import SimGo2  # noqa: E402
 from sensors import Camera, Lidar, camera_pose_in_base  # noqa: E402
 from world import CAMERA_HEIGHT, CAMERA_WIDTH, WALKER_PARK, WALKERS  # noqa: E402
+from odometry import DriftConfig, DriftingOdometry  # noqa: E402
 import mujoco  # noqa: E402
 
 DEADMAN_S = .5
@@ -85,8 +86,11 @@ class Walker:
 
 
 class Server:
-    def __init__(self, scene, headless, world_spec=None):
+    def __init__(self, scene, headless, world_spec=None, odometry_drift=None):
         self.sim = SimGo2(scene, world_spec)
+        self.odometry = DriftingOdometry(DriftConfig(**odometry_drift)) if odometry_drift is not None else None
+        if self.odometry is not None:
+            self._update_odometry()
         self.walkers = {name: Walker(self.sim, name, i) for i, (name, _) in enumerate(WALKERS)}
         self.headless = headless
         self.lidar = Lidar(self.sim.model)
@@ -99,10 +103,21 @@ class Server:
         self.started = time.monotonic()
 
     # ---- RPC operations ----------------------------------------------------
+    def _update_odometry(self):
+        state = self.sim.state()
+        self.odometry.update([state["x"], state["y"], state["yaw"]])
+
+    def reported_state(self):
+        with self.sim.lock:
+            state = self.sim.state()
+            if self.odometry is not None:
+                state["odometry"] = self.odometry.report()
+            return state
+
     def op(self, name, args):
         sim = self.sim
         if name == "state":
-            return {**sim.state(), "real_time_factor": self.real_time_factor}
+            return {**self.reported_state(), "real_time_factor": self.real_time_factor}
         if name == "move":
             with sim.lock:
                 result = sim.Move(float(args["vx"]), float(args["vy"]), float(args["wz"]))
@@ -122,7 +137,7 @@ class Server:
         if name == "lidar":
             with sim.lock:
                 points = self.lidar.scan(sim.data)
-                state = sim.state()
+                state = self.reported_state()
             return {"points": base64.b64encode(points.astype(np.float32).tobytes()).decode(),
                     "count": len(points), "frame": "base", "state": state}
         if name == "camera":
@@ -149,6 +164,9 @@ class Server:
                     sim.reset((float(args["x"]), float(args.get("y", 0.)), float(args.get("yaw", 0.))))
                 else:
                     sim.reset()
+                if self.odometry is not None:
+                    self.odometry.reset()
+                    self._update_odometry()
             return {"ok": True}
         raise ValueError("unknown operation")
 
@@ -161,7 +179,7 @@ class Server:
                     camera = self.cameras[full] = (Camera(self.sim.model, CAMERA_WIDTH, CAMERA_HEIGHT) if full
                                                    else Camera(self.sim.model))
                 with self.sim.lock:  # copy the scene only; render outside the physics lock
-                    state = self.sim.state()
+                    state = self.reported_state()
                     camera.renderer.update_scene(self.sim.data, camera=camera.camera, scene_option=camera.options)
                 rgb = camera.renderer.render().copy()
                 camera.renderer.enable_segmentation_rendering()
@@ -209,6 +227,8 @@ class Server:
             for walker in self.walkers.values():
                 walker.step(self.sim.data, self.sim.period)
             self.sim.step()
+            if self.odometry is not None:
+                self._update_odometry()
 
     def run(self, ready):
         period = self.sim.period
@@ -304,10 +324,12 @@ def main():
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--status-file", required=True, help="JSON written when ready: port, pid, token")
     parser.add_argument("--seconds", type=float, default=0, help="exit after this long (tests)")
+    parser.add_argument("--odometry-drift", help="JSON simulator odometry error configuration (default: off)")
     args = parser.parse_args()
     status = Path(args.status_file)
     token = secrets.token_hex(32)
-    server = Server(args.scene, args.headless, json.loads(Path(args.world).read_text()) if args.world else None)
+    server = Server(args.scene, args.headless, json.loads(Path(args.world).read_text()) if args.world else None,
+                    json.loads(args.odometry_drift) if args.odometry_drift is not None else None)
     httpd = serve(server, token)
 
     def halt(*_):

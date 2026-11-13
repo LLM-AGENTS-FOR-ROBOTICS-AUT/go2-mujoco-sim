@@ -2,9 +2,12 @@
 see. Synthetic clouds and the kinematic FakeRobot; the MuJoCo hazards scene is in test_hazards.py."""
 import math
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -12,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from go2 import executor as X  # noqa: E402
 from go2 import perception as P  # noqa: E402
 from go2.agent import describe_outcome  # noqa: E402
-from go2.executor import Executor  # noqa: E402
+from go2.executor import Executor, Task  # noqa: E402
+from go2.adapters.base import RobotState  # noqa: E402
 from go2.tools import resolve  # noqa: E402
 from tests.fakes import FakeRobot, wait_for  # noqa: E402
 
@@ -158,6 +162,46 @@ class StallAndLedgeExecutorTests(unittest.TestCase):
         text = describe_outcome(task, [task])
         self.assertNotIn("without touching", text)
         self.assertIn("backed off", text)
+
+    def test_glass_stop_deadline_survives_delayed_mapping(self):
+        # Model timing explicitly: real sleeps mix controller latency with an
+        # unbounded hosted-runner scheduling delay. The test above retains the
+        # real-time FakeRobot check. Here each scan costs 200 ms and ordinary
+        # ticks cost 80 ms, across all phases of contact relative to those ticks.
+        for phase in range(100):
+            with self.subTest(phase=phase):
+                now, position, velocity, stops = [1000.], [0.], [0.], []
+                contact = 1002.+phase*.005
+                def advance(seconds):
+                    position[0] += velocity[0]*max(0., min(seconds, contact-now[0]))
+                    now[0] += seconds
+                def state():
+                    return RobotState(stamp=now[0], x=position[0], y=0., yaw=0.,
+                                      vx=velocity[0] if now[0]<contact else 0., vy=0., wz=0.,
+                                      height=.3, posture="walking")
+                def move(vx, vy, wz):
+                    velocity[0] = vx
+                def stop():
+                    stops.append(now[0])
+                    velocity[0] = 0.
+                def delayed_scan(*args, **kwargs):
+                    advance(.2)
+                    return math.inf
+                adapter = SimpleNamespace(state=state, move=move, stop_move=stop)
+                clock = SimpleNamespace(monotonic=lambda: now[0], sleep=advance)
+                task = Task(resolve("move", {"direction": "forward", "distance_m": 2.5})[0],
+                            "timing", self.executor.generation)
+                with (patch.object(X, "time", clock), patch.object(X, "TICK_S", .08),
+                      patch.object(self.executor, "adapter", adapter),
+                      patch.object(self.executor, "_fresh_state", side_effect=state),
+                      patch.object(self.executor, "_clearance", side_effect=delayed_scan),
+                      patch.object(self.executor, "_remember_bump"),
+                      patch.object(self.executor, "_back_off", return_value=0.)):
+                    with self.assertRaises(X._BlockedError):
+                        self.executor._velocity(task, dict(vx=.4, vy=0., wz=0., ux=1., uy=0.,
+                                                          speed=.4, distance=2.5), threading.Event())
+                self.assertTrue(task.detail["blocked"].get("stall"))
+                self.assertLess(stops[0]-contact, .6, "mapping work must not postpone the stall decision")
 
     def test_asking_again_does_not_walk_back_into_the_glass(self):
         robot = self.attach(glass=[(1.2, 1.25, -1, 1)])
