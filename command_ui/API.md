@@ -47,6 +47,9 @@ sensing populate the map independently.
   when available.
 - `route`: up to 512 `[x,y]` map waypoints for the current task; empty when idle.
 - `places`: up to 200 `{name,x,y,yaw}` records, plus `places_total`.
+- `rooms`: up to 50 `{name,x,y}` records, plus `rooms_total`: the observed rooms (at least 1.5 m² of floor),
+  each named by the user, else from what was seen in it (`bedroom`, `kitchen_2`), else `room_N`; `x`/`y` is a
+  spot near its middle. Rooms are split from the map at most every 3 s, so they can lag the grid slightly.
 - `objects`: up to 200 `{id,label,color,x,y,state,last_seen}` records, including
   `state: "missing"` for a verified-empty past location, plus `objects_total`.
 

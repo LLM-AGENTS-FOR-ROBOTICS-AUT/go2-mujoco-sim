@@ -26,6 +26,9 @@ class MockModel:
             if name == "remember_place":
                 place = result.get("place", {}).get("name")
                 return self._reply(f"I've remembered this spot as {place}." if place else "That spot wasn't saved.")
+            if name == "name_room":
+                room = result.get("room", {}).get("name")
+                return self._reply(f"Got it, this room is the {room}." if room else "I couldn't name this room.")
             if name == "list_places":
                 names = [p["name"] for p in result.get("places", [])]
                 return self._reply("I remember " + ", ".join(names) + "." if names else "I haven't saved any places yet.")
@@ -33,8 +36,13 @@ class MockModel:
                 user = next((m["content"].lower() for m in reversed(messages) if m["role"] == "user"), "")
                 destination = self._destination(user)
                 if destination:
-                    match = next((p for p in result.get("places", []) if p["name"].casefold() == destination.casefold()), None)
-                    return self._calls([("go_to_place", {"name": match["name"]})] if match else
+                    key = re.sub(r"[\s_-]+", " ", destination).casefold()
+                    match = next((p["name"] for p in result.get("places", []) + result.get("rooms", [])
+                                  if re.sub(r"[\s_-]+", " ", p["name"]).casefold() == key), None)
+                    if match is None and any(re.sub(r"[\s_-]+\d+$", "", r["name"]).casefold() == key
+                                             for r in result.get("rooms", [])):
+                        match = destination            # "the bedroom": the executor picks the nearest one
+                    return self._calls([("go_to_place", {"name": match})] if match else
                                        [("approach", {"target": destination})])
                 remembered = [p["name"] for p in result.get("places", [])]
                 remembered += [" ".join(filter(None, (p.get("color"), p["label"])))
@@ -56,10 +64,13 @@ class MockModel:
         number = re.search(r"(\d+(?:\.\d+)?)", text)
         save_place = re.search(r"\bremember (?:this (?:spot|place|location)|here)(?: as)?\s+(?:the\s+)?(.+?)\s*[.!]?$", text)
         explicit_place = re.search(r"\b(?:go|return) to (?:the )?(?:named )?place\s+(.+?)\s*[.!]?$", text)
+        room_name = re.search(r"^(?:this (?:room )?is (?:the|my)|(?:call|name) this room(?: the)?)\s+(.+?)\s*[.!]?$", text)
         memory = re.search(r"\b(?:where (?:is|was)|what do you remember about|do you remember)\s+(?:the )?(.+?)\s*[?!]?$", text)
         destination = self._destination(text)
         if save_place:
             calls = [("remember_place", {"name": save_place[1].strip()})]
+        elif room_name:
+            calls = [("name_room", {"name": room_name[1].strip()})]
         elif explicit_place:
             calls = [("go_to_place", {"name": explicit_place[1].strip()})]
         elif destination:

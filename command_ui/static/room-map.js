@@ -36,6 +36,10 @@
       ctx.fillStyle = '#0b1b2bdd'; ctx.fillRect(x-2,y-16,width+4,19);
       ctx.fillStyle = '#fff'; ctx.fillText(text,x,y);
     };
+    // Room names sit underneath everything else, in the middle of each room.
+    ctx.textAlign = 'center'; ctx.fillStyle = '#9fb3c8';
+    (view.rooms || []).forEach(p => { const [x,y] = xy(p); ctx.fillText(p.name.replace(/_/g,' '),x,y+7); });
+    ctx.textAlign = 'start';
     view.objects.forEach(p => {
       const [x,y] = xy(p); ctx.strokeStyle = '#c084fc'; ctx.fillStyle = '#c084fc'; ctx.lineWidth = 2;
       ctx.beginPath();
@@ -61,6 +65,7 @@
     note.textContent = view.error || (loc ? 'Scan correction: '+loc.state : 'Live · observed space only');
     if (view.robot && view.robot.age_s > 1) note.textContent += ' · telemetry stale';
     names.textContent = view.places.length ? 'Places: '+view.places.map(p=>p.name).join(', ') : 'No saved places yet';
+    if ((view.rooms || []).length) names.textContent += ' · Rooms: '+view.rooms.map(p=>p.name.replace(/_/g,' ')).join(', ');
   }
   async function refresh() {
     try {
