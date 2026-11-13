@@ -141,63 +141,38 @@ validation of every follow-up feature.
 
 ## CI corrections (13 November 2026)
 
-PR #36 now passes all three hosted platform checks at commit `46e02e2`. This
-branch incorporates those fixes and the team's merged semantic-memory work.
-Its full local suite passed 409 tests with 11 optional-dependency/model skips.
+This branch incorporates PR #36's three-platform passing head `46e02e2` and
+the team's merged semantic-memory implementation. The follow-up fixes retain
+live LiDAR checks and the existing safety and accuracy bounds:
 
-The follow-up corrections reproduce and fix each previously reported failure:
+- Scan timestamps use the executor's monotonic clock, including the explicit
+  simulated clock used by offline evaluation. Clearance uses the current pose
+  after scan processing; stall telemetry is checked before and after mapping.
+- Every corrected movement direction is checked in the same send cycle.
+  Waypoint legs use the measured post-turn heading and lateral path feedback.
+- Distance moves slow near their target with a conservative braking profile,
+  while respecting the existing default minimum walking speed. Turn commands
+  also slow near their measured target. Regression tests model weaker brakes
+  without changing the original accuracy limits.
+- Navigation retains the rest of a valid route between completed legs and
+  replans when live sensing blocks a leg. Live start probes also apply to
+  ordinary routes, and planning uses the map evidence collected by those probes.
+  Simplification preserves the initial bend so it cannot restore a refused
+  direction through the cleared start area.
+- Intermediate bends use a 2 cm pre-movement tolerance to avoid repeated no-op
+  replans. Completion uses the established navigation arrival tolerance and
+  live safety checks.
+- The missing-object test waits for the actual executor completion report,
+  including when submission first returns an asynchronous acknowledgement.
 
-- The missing-object test forces asynchronous acknowledgement, then waits for
-  the executor's completion report and final agent turn. It no longer reads the
-  initial "On it" reply as the result of the inspection.
-- Measured turns slow near their target. A slow-braking test that previously
-  overshot by about 11 degrees now passes the unchanged 8-degree bound. The
-  unchanged real-physics move/turn accuracy check passed three consecutive runs.
-- Stall decisions refresh telemetry and time after scan processing, and use
-  current velocity alongside progress integrated over the existing confirmation
-  window. Three delayed-mapping stress runs stopped in 0.36–0.37 seconds, inside
-  the unchanged 0.6-second limit. Slow starts, slow motion and following checks
-  still pass.
-
-All 96 executor/safety/following/place/memory/map/drift regression checks passed
-after these corrections. The semantic-memory integration checks also passed
-(55 checks, 7 optional-model skips). Hosted follow-up CI must confirm the final
-reviewed head on Apple Silicon, Intel and Windows before merging.
-
-The first follow-up CI run exposed additional timing cases despite a complete
-443-test local pass (11 optional-dependency/model skips):
-
-- Tracking now updates a direction and checks its clearance in the same send
-  cycle. Alternating slow/fast scans reproduced unchecked commands on the old
-  code; the regression passes with the fix.
-- Intermediate navigation bends use a 2 cm arrival tolerance rather than the
-  ordinary 8 cm destination tolerance. A 6 cm bend previously became a no-op
-  on every replan; it now produces measured movement before replanning.
-- Stall telemetry is checked both before and after scan processing, so a
-  confirmed contact does not wait for another map update. The existing delayed
-  mapping test passed five consecutive runs with its 0.6-second limit intact.
-
-The existing furniture-detour and direction-tracking checks also passed with
-these corrections. Final hosted results still need to confirm this revised head.
-
-A subsequent run passed both Apple Silicon jobs and one Windows job, while the
-other Windows job exposed post-turn heading error in the real-room detour.
-Navigation now projects the next waypoint into the measured post-turn body
-frame. A regression injecting a 7-degree turn error previously drifted 14 cm
-off its planned line; it now passes a 4 cm lateral bound. This retains live
-clearance checks for the exact commanded translation and the existing turn
-accuracy limits. Three consecutive real-simulator room detours passed after
-this correction, as did the remembered-object furniture-detour check.
-
-## Earlier PR check
-
-An earlier PR #36 Apple Silicon log contained a furniture-detour navigation
-failure: a route waypoint lacked enough room to turn. The latest GitHub status
-read on 12 November lists that job as cancelled; Intel and Windows succeeded.
-This follow-up chooses bends with turning clearance while retaining live
-safety checks, and the local real-physics furniture test passes. Apple CI uses
-MuJoCo 3.13.0 and a newer walking runtime; this Intel machine cannot establish
-that Apple run is green. Rerun CI on the published changes before merging.
+New regressions cover alternating slow/fast scans, live-blocked starts, fresh
+scan evidence, nearby bends, post-turn heading error, lateral walking bias,
+retaining a valid detour, and slow braking at full speed. Deterministic replay
+also exercises the waypoint sequence that failed on CI. Five repeated real-time
+room detours passed, together with the final real-physics distance/turn,
+full-speed distance, and wall-gap checks. Generated raw reports
+remain local and ignored. Hosted checks must confirm the final reviewed head
+on Apple Silicon, Intel and Windows before merging.
 
 ## What still needs team action
 

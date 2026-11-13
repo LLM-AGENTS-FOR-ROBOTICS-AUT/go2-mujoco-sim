@@ -63,6 +63,15 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(task.status, "completed", task.detail)
         self.assertAlmostEqual(math.degrees(robot.yaw), 90, delta=8)
 
+    def test_top_speed_move_remains_accurate_with_slower_braking(self):
+        robot = self.attach()
+        robot.linear_braking = .8
+        self.submit("move", {"direction": "forward", "distance_m": 4})
+        task = self.finished()
+        self.assertEqual(task.status, "completed", task.detail)
+        self.assertAlmostEqual(robot.x, 4., delta=.125)
+        self.assertTrue(any(call[0] == "move" and call[1] == .8 for call in robot.calls))
+
     def test_queued_steps_run_in_order(self):
         robot = self.attach()
         commands = resolve("move", {"direction": "forward", "distance_m": .5}) + resolve("turn", {"direction": "left"})

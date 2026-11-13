@@ -22,6 +22,28 @@ except ImportError:
 
 
 class GoToRouteTests(unittest.TestCase):
+    def test_waypoint_leg_corrects_lateral_walking_bias(self):
+        robot = self.attach()
+        move = robot.move
+        robot.move = lambda vx,vy,wz: move(vx,vy+.035 if math.hypot(vx,vy)>.01 else vy,wz)
+        task = Task(resolve("go_to", {"x_m": 1.5, "y_m": 0.})[0],
+                    "test", self.executor.generation, detail={"legs": [{}]})
+        self.executor._goto_leg(task, threading.Event(), 1.5, 0.)
+        self.assertLess(abs(robot.y), .04, "walking bias must not shift the planned corridor")
+
+    def test_keeps_a_valid_detour_when_later_map_queries_have_no_route(self):
+        robot = self.attach(obstacles=[(1.1, 1.6, -.6, .6)])
+        planned = [False]
+        def route(*args, **kwargs):
+            if planned[0]:
+                return None
+            planned[0] = True
+            return [(0., -1.3), (2., -1.3), (3., 0.)]
+        self.executor._route = route
+        task = self.go_to(3.)
+        self.assertEqual(task.status, "completed", task.detail)
+        self.assertLess(math.hypot(robot.x-3., robot.y), .15)
+
     def test_waypoint_translation_uses_measured_heading_after_a_turn(self):
         robot = self.attach()
         velocity = self.executor._velocity

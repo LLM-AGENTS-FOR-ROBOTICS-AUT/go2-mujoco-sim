@@ -40,6 +40,7 @@ from .tools import Command
 from .visual_memory import crop
 
 DECEL_LINEAR, DECEL_ANGULAR = 1.6, 4.0      # m/s², rad/s² used for braking lead
+FINAL_DECEL_LINEAR = .8                   # conservative terminal speed profile for distance moves
 # Stall: something the LiDAR can't see (glass, thin chair legs) is stopping the robot. After the ramp-up, a move
 # or turn that makes less than a third of the progress its commanded speed should give over 0.4 s stops.
 STALL_WINDOW_S, STALL_FRACTION, STALL_GRACE_S = .4, 1 / 3, .3
@@ -890,7 +891,7 @@ class Executor:
         """Run one velocity segment; returns measured progress (m or rad)."""
         adapter = self.adapter
         turning = p.get("angle") is not None or (p["vx"] == 0 and p["vy"] == 0)
-        tracking = task.command.kind == "viewpoint" and not turning
+        tracking = (task.command.kind == "viewpoint" or p.get("track_line", False)) and not turning
         if tracking:
             p = dict(p)
         start = self._fresh_state()
@@ -931,6 +932,7 @@ class Executor:
         # are judged, so a slow start can't count against it.
         rate = p["turn_rate"] if turning else speed
         commanded_turn_rate = rate
+        commanded_speed = speed
         earliest = began + rate / (DECEL_ANGULAR if turning else DECEL_LINEAR) + STALL_GRACE_S
         watch_from = None
         recent = deque()
@@ -946,7 +948,7 @@ class Executor:
             while len(recent) > 1 and stamp-recent[1][0] >= STALL_WINDOW_S:
                 recent.popleft()
             old_t, old_progress = recent[0]
-            expected = (commanded_turn_rate if turning else rate)*STALL_FRACTION
+            expected = (commanded_turn_rate if turning else commanded_speed)*STALL_FRACTION
             # Confirm poor progress over the whole window and low current
             # velocity, so delayed position updates alone do not cause a stop.
             return (stamp-old_t >= STALL_WINDOW_S and
@@ -992,6 +994,13 @@ class Executor:
                         break
                 if send_due:
                     wz = p["wz"]
+                    if not turning and distance is not None:
+                        current = self._fresh_state()
+                        remaining = max(0., distance-((current.x-x0)*wx+(current.y-y0)*wy))
+                        # Slow before the final stop rather than relying on one
+                        # nominal braking impulse across physics runtimes.
+                        commanded_speed = min(speed, max(L.DEFAULT_SPEED_MPS,
+                            math.sqrt(2*FINAL_DECEL_LINEAR*max(0., remaining-.05))))
                     if turning and angle is not None:
                         current = self._fresh_state()
                         remaining = max(0., angle-abs(turned+_wrap(current.yaw-yaw_prev)))
@@ -1000,7 +1009,8 @@ class Executor:
                         # nominal model, particularly across physics runtimes.
                         commanded_turn_rate = min(rate, max(.15, 2.*remaining))
                         wz = math.copysign(commanded_turn_rate, wz)
-                    adapter.move(p["vx"], p["vy"], wz)
+                    scale = commanded_speed/speed if not turning else 1.
+                    adapter.move(p["vx"]*scale, p["vy"]*scale, wz)
                     last_send = now
                 if s is None:
                     s = self._fresh_state()
@@ -1116,8 +1126,10 @@ class Executor:
         if math.cos(bearing) < -.7 and distance <= 2.0:   # short way back: reverse instead of turning around
             ux, uy = math.cos(bearing), math.sin(bearing)
             speed = L.default_speed(distance)
+            if max_speed is not None:
+                speed = min(speed, max_speed)
             self._velocity(task, {"vx": ux * speed, "vy": uy * speed, "wz": 0., "ux": ux, "uy": uy, "speed": speed,
-                                  "distance": min(distance, L.MAX_DISTANCE_M)}, cancel, leg=True)
+                                  "distance": min(distance, L.MAX_DISTANCE_M), "track_line": True}, cancel, leg=True)
             return distance
         if distance < .35:   # short hop: side-step instead of turning on the spot
             ux, uy = math.cos(bearing), math.sin(bearing)
@@ -1125,7 +1137,7 @@ class Executor:
             if max_speed is not None:
                 speed = min(speed, max_speed)
             self._velocity(task, {"vx": ux * speed, "vy": uy * speed, "wz": 0., "ux": ux, "uy": uy, "speed": speed,
-                                  "distance": distance}, cancel, leg=True)
+                                  "distance": distance, "track_line": True}, cancel, leg=True)
             return distance
         if abs(bearing) > math.radians(8):
             rate = L.default_turn_rate(abs(bearing))
@@ -1146,7 +1158,7 @@ class Executor:
         co, sn = math.cos(s.yaw), math.sin(s.yaw)
         ux, uy = (co*dx+sn*dy)/distance, (-sn*dx+co*dy)/distance
         self._velocity(task, {"vx": ux*speed, "vy": uy*speed, "wz": 0., "ux": ux, "uy": uy, "speed": speed,
-                              "distance": leg}, cancel, leg=True)
+                              "distance": leg, "track_line": True}, cancel, leg=True)
         return leg
 
     def _goto(self, task, cancel):
@@ -1168,27 +1180,37 @@ class Executor:
         for _ in range(3):                  # a few scans first, so the map shows what's around
             self._refresh_cloud()
         replans = 0
+        waypoints = None
         for _ in range(12):
             s = self._fresh_state()
             remaining = math.hypot(tx - s.x, ty - s.y)
             if remaining < .12:
                 break
-            # Head for the next waypoint of a route around what the map shows, or straight for the target when
-            # the straight line is clear (or no route is known: then the LiDAR checks stop it safely).
-            route = self._route(s, tx, ty)
-            wx, wy = route[0] if route else (tx, ty)
-            if route:
-                task.detail["route"] = [[round(x, 2), round(y, 2)] for x, y in route]
+            # Keep the remaining checked waypoints between successful legs.
+            # A new live obstruction invalidates the route below; a temporary
+            # gap in map coverage alone must not discard a valid detour.
+            if waypoints is None:
+                route = self._route(s, tx, ty)
+                waypoints = list(route) if route else [(tx, ty)]
+                if route:
+                    task.detail["route"] = [[round(x, 2), round(y, 2)] for x, y in route]
+            wx, wy = waypoints[0]
             task.detail["legs"].append({})
             try:
-                self._goto_leg(task, cancel, wx, wy, arrival_tolerance=.02 if route else .08)
+                self._goto_leg(task, cancel, wx, wy, arrival_tolerance=.02 if len(waypoints)>1 else .08)
                 if task.status == "failed":
                     raise AdapterError(task.detail.get("error", "navigation motion failed"))
+                arrived = self._fresh_state()
+                if math.hypot(wx-arrived.x, wy-arrived.y) < .08:
+                    waypoints.pop(0)
+                    if not waypoints:
+                        waypoints = None
             except _BlockedError:
                 # Something the map didn't show yet is in the way: the scans have now added it, so plan again.
                 if replans >= MAX_REPLANS:
                     raise
                 replans += 1
+                waypoints = None
                 task.status = "running"
                 task.detail["replanned"] = replans
                 task.detail.pop("blocked", None)
@@ -1208,11 +1230,28 @@ class Executor:
         start, goal = m.world_to_cell(s.x, s.y), m.world_to_cell(tx, ty)
         if start is None or goal is None:
             return None
+        initial_forbidden = set()
+        co, sn = math.cos(s.yaw), math.sin(s.yaw)
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+            if cancel is not None:
+                self._check(cancel)
+            nx, ny = m.cell_to_world(start[0]+dr, start[1]+dc)
+            dx, dy = nx-s.x, ny-s.y
+            length = max(math.hypot(dx, dy), 1e-9)
+            ux, uy = (co*dx+sn*dy)/length, (-sn*dx+co*dy)/length
+            if self._clearance(ux, uy, False) < self._margin(.2):
+                initial_forbidden.add((dr, dc))
+        # Each live probe also observes floor/obstacles. Plan on that completed
+        # evidence rather than the snapshot taken before the scans arrived.
+        m = self.room_map.snapshot()
+        m.grow = False
+        start, goal = m.world_to_cell(s.x, s.y), m.world_to_cell(tx, ty)
+        if start is None or goal is None:
+            return None
         now = time.monotonic()
         with self.lock:                                     # spots it bumped into: the LiDAR can't see them
             bumps = [pts for t, pts in self.bumps if now - t <= BUMP_MEMORY_S]
         extra = np.concatenate(bumps) if bumps else None
-        initial_forbidden = None
         for clearance in ROUTE_CLEARANCE_M:
             if known_only:
                 if extra is not None:
@@ -1226,38 +1265,28 @@ class Executor:
             if not known_only:
                 blocked[max(0, start[0] - k):start[0] + k + 1, max(0, start[1] - k):start[1] + k + 1] = False
             if m.line_clear(blocked, start, goal):
-                if not known_only:
-                    return []
                 distance = math.hypot(tx - s.x, ty - s.y)
                 co, sn = math.cos(s.yaw), math.sin(s.yaw)
                 dx, dy = tx - s.x, ty - s.y
                 ux, uy = (co * dx + sn * dy) / max(distance, 1e-9), (-sn * dx + co * dy) / max(distance, 1e-9)
                 if distance < .01 or self._clearance(ux, uy, False) >= self._margin(.2):
                     return []
-            if known_only and initial_forbidden is None:
-                initial_forbidden = set()
-                co, sn = math.cos(s.yaw), math.sin(s.yaw)
-                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
-                    if cancel is not None:
-                        self._check(cancel)
-                    nx, ny = m.cell_to_world(start[0] + dr, start[1] + dc)
-                    dx, dy = nx - s.x, ny - s.y
-                    length = max(math.hypot(dx, dy), 1e-9)
-                    ux, uy = (co * dx + sn * dy) / length, (-sn * dx + co * dy) / length
-                    if self._clearance(ux, uy, False) < self._margin(.2):
-                        initial_forbidden.add((dr, dc))
             path = (turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .65),
                                   cancelled=None if cancel is None else cancel.is_set,
                                   forbidden_first_steps=initial_forbidden or ()) if known_only else
                     turning_astar(m.grid, start, goal, blocked, _safe_cells(m, .6) & ~m.blocked(.6, extra),
                                   cancelled=None if cancel is None else cancel.is_set,
+                                  forbidden_first_steps=initial_forbidden or (),
                                   unknown_cost=UNKNOWN_COST))
             if path is not None:
                 cells = keep_turns(path)
                 if not known_only:
                     # Bends need observed turning space. Unknown cells may be
                     # traversed in straight legs, with live LiDAR still in charge.
-                    cells = simplify(cells, lambda a, b: m.line_clear(blocked, a, b))
+                    # Keep the first planned bend: simplifying from the carved
+                    # start area could restore a direction the live probe just
+                    # refused, even when the rest of that line looks map-free.
+                    cells = cells[:1] + simplify(cells[1:], lambda a, b: m.line_clear(blocked, a, b))
                 route = [m.cell_to_world(*c) for c in cells[1:-1]] + [(tx, ty)]
                 points = [(s.x, s.y)] + route
                 length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))

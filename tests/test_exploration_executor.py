@@ -169,11 +169,25 @@ class ExplorationExecutorTests(unittest.TestCase):
         self.assertEqual(m.grid[m.world_to_cell(1., 0.)], 0)
 
     def test_known_route_detours_when_the_live_initial_direction_is_blocked(self):
+        self._check_live_route_start(known_only=True)
+
+    def test_general_route_detours_when_the_live_initial_direction_is_blocked(self):
+        self._check_live_route_start(known_only=False)
+
+    def test_route_uses_map_evidence_observed_by_live_probes(self):
+        self.executor.room_map.grid[:] = -1
+        def observe_floor(*args, **kwargs):
+            self.executor.room_map.grid[:] = FREE
+            return math.inf
+        self.executor._clearance = observe_floor
+        self.assertEqual(self.executor._route(self.robot.state(), 1., 0., known_only=True), [])
+
+    def _check_live_route_start(self, known_only):
         self.executor.room_map.grid[:] = 0
         def clearance(ux, uy, turning):
             return 0. if ux > .9 and abs(uy) < .4 else math.inf
         self.executor._clearance = clearance
-        route = self.executor._route(self.robot.state(), 1., 0., known_only=True)
+        route = self.executor._route(self.robot.state(), 1., 0., known_only=known_only)
         self.assertTrue(route)
         x, y = route[0]
         distance = math.hypot(x, y)
