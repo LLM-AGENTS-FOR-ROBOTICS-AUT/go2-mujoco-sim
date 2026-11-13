@@ -4,6 +4,7 @@ import math
 import random
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -218,21 +219,36 @@ class ExecutorRoomNameTests(unittest.TestCase):
 
     def test_a_bed_seen_twice_names_its_room_and_not_the_other(self):
         for _ in range(2):
-            self.executor._vote_rooms([seen("bed", *self.left)], (0., 0., 0.))
+            self.executor._note_room_sightings([seen("bed", *self.left)], (0., 0., 0.))
         self.assertEqual(self.executor.room_at(*self.left), "bedroom")
         self.assertRegex(self.executor.room_at(*self.right), r"^room_\d+$")
 
     def test_the_users_name_wins_over_a_guess(self):
         for _ in range(2):
-            self.executor._vote_rooms([seen("bed", *self.left)], (0., 0., 0.))
+            self.executor._note_room_sightings([seen("bed", *self.left)], (0., 0., 0.))
+        self.assertEqual(self.executor.room_at(*self.left), "bedroom")
         self.executor.room_regions.name_room(*self.left, "office")
         self.assertEqual(self.executor.room_at(*self.left), "office")
 
-    def test_attach_forgets_the_votes(self):
-        for _ in range(2):
-            self.executor._vote_rooms([seen("bed", *self.left)], (0., 0., 0.))
+    def test_sightings_are_placed_on_the_map_from_the_robots_pose(self):
+        x, y = self.left
+        self.executor._note_room_sightings([seen("bed", 1., 0.)], (x, y - 1., math.pi / 2))   # 1 m ahead, facing +y
+        (sx, sy, label), = self.executor.room_sightings
+        self.assertAlmostEqual(sx, x)
+        self.assertAlmostEqual(sy, y)
+        self.assertEqual(label, "bed")
+
+    def test_noting_sightings_is_quick_and_keeps_only_telling_things(self):
+        things = [seen(label, *self.left) for label in ("bed", "chair", "teddy bear", "fridge", "oven")] * 40
+        began = time.perf_counter()
+        self.executor._note_room_sightings(things, (0., 0., 0.))
+        self.assertLess(time.perf_counter() - began, .05, "look() must not wait for the room regions")
+        self.assertEqual({label for *_, label in self.executor.room_sightings}, {"bed", "oven"})
+
+    def test_attach_forgets_the_sightings(self):
+        self.executor._note_room_sightings([seen("bed", *self.left)], (0., 0., 0.))
         self.executor.attach(self.robot)
-        self.assertEqual(self.executor.room_namer.votes, {})
+        self.assertEqual(list(self.executor.room_sightings), [])
 
 
 if __name__ == "__main__":

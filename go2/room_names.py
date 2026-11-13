@@ -29,6 +29,11 @@ MIN_VOTES = 2.     # the leading type needs this many votes: two sightings of a 
 LEAD = 2.          # ... and at least twice the votes of the next type
 
 
+def tells_room(label):
+    """Does a sighting of `label` say anything about which kind of room it's in?"""
+    return str(label).strip().lower() in EVIDENCE
+
+
 class RoomNamer:
     """Collect sightings per room and name each room by its likeliest type."""
 
