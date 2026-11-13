@@ -10,12 +10,15 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
 
 from .. import procs
 from ..perception import Mask
+from .. import perception as P
+from ..localization import ScanLocalizer
 from .base import AdapterError, CameraFrame, RobotAdapter, RobotState
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +33,8 @@ class SimAdapter(RobotAdapter):
     label = "MuJoCo simulation"
     requires_arming = False
 
-    def __init__(self, python=None, scene="room", headless=False, detector="truth", world=None):
+    def __init__(self, python=None, scene="room", headless=False, detector="truth", world=None,
+                 odometry_drift=None, correct_odometry=True):
         if detector not in ("truth", "yolo"):
             raise ValueError("detector must be 'truth' or 'yolo'")
         self.python = Path(python) if python else Path(sys.executable)
@@ -40,6 +44,11 @@ class SimAdapter(RobotAdapter):
         self.info = None
         self.directory = ROOT / "runtime" / ("sim-" + uuid.uuid4().hex[:12])
         self.error = None
+        if odometry_drift is not None:
+            from simulation.odometry import DriftConfig
+            odometry_drift = asdict(DriftConfig(**odometry_drift))
+        self.odometry_drift = odometry_drift
+        self.localizer = ScanLocalizer() if odometry_drift is not None and correct_odometry else None
 
     # ---- process lifecycle -------------------------------------------------
     def connect(self, timeout=45):
@@ -55,6 +64,8 @@ class SimAdapter(RobotAdapter):
                 raise AdapterError("mjpython was not found next to the selected Python; install requirements-simulation.txt")
         command = [str(interpreter), "-B", str(ROOT / "simulation/sim_server.py"), "--scene", self.scene,
                    "--status-file", str(status)] + (["--headless"] if self.headless else [])
+        if self.odometry_drift is not None:
+            command += ["--odometry-drift", json.dumps(self.odometry_drift)]
         if self.world is not None:
             world_file = self.directory / "world.json"
             world_file.write_text(json.dumps(self.world))
@@ -130,15 +141,34 @@ class SimAdapter(RobotAdapter):
 
     @staticmethod
     def _state(raw, stamp=None):
-        return RobotState(stamp=stamp or time.monotonic(), x=raw["x"], y=raw["y"], yaw=raw["yaw"],
+        x, y, yaw = raw.get("odometry", {}).get("pose", [raw["x"], raw["y"], raw["yaw"]])
+        return RobotState(stamp=stamp or time.monotonic(), x=x, y=y, yaw=yaw,
                           vx=raw["vx"], vy=raw["vy"], wz=raw["yaw_rate"], roll=raw["roll"], pitch=raw["pitch"],
                           height=raw["height"], posture=POSTURES.get(raw["mode"], raw["mode"]),
                           action=raw.get("action"), fault=raw.get("fault"),
                           extra={"sim_time": raw.get("sim_time"), "gait": raw.get("gait"),
-                                 "real_time_factor": raw.get("real_time_factor")})
+                                 "world_z": raw.get("z"),
+                                 "real_time_factor": raw.get("real_time_factor"),
+                                 "collision_count": raw.get("collision_count"),
+                                 "collision_events": raw.get("collision_events", [])})
+
+    def _local_state(self, raw, points=None):
+        state = SimAdapter._state(raw)
+        if self.localizer is None:
+            return state
+        pose = state.x, state.y, state.yaw
+        if points is not None:
+            cloud = P.base_to_level(points, state.roll, state.pitch)
+            cloud[:, 2] += state.height
+            corrected = self.localizer.update(pose, cloud, state.extra["sim_time"])
+        else:
+            corrected = self.localizer.pose(pose)
+        detail = self.localizer.status()
+        return replace(state, x=float(corrected[0]), y=float(corrected[1]), yaw=float(corrected[2]),
+                       extra={**state.extra, "localization": detail})
 
     def state(self):
-        return self._state(self._rpc("state"))
+        return self._local_state(self._rpc("state"))
 
     def move(self, vx, vy, wz):
         result = self._rpc("move", timeout=.5, vx=vx, vy=vy, wz=wz)
@@ -176,7 +206,8 @@ class SimAdapter(RobotAdapter):
     def lidar(self):
         result = self._rpc("lidar", timeout=1.0)
         points = np.frombuffer(base64.b64decode(result["points"]), dtype=np.float32).reshape(-1, 3)
-        return points.astype(float), self._state(result["state"])
+        points = points.astype(float)
+        return points, self._local_state(result["state"], points)
 
     def warm_up(self):
         """Load YOLO in the background so the first look isn't slow (~10 s on first use)."""
@@ -210,7 +241,7 @@ class SimAdapter(RobotAdapter):
             masks = [Mask(item["label"], index == item["index"], 1.0) for item in result["objects"]]
         return CameraFrame(rgb=rgb, masks=masks, intrinsics=result["intrinsics"],
                            camera_pos=np.array(result["camera_pos"]), camera_rot=np.array(result["camera_rot"]),
-                           state=self._state(result["state"]))
+                           state=self._local_state(result["state"]))
 
     def walker(self, name, path=None, speed=.5, loop=False):
         """Simulation only (tests, demos): walk a person ("walker_red" / "walker_blue") along path [[x, y], ...]
@@ -224,3 +255,5 @@ class SimAdapter(RobotAdapter):
     def reset(self, x=None, y=None, yaw=None):
         pose = {} if x is None else {"x": x, "y": y or 0., "yaw": yaw or 0.}
         self._rpc("reset", timeout=3.0, **pose)
+        if self.localizer is not None:
+            self.localizer.reset()

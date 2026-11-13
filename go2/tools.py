@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 
 from . import limits as L
+from .places import place_name
 
 DIRECTIONS = {
     "forward": (1, 0), "backward": (-1, 0), "left": (0, 1), "right": (0, -1),
@@ -83,6 +84,20 @@ TOOLS = [
         {"target": {"type": "string", "description": "default 'me'"},
          "distance_m": {"type": "number", "description": "0.8 to 3 m"},
          "duration_s": {"type": "number", "description": "seconds, up to 120"}}),
+    _fn("remember_place", "Remember your current spot under the user's name, such as 'front door'. "
+        "Updates that name if it already exists. Saves a map-frame pose; starts no movement.",
+        {"name": {"type": "string"}}, ["name"]),
+    _fn("go_to_place", "Return to a named place previously saved with remember_place. "
+        "Plans a checked route, up to 20 m from your current position. Unknown names are refused.",
+        {"name": {"type": "string"}}, ["name"]),
+    _fn("list_places", "List a bounded number of remembered place names and map-frame poses. "
+        "This is saved information, not a new observation.",
+        {"limit": {"type": "integer", "description": "1 to 20; default 10"}}),
+    _fn("query_memory", "Find a few saved objects and named places matching the user's words. "
+        "These are past sightings, not proof an object is still there. Empty matches mean nothing "
+        "matching is remembered. Use approach to visit and visually check an object.",
+        {"target": {"type": "string", "description": "optional object description or place name"},
+         "limit": {"type": "integer", "description": "1 to 10; default 3"}}),
     _fn("look", "See what is around you: objects in front of you with distance and direction, plus the free "
         "space on every side. To check behind or beside you, turn and look again."),
     _fn("posture", "Change posture. stand = balanced and ready to walk; stand_up = stiff locked stand; "
@@ -112,7 +127,7 @@ TOOLS = [
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 # Tools the fine-tuned models haven't been trained on yet (#16). They are left out of the compact prompt so it
 # stays exactly as trained; use --mock or a full-prompt model (e.g. go2-ft-04@full) to try them.
-UNTRAINED = {"follow"}
+UNTRAINED = {"follow", "remember_place", "go_to_place", "list_places", "query_memory"}
 # Fine-tuned models know the tools by heart: declare names only (~270 prompt tokens instead of ~1,450).
 COMPACT_TOOLS = [{"type": "function", "function": {"name": t["function"]["name"], "parameters": {"type": "object", "properties": {}}}}
                  for t in TOOLS if t["function"]["name"] not in UNTRAINED]
@@ -414,7 +429,37 @@ def _simple(kind):
     return build
 
 
+def _named_place(args, *, movement=False):
+    tool = "go_to_place" if movement else "remember_place"
+    _exact(tool, args, ("name",))
+    try:
+        name = place_name(args.get("name"))
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    return [Command("goto" if movement else "remember_place", tool, args,
+                    {"target": "place", "name": name} if movement else {"name": name},
+                    summary=f"{'go to' if movement else 'remember'} place {name!r}")]
+
+
+def _memory_query(args, *, places_only=False):
+    tool = "list_places" if places_only else "query_memory"
+    _exact(tool, args, ("limit",) if places_only else ("target", "limit"))
+    limit = args.get("limit", 10 if places_only else 3)
+    maximum = 20 if places_only else 10
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= maximum:
+        raise ToolError(f"limit must be an integer from 1 to {maximum}")
+    target = args.get("target", "")
+    if not isinstance(target, str) or len(target) > 200:
+        raise ToolError("target must be text of at most 200 characters")
+    return [Command("places" if places_only else "memory", tool, args,
+                    {"target": target.strip(), "limit": limit}, summary=tool)]
+
+
 RESOLVERS = {"move": _move, "turn": _turn, "go_to": _go_to, "approach": _approach, "follow": _follow,
+             "remember_place": _named_place,
+             "go_to_place": lambda args: _named_place(args, movement=True),
+             "list_places": lambda args: _memory_query(args, places_only=True),
+             "query_memory": _memory_query,
              "posture": _posture,
              "trick": _trick, "acrobatic": _acrobatic, "body": _body, "wait": _wait,
              "stop": _simple("stop"), "look": _simple("look"), "get_status": _simple("get_status")}
