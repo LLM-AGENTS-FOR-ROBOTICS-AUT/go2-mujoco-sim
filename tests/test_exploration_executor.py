@@ -1,5 +1,6 @@
 import math
 import tempfile
+import threading
 import time
 import unittest
 from dataclasses import replace
@@ -8,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from go2 import perception as P
-from go2.executor import Executor
+from go2.executor import Executor, Task
 from go2.tools import resolve
 from go2.room_map import OccupancyGrid, FREE, OCCUPIED
 from go2.exploration import _safe_cells
@@ -48,6 +49,12 @@ class ExplorationExecutorTests(unittest.TestCase):
         self.assertLess(abs(self.robot.x - stopped), .1)
 
     def test_viewpoint_corrects_lateral_drift_and_checks_each_corrected_direction(self):
+        self._check_viewpoint_directions()
+
+    def test_viewpoint_checks_each_corrected_direction_with_delayed_scans(self):
+        self._check_viewpoint_directions(scan_delay=.075)
+
+    def _check_viewpoint_directions(self, scan_delay=0.):
         native_move, native_state = self.robot.move, self.robot.state
         clearance = self.executor._clearance
         checked, unsafe, maximum = [], [], [0.]
@@ -57,6 +64,10 @@ class ExplorationExecutorTests(unittest.TestCase):
             return state
         def check(ux, uy, turning, **kwargs):
             result = clearance(ux, uy, turning, **kwargs)
+            # Alternate slow and fast scans to move the send and scan deadlines
+            # apart; constant latency can leave the two timers in lockstep.
+            if scan_delay and len(checked) % 2 == 0:
+                time.sleep(scan_delay)
             checked.append((ux, uy, turning))
             return result
         def drift(vx, vy, wz):
@@ -175,6 +186,14 @@ class ExplorationExecutorTests(unittest.TestCase):
         for step in ((-1,0),(1,0),(0,-1),(0,1)):
             self.assertNotIn(step,forbidden)
         self.assertIn((1,1),forbidden)
+
+    def test_approach_reaches_nearby_route_bend_before_replanning(self):
+        task = Task(resolve("approach", {"target": "laptop", "stop_distance_m": .5})[0],
+                    "test", self.executor.generation)
+        with patch.object(self.executor, "_route", return_value=[(.06, 0.), (2., 0.)]):
+            self.assertTrue(self.executor._approach_route(
+                task, threading.Event(), self.robot.state(), 3., 0., .5))
+        self.assertGreater(self.robot.x, .03, "a near bend must not become a no-op replan")
 
     def test_approach_routes_around_furniture_and_reacquires_target(self):
         self.robot.obstacles = [(1.1, 1.6, -.4, .4)]

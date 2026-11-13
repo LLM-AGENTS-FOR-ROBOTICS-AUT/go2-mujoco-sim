@@ -164,6 +164,22 @@ after these corrections. The semantic-memory integration checks also passed
 (55 checks, 7 optional-model skips). Hosted follow-up CI must confirm the final
 reviewed head on Apple Silicon, Intel and Windows before merging.
 
+The first follow-up CI run exposed additional timing cases despite a complete
+443-test local pass (11 optional-dependency/model skips):
+
+- Tracking now updates a direction and checks its clearance in the same send
+  cycle. Alternating slow/fast scans reproduced unchecked commands on the old
+  code; the regression passes with the fix.
+- Intermediate navigation bends use a 2 cm arrival tolerance rather than the
+  ordinary 8 cm destination tolerance. A 6 cm bend previously became a no-op
+  on every replan; it now produces measured movement before replanning.
+- Stall telemetry is checked both before and after scan processing, so a
+  confirmed contact does not wait for another map update. The existing delayed
+  mapping test passed five consecutive runs with its 0.6-second limit intact.
+
+The existing furniture-detour and direction-tracking checks also passed with
+these corrections. Final hosted results still need to confirm this revised head.
+
 ## Earlier PR check
 
 An earlier PR #36 Apple Silicon log contained a furniture-detour navigation

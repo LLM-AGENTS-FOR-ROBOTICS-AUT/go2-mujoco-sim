@@ -934,12 +934,39 @@ class Executor:
         earliest = began + rate / (DECEL_ANGULAR if turning else DECEL_LINEAR) + STALL_GRACE_S
         watch_from = None
         recent = deque()
+
+        def stalled(state, stamp, at):
+            nonlocal watch_from
+            moving = abs(state.wz) if turning else state.vx*p["ux"] + state.vy*p["uy"]
+            if watch_from is None and stamp >= earliest and (moving >= rate/2 or stamp >= earliest+STALL_START_S):
+                watch_from = stamp
+            if watch_from is None:
+                return False
+            recent.append((stamp, at))
+            while len(recent) > 1 and stamp-recent[1][0] >= STALL_WINDOW_S:
+                recent.popleft()
+            old_t, old_progress = recent[0]
+            expected = (commanded_turn_rate if turning else rate)*STALL_FRACTION
+            # Confirm poor progress over the whole window and low current
+            # velocity, so delayed position updates alone do not cause a stop.
+            return (stamp-old_t >= STALL_WINDOW_S and
+                    at-old_progress < expected*(stamp-old_t) and moving < expected)
+
         try:
             while True:
                 self._check(cancel)
                 now = time.monotonic()
                 s = None
-                if tracking:
+                if not turning:
+                    s = self._fresh_state()
+                    progress = (s.x-x0)*wx + (s.y-y0)*wy
+                    # Check both sides of potentially slow scan processing.
+                    # A confirmed contact must not wait for another map update.
+                    if stalled(s, now, progress):
+                        outcome = "stalled"
+                        break
+                send_due = now - last_send >= .1
+                if tracking and send_due:
                     s = self._fresh_state()
                     # Follow the planned line in odometry coordinates. Small
                     # gait/yaw errors otherwise accumulate against a side wall
@@ -951,19 +978,19 @@ class Executor:
                     co, sn = math.cos(s.yaw), math.sin(s.yaw)
                     p["vx"], p["vy"] = co*vxw+sn*vyw, -sn*vxw+co*vyw
                     p["ux"], p["uy"] = p["vx"]/speed, p["vy"]/speed
-                    # Check the corrected direction before sending it. The
-                    # velocity norm remains the original conservative speed.
-                    if now-last_scan >= .1:
-                        last_scan = now
-                        clear = self._clearance(p["ux"], p["uy"], False, **dimensions)
-                        s = self._fresh_state()
-                        now = time.monotonic()
-                        if clear < self._margin(max(s.speed, .1)):
-                            outcome = "blocked"
-                            at = (s.x-x0)*wx + (s.y-y0)*wy
-                            trigger = (clear, self._observed, at, self._why_blocked(clear, toward))
-                            break
-                if now - last_send >= .1:
+                    # Keep direction updates and their safety check together.
+                    # Mapping can shift the scan/send timers apart; no corrected
+                    # velocity may be sent using a check for the previous one.
+                    clear = self._clearance(p["ux"], p["uy"], False, **dimensions)
+                    s = self._fresh_state()
+                    now = time.monotonic()
+                    last_scan = now
+                    if clear < self._margin(max(s.speed, .1)):
+                        outcome = "blocked"
+                        at = (s.x-x0)*wx + (s.y-y0)*wy
+                        trigger = (clear, self._observed, at, self._why_blocked(clear, toward))
+                        break
+                if send_due:
                     wz = p["wz"]
                     if turning and angle is not None:
                         current = self._fresh_state()
@@ -980,7 +1007,7 @@ class Executor:
                 turned += _wrap(s.yaw - yaw_prev)
                 yaw_prev = s.yaw
                 progress = abs(turned) if turning else (s.x - x0) * wx + (s.y - y0) * wy
-                if not turning and now - last_scan >= .1:
+                if not turning and not tracking and now - last_scan >= .1:
                     last_scan = now
                     clear=self._clearance(p['ux'],p['uy'],False,**dimensions)
                     # Sensing/mapping may span the instant contact stops the
@@ -992,27 +1019,9 @@ class Executor:
                         outcome = "blocked"
                         trigger = (clear, self._observed, progress, self._why_blocked(clear, toward))
                         break
-                # A stall needs both: little progress over the window (wall clock) and a low measured body
-                # speed. The robot's own speed reading doesn't drop when a busy computer briefly slows the
-                # simulator or delays telemetry, so those hiccups aren't mistaken for touching something.
-                moving = abs(s.wz) if turning else s.vx * p["ux"] + s.vy * p["uy"]
-                if watch_from is None and now >= earliest and (moving >= rate / 2 or now >= earliest + STALL_START_S):
-                    watch_from = now
-                if watch_from is not None:
-                    recent.append((now, progress, moving))
-                    while len(recent) > 1 and now - recent[1][0] >= STALL_WINDOW_S:
-                        recent.popleft()        # keep the newest sample at least a window old
-                old_t, old_progress, _ = recent[0] if recent else (now, progress, 0.)
-                if recent and now - old_t >= STALL_WINDOW_S:
-                    expected = (commanded_turn_rate if turning else rate) * STALL_FRACTION
-                    # Progress already integrates the whole confirmation window.
-                    # Use current velocity to distinguish contact from delayed
-                    # position updates; averaging old pre-contact samples would
-                    # add another scan interval when sensing is slow.
-                    measured = moving
-                    if progress - old_progress < expected * (now - old_t) and measured < expected:
-                        outcome = "stalled"
-                        break
+                if stalled(s, now, progress):
+                    outcome = "stalled"
+                    break
                 if distance is not None and progress >= distance - s.speed ** 2 / (2 * DECEL_LINEAR) - .01:
                     break
                 if angle is not None and progress >= angle - s.wz ** 2 / (2 * DECEL_ANGULAR) - .01:
@@ -1096,12 +1105,12 @@ class Executor:
             adapter.stop_move()
         return max(0., moved)
 
-    def _goto_leg(self, task, cancel, tx, ty, *, max_speed=None):
+    def _goto_leg(self, task, cancel, tx, ty, *, max_speed=None, arrival_tolerance=.08):
         """Turn toward (tx, ty) in odom, then walk there in legs within the per-call limits."""
         s = self._fresh_state()
         dx, dy = tx - s.x, ty - s.y
         distance = math.hypot(dx, dy)
-        if distance < .08:
+        if distance < arrival_tolerance:
             return 0.
         bearing = _wrap(math.atan2(dy, dx) - s.yaw)
         if math.cos(bearing) < -.7 and distance <= 2.0:   # short way back: reverse instead of turning around
@@ -1164,7 +1173,7 @@ class Executor:
                 task.detail["route"] = [[round(x, 2), round(y, 2)] for x, y in route]
             task.detail["legs"].append({})
             try:
-                self._goto_leg(task, cancel, wx, wy)
+                self._goto_leg(task, cancel, wx, wy, arrival_tolerance=.02 if route else .08)
                 if task.status == "failed":
                     raise AdapterError(task.detail.get("error", "navigation motion failed"))
             except _BlockedError:
@@ -1810,7 +1819,10 @@ class Executor:
             wx, wy = s.x + (wx - s.x) * 1.5 / leg, s.y + (wy - s.y) * 1.5 / leg
         task.detail.setdefault("legs", []).append({})
         try:
-            self._goto_leg(task, cancel, wx, wy)
+            # A nearby intermediate bend still needs to be reached. Otherwise
+            # replanning can choose the same bend forever inside the ordinary
+            # destination tolerance without issuing any movement.
+            self._goto_leg(task, cancel, wx, wy, arrival_tolerance=.02 if route else .08)
             if task.status == "failed":
                 raise AdapterError(task.detail.get("error", "approach motion failed"))
         except _BlockedError:
