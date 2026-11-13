@@ -577,6 +577,25 @@ def room_count(house):
     return len(house["rooms"]) - max(halls - 1, 0)
 
 
+def open_spaces(house):
+    """The house's rooms grouped into spaces with no wall between them: [[room names]], in room order. A room
+    on its own is a space of one; an open-plan living room and kitchen, or two hallways that meet, are one
+    space of two (joined by an "opening" in the doors). What a map of the house can tell apart."""
+    space = {room["name"]: [room["name"]] for room in house["rooms"]}
+    for door in house["doors"]:
+        if door.get("opening"):
+            a, b = (space[name] for name in door["rooms"])
+            if a is not b:
+                a.extend(b)
+                for name in b:
+                    space[name] = a
+    out = []
+    for room in house["rooms"]:
+        if space[room["name"]] not in out:
+            out.append(space[room["name"]])
+    return out
+
+
 def rectangular(house):
     """True if the rooms fill their bounding rectangle: a plain rectangular house."""
     xs = [v for room in house["rooms"] for v in room["rect"][0::2]]

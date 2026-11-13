@@ -509,6 +509,17 @@ class LayoutShapeTests(unittest.TestCase):
                             self.assertFalse(min(p_b, hi) - max(p_a, lo) > 1e-3, "a wall piece in the opening")
         self.assertGreater(found, 20)
 
+    def test_open_spaces_groups_rooms_joined_by_openings(self):
+        for seed, h in enumerate(self.houses):
+            spaces = house.open_spaces(h)
+            with self.subTest(seed=seed):
+                self.assertEqual(sorted(n for space in spaces for n in space), sorted(r["name"] for r in h["rooms"]))
+                joined = {frozenset(d["rooms"]) for d in h["doors"] if d.get("opening")}
+                self.assertEqual(len(spaces), len(h["rooms"]) - len(joined))
+                for pair in joined:
+                    self.assertTrue(any(pair <= set(space) for space in spaces))
+        self.assertEqual(house.open_spaces(house.house_demo()), [[r["name"]] for r in house.house_demo()["rooms"]])
+
     def test_big_furniture_never_backs_onto_an_opening(self):
         for seed, h in enumerate(self.houses):
             for door in (d for d in h["doors"] if d.get("opening")):
