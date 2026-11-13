@@ -99,6 +99,14 @@ COLOR_FAMILY = {"red": {"orange", "pink", "brown"}, "orange": {"red", "brown", "
                 "blue": {"cyan", "purple"}, "purple": {"blue", "pink"}, "pink": {"red", "purple"},
                 "white": {"grey"}, "grey": {"white", "black"}, "gray": {"white", "black", "grey"}, "black": {"grey", "brown"}}
 MEMORY_S = 180.
+ROOMS_CACHE_S = 3.          # rooms() splits the map at most this often (it takes a few tenths of a second)
+MIN_ROOM_M2 = 1.5           # smaller regions (a pocket behind furniture) aren't listed as rooms
+ROOM_STAND_M = .45          # go_to_place into a room stops somewhere at least this far from anything in the way
+
+
+def _room_key(name):
+    """A room name to compare: "The living room" -> "living_room"."""
+    return re.sub(r"^the_", "", "_".join(re.findall(r"[a-z0-9]+", str(name).casefold())))
 
 
 class Cancelled(Exception):
@@ -159,6 +167,7 @@ class Executor:
         self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True)
         self.room_regions = RoomRegions()
         self.room_sightings = deque(maxlen=2000)   # (x, y, label) of things that tell a room's type (#35)
+        self._rooms_cache = None                   # (when, rooms()) for the live map's once-a-second polls
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
         self._places_path = (Path(memory_path).with_name(Path(memory_path).stem + ".places.json")
@@ -201,6 +210,7 @@ class Executor:
                                           detect_low=adapter.kind == "sim")
             self.room_regions = RoomRegions()
             self.room_sightings.clear()
+            self._rooms_cache = None
             self.history.clear()
             self.activity, self.activity_since = [], time.monotonic()
             self.last_detections = []
@@ -292,6 +302,37 @@ class Executor:
             namer.saw(self.room_regions.region_near(x, y), label)
         return namer.names()
 
+    def rooms(self, fresh=False):
+        """The observed rooms as [{name, region, x, y, area_m2}], named as room_at names them, (x, y) a spot near
+        each one's middle. From a cache up to ROOMS_CACHE_S old unless fresh."""
+        cached = self._rooms_cache
+        if not fresh and cached is not None and time.monotonic() - cached[0] < ROOMS_CACHE_S:
+            return cached[1]
+        self.room_regions.update(self.room_map)
+        guessed = self._room_names()
+        rooms = []
+        for region, area in sorted(self.room_regions.areas().items()):
+            spot = self.room_regions.region_point(region) if area >= MIN_ROOM_M2 else None
+            if spot is not None:
+                name = self.room_regions.names.get(region) or guessed.get(region) or f"room_{region}"
+                rooms.append({"name": name, "region": region, "x": spot[0], "y": spot[1], "area_m2": round(area, 1)})
+        self._rooms_cache = (time.monotonic(), rooms)
+        return rooms
+
+    def _room_destination(self, name, x, y):
+        """(x, y, room name) of a spot inside the room called `name` ("kitchen", "bedroom 2", "the living room"),
+        or None. A room type ("bedroom") means the nearest room of that type to (x, y)."""
+        wanted = _room_key(name)
+        rooms = self.rooms(fresh=True)
+        matches = ([r for r in rooms if _room_key(r["name"]) == wanted] or
+                   [r for r in rooms if not r["name"].startswith("room_") and
+                    re.sub(r"_\d+$", "", _room_key(r["name"])) == wanted])
+        if not matches:
+            return None
+        room = min(matches, key=lambda r: math.hypot(r["x"] - x, r["y"] - y))
+        spot = self.room_regions.region_point(room["region"], clearance_m=ROOM_STAND_M)
+        return (*spot, room["name"]) if spot else None
+
     def _note_room_sightings(self, detections, pose):
         """Note where each thing in view that tells a room's type (a bed, a fridge) was seen."""
         c, sn = math.cos(pose[2]), math.sin(pose[2])
@@ -321,6 +362,10 @@ class Executor:
             result["warning"] = self.places.load_error
         if places_only:
             return result
+        rooms = [r for r in self.rooms() if all(w in _room_key(r["name"]) for w in words)]
+        result["rooms"] = [{"name": r["name"], "x_m": r["x"], "y_m": r["y"], "area_m2": r["area_m2"],
+                            "frame": "map"} for r in rooms[:limit]]
+        result["rooms_total"] = len(rooms)
         candidates = []
         for item in self.object_memory.snapshot():
             detection = SimpleNamespace(label=item.get("label", ""), color=item.get("color"))
@@ -439,8 +484,17 @@ class Executor:
         with self.lock:
             self._require_adapter()
             if command.tool == "go_to_place":
-                place = self.places.get(command.params["name"])
-                command = replace(command, params={**command.params, "x": place.x, "y": place.y})
+                try:
+                    place = self.places.get(command.params["name"])
+                    target = (place.x, place.y, place.name)
+                except ValueError as unknown:      # not a saved place: perhaps a room ("go to the kitchen", #35)
+                    s = self._fresh_state()
+                    target = self._room_destination(command.params["name"], s.x, s.y)
+                    if target is None:
+                        raise ValueError(f"I do not know a place or room named {command.params['name']!r}; remember "
+                                         "the place first, or explore so I can find the room") from unknown
+                command = replace(command, params={**command.params, "x": target[0], "y": target[1],
+                                                   "name": target[2]})
             if command.kind == "sport":
                 missing = self.adapter.supports(command.params["name"])
                 if missing:

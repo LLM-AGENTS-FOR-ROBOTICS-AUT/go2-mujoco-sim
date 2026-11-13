@@ -1,4 +1,5 @@
-"""Room names from what Go2 sees in them (#35), scored against the houses from #17."""
+"""Rooms (#35): split from the map, named from what Go2 sees in them, and gone to by name, scored against the
+houses from #17."""
 import collections
 import math
 import random
@@ -13,12 +14,16 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "simulation"))
 
 import house  # noqa: E402  (plain Python: no simulator needed)
+from go2.agent import Agent  # noqa: E402
 from go2.executor import Executor  # noqa: E402
+from go2.map_view import map_view  # noqa: E402
+from go2.mock_model import MockModel  # noqa: E402
 from go2.perception import Detection  # noqa: E402
 from go2.room_map import FREE, OCCUPIED, UNKNOWN, OccupancyGrid  # noqa: E402
 from go2.room_names import EVIDENCE, RoomNamer  # noqa: E402
 from go2.room_regions import RoomRegions  # noqa: E402
-from tests.fakes import FakeRobot  # noqa: E402
+from go2.tools import resolve  # noqa: E402
+from tests.fakes import FakeRobot, wait_for  # noqa: E402
 
 
 def name_from_house(h, looks=2):
@@ -192,6 +197,66 @@ class HouseMapTests(unittest.TestCase):
         self.assertGreaterEqual(right / len(named), .8, f"{right} of {len(named)} rooms named correctly")
 
 
+def split_rooms(h, resolution=.05):
+    """{room name: (the region most of its floor fell in, the share of its floor in that region)}, splitting
+    house h's map at the executor's resolution."""
+    m = house_map(h, resolution)
+    regions = RoomRegions().update(m)
+    out = {}
+    for room in h["rooms"]:
+        x0, y0, x1, y1 = room["rect"]
+        (r0, c0), (r1, c1) = m.world_to_cell(x0 + .2, y0 + .2), m.world_to_cell(x1 - .2, y1 - .2)
+        ids = regions.labels[r0:r1 + 1, c0:c1 + 1]
+        ids = ids[ids > 0]
+        region, count = collections.Counter(ids.tolist()).most_common(1)[0]
+        out[room["name"]] = region, count / len(ids)
+    return out
+
+
+class RoomSplittingTests(unittest.TestCase):
+    """#35: the map splits into the house's rooms, with no room cut in two and no two rooms merged."""
+
+    def test_the_demo_house_splits_into_its_six_rooms(self):
+        rooms = split_rooms(house.house_demo())
+        self.assertEqual(len({region for region, _ in rooms.values()}), 6, rooms)
+        for name, (_, share) in rooms.items():
+            with self.subTest(room=name):
+                self.assertGreater(share, .98, "cut in two")
+
+    def test_no_two_rooms_merge_and_nearly_all_stay_whole_in_20_random_houses(self):
+        whole = total = 0
+        for seed in range(20):
+            rooms = split_rooms(house.random_house(random.Random(seed)))
+            with self.subTest(seed=seed):
+                self.assertEqual(len({region for region, _ in rooms.values()}), len(rooms), "rooms merged")
+            whole += sum(share > .98 for _, share in rooms.values())
+            total += len(rooms)
+        self.assertGreaterEqual(whole / total, .95, f"{whole} of {total} rooms whole")
+
+    def test_a_gap_beside_furniture_is_not_a_doorway(self):
+        m = OccupancyGrid(resolution=.1, size=90)          # one 7 x 7 m room, nearly cut across by furniture
+        m.grid[:] = OCCUPIED
+        m.grid[10:80, 10:80] = FREE
+        m.grid[40:50, 10:70] = OCCUPIED                    # a 1 m deep sideboard, 1 m short of the far wall
+        regions = RoomRegions().update(m)
+        self.assertEqual(regions.region_near(*m.cell_to_world(25, 40), 0.), regions.region_near(*m.cell_to_world(65, 40), 0.))
+        m.grid[40:50, 10:70] = FREE
+        m.grid[44:46, 10:80] = OCCUPIED                    # a thin wall across instead, with a 1 m doorway in it
+        m.grid[44:46, 40:50] = FREE
+        regions = RoomRegions().update(m)
+        self.assertNotEqual(regions.region_near(*m.cell_to_world(25, 40), 0.), regions.region_near(*m.cell_to_world(65, 40), 0.))
+
+    def test_a_rooms_spot_is_in_it_and_clear_of_walls(self):
+        m = house_map(house.house_demo())
+        regions = RoomRegions().update(m)
+        for room in house.house_demo()["rooms"]:
+            region = regions.region_near(*[(a + b) / 2 for a, b in zip(room["rect"][:2], room["rect"][2:])], 0.)
+            x, y = regions.region_point(region, clearance_m=.45)
+            with self.subTest(room=room["name"]):
+                self.assertEqual(house.room_at(house.house_demo(), x, y), room["name"])
+                self.assertEqual(regions.region_near(x, y, 0.), region)
+
+
 def seen(label, x, y):
     return Detection(id=None, label=label, color=None, distance_m=1., bearing_deg=0., x_m=x, y_m=y,
                      distance_source="lidar", confidence=.9)
@@ -249,6 +314,89 @@ class ExecutorRoomNameTests(unittest.TestCase):
         self.executor._note_room_sightings([seen("bed", *self.left)], (0., 0., 0.))
         self.executor.attach(self.robot)
         self.assertEqual(list(self.executor.room_sightings), [])
+
+    def test_names_stay_with_their_rooms_as_the_map_grows(self):
+        grown = OccupancyGrid(resolution=.1, size=90, grow=True)
+        grown.grid[:] = self.executor.room_map.grid
+        self.executor.room_map = grown
+        for _ in range(2):
+            self.executor._note_room_sightings([seen("bed", *self.left)], (0., 0., 0.))
+        self.assertEqual(self.executor.room_at(*self.left), "bedroom")
+        grown.ensure_bounds([[-15., -12.], [14., 13.]])
+        self.assertEqual(self.executor.room_at(*self.left), "bedroom")
+        self.assertRegex(self.executor.room_at(*self.right), r"^room_\d+$")
+
+
+class GoToRoomTests(unittest.TestCase):
+    """go_to_place goes into a room by its name when no saved place has it ("go to the kitchen")."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.events = []
+        self.robot = FakeRobot()
+        self.robot.connect()
+        self.addCleanup(self.robot.close)
+        self.executor = Executor(on_event=self.events.append, memory_path=temp.name + "/memory.json")
+        self.executor.attach(self.robot)
+        self.addCleanup(self.executor.close)
+        m = OccupancyGrid(resolution=.1, size=120)           # three rooms off one side of a hallway
+        m.grid[:] = OCCUPIED
+        m.grid[10:110, 10:30] = FREE                          # the hallway, 2 m wide
+        for top, bottom in ((10, 40), (45, 75), (80, 110)):
+            m.grid[top:bottom, 31:70] = FREE                  # a room
+            m.grid[top + 10:top + 20, 30:31] = FREE           # its 1 m doorway into the hallway
+        self.executor.room_map = m
+        self.rooms = [m.cell_to_world(25, 50), m.cell_to_world(60, 50), m.cell_to_world(95, 50)]
+        for _ in range(2):                                     # a bedroom, a kitchen, and a bedroom
+            self.executor._note_room_sightings([seen("bed", *self.rooms[0]), seen("refrigerator", *self.rooms[1]),
+                                                seen("oven", *self.rooms[1]), seen("bed", *self.rooms[2])],
+                                               (0., 0., 0.))
+
+    def test_rooms_have_names_and_a_spot_inside(self):
+        rooms = {r["name"]: r for r in self.executor.rooms()}
+        self.assertTrue({"bedroom_1", "kitchen", "bedroom_2"} <= set(rooms), rooms)
+        self.assertEqual(self.executor.room_at(rooms["kitchen"]["x"], rooms["kitchen"]["y"]), "kitchen")
+
+    def test_a_room_name_finds_that_room_and_a_room_type_the_nearest_one(self):
+        x, y, name = self.executor._room_destination("the Kitchen", 0., 0.)
+        self.assertEqual((name, self.executor.room_at(x, y)), ("kitchen", "kitchen"))
+        x, y, name = self.executor._room_destination("bedroom", *self.rooms[2])
+        self.assertEqual(self.executor.room_at(x, y), name)
+        self.assertLess(math.hypot(x - self.rooms[2][0], y - self.rooms[2][1]), 2.)
+        self.assertIsNone(self.executor._room_destination("garage", 0., 0.))
+
+    def test_go_to_place_heads_into_the_room(self):
+        result = self.executor.submit(resolve("go_to_place", {"name": "kitchen"}), "g", 1)[0]
+        self.assertEqual(result["status"], "queued", result)
+        self.assertTrue(wait_for(lambda: self.events, 30))
+        self.assertEqual(self.events[-1].detail["destination"]["name"], "kitchen")
+
+    def test_a_saved_place_wins_over_a_room_and_an_unknown_name_is_refused(self):
+        self.executor.places.remember("kitchen", 0., 0., 0.)
+        result = self.executor.submit(resolve("go_to_place", {"name": "kitchen"}), "g", 1)[0]
+        self.assertEqual(result["status"], "queued", result)
+        self.assertTrue(wait_for(lambda: self.events, 30))
+        self.assertEqual(self.events[-1].detail["destination"]["x_m"], 0.)
+        result = self.executor.submit(resolve("go_to_place", {"name": "garage"}), "g", 2)[0]
+        self.assertEqual(result["status"], "rejected", result)
+        self.assertIn("place or room", result["error"])
+
+    def test_query_memory_and_the_live_map_list_the_rooms(self):
+        result = self.executor.submit(resolve("query_memory", {"target": "kitchen"}), "g", 1)[0]
+        self.assertEqual([r["name"] for r in result["rooms"]], ["kitchen"])
+        view = map_view(self.executor)
+        self.assertTrue({"bedroom_1", "kitchen", "bedroom_2"} <= {r["name"] for r in view["rooms"]}, view["rooms"])
+
+    def test_mock_model_goes_to_a_room_by_name(self):
+        agent = Agent(MockModel(), self.executor)
+        agent.robot_line = lambda: "standing"
+        self.addCleanup(agent.close)
+        agent.submit("go to the kitchen")
+        self.assertTrue(wait_for(lambda: not agent.busy, 5))
+        calls = [(m["tool_name"], m["content"]) for m in agent.messages if m["role"] == "tool"]
+        self.assertEqual([name for name, _ in calls[-2:]], ["query_memory", "go_to_place"], calls)
+        self.assertIn('"queued"', calls[-1][1])
 
 
 if __name__ == "__main__":

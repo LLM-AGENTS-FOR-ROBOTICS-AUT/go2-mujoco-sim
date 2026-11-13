@@ -87,13 +87,14 @@ TOOLS = [
     _fn("remember_place", "Remember your current spot under the user's name, such as 'front door'. "
         "Updates that name if it already exists. Saves a map-frame pose; starts no movement.",
         {"name": {"type": "string"}}, ["name"]),
-    _fn("go_to_place", "Return to a named place previously saved with remember_place. "
+    _fn("go_to_place", "Return to a named place previously saved with remember_place, or go into a room you have "
+        "seen by its name, such as 'kitchen' or 'bedroom 2' ('bedroom' is the nearest one). "
         "Plans a checked route, up to 20 m from your current position. Unknown names are refused.",
         {"name": {"type": "string"}}, ["name"]),
     _fn("list_places", "List a bounded number of remembered place names and map-frame poses. "
         "This is saved information, not a new observation.",
         {"limit": {"type": "integer", "description": "1 to 20; default 10"}}),
-    _fn("query_memory", "Find a few saved objects and named places matching the user's words. "
+    _fn("query_memory", "Find a few saved objects, named places and rooms matching the user's words. "
         "These are past sightings, not proof an object is still there. Empty matches mean nothing "
         "matching is remembered. Use approach to visit and visually check an object.",
         {"target": {"type": "string", "description": "optional object description or place name"},

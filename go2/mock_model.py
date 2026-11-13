@@ -33,8 +33,13 @@ class MockModel:
                 user = next((m["content"].lower() for m in reversed(messages) if m["role"] == "user"), "")
                 destination = self._destination(user)
                 if destination:
-                    match = next((p for p in result.get("places", []) if p["name"].casefold() == destination.casefold()), None)
-                    return self._calls([("go_to_place", {"name": match["name"]})] if match else
+                    key = re.sub(r"[\s_-]+", " ", destination).casefold()
+                    match = next((p["name"] for p in result.get("places", []) + result.get("rooms", [])
+                                  if re.sub(r"[\s_-]+", " ", p["name"]).casefold() == key), None)
+                    if match is None and any(re.sub(r"[\s_-]+\d+$", "", r["name"]).casefold() == key
+                                             for r in result.get("rooms", [])):
+                        match = destination            # "the bedroom": the executor picks the nearest one
+                    return self._calls([("go_to_place", {"name": match})] if match else
                                        [("approach", {"target": destination})])
                 remembered = [p["name"] for p in result.get("places", [])]
                 remembered += [" ".join(filter(None, (p.get("color"), p["label"])))
