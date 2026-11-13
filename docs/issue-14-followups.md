@@ -174,6 +174,13 @@ full-speed distance, and wall-gap checks. Generated raw reports
 remain local and ignored. Hosted checks must confirm the final reviewed head
 on Apple Silicon, Intel and Windows before merging.
 
+The delayed-mapping deadline regression uses a controlled clock across 100
+contact phases, with 200 ms scan work and 80 ms ticks, retaining the 600 ms
+stop-command bound. The earlier controller fails 20 phases; the corrected
+controller passes all 100. The existing real-time FakeRobot glass-stop test
+retains its 600 ms assertion. Controlled timing keeps host descheduling from
+being counted as controller latency in the added stress case.
+
 ## What still needs team action
 
 - Review the follow-up PRs #39 and #40, which share the same head branch. PR #39
