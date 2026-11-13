@@ -18,10 +18,10 @@ Long tasks Go2 carries out on its own in a house: `search`, `guard`, `patrol` an
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `search` | `target` (required), `where`, `time_limit_s` (default 300, up to 900) | What's remembered first; else looks all round where it is; then room by room, likeliest rooms first (`missions.LIKELY`), exploring where the map has no rooms yet; walks up to the target and says the room. `where`: only that room (a room name or type) or saved place. |
+| `search` | `target` (required), `where`, `time_limit_s` (default 600, up to 1800) | What's remembered first; else looks all round where it is; then room by room, likeliest rooms first (`missions.LIKELY`), exploring where the map has no rooms yet; walks up to the target and says the room. `where`: only that room (a room name or type) or saved place. |
 | `guard` | `place`, `duration_s` (default 600, up to 3600) | Goes to the room or saved place (default: stays), faces the way in (a saved place's heading, or the nearest doorway), sits, and looks about once a second. When someone comes in after nobody was in view for 10 s, it alerts with a camera snapshot. It never moves once there. |
 | `patrol` | `rooms` (list; default all known), `every_s` (60 to 3600, default 600), `duration_s` (default 1800, up to 7200) | Explores first if no rooms are known. Each round: every room nearest-next, looking all round; then reports things moved (same label and colour more than 0.8 m away), new, gone, and people seen. |
-| `explore` | `time_limit_s` (default 600, up to 1800) | Visits exploration spots (#14) until none are left, looking all round at each; names rooms as it finds them (#35); then lists them. |
+| `explore` | `time_limit_s` (default 1200, up to 3600) | Visits exploration spots (#14) until none are left, looking all round at each; names rooms as it finds them (#35); then lists them. |
 
 ## Results (fixed)
 

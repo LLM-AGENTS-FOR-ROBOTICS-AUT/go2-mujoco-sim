@@ -152,15 +152,36 @@ class Mission:
         """Walk up to the target; its room, or None if it couldn't be reached."""
         if not self.step(self.ex._approach, resolve("approach", {"target": target})[0]):
             return None
+        room = None
         match = self.ex._match(target)[0]
         if match and match[0].x_m is not None:
             det, (x, y, yaw) = match
-            ox = x + math.cos(yaw) * det.x_m - math.sin(yaw) * det.y_m
-            oy = y + math.sin(yaw) * det.x_m + math.cos(yaw) * det.y_m
-        else:
+            room = self.ex.room_at(x + math.cos(yaw) * det.x_m - math.sin(yaw) * det.y_m,
+                                   y + math.sin(yaw) * det.x_m + math.cos(yaw) * det.y_m)
+        if room is None:                     # the target's own spot is occupied on the map: the room Go2 is in
             s = self.ex._fresh_state()
-            ox, oy = s.x, s.y
-        return (self.ex.room_at(ox, oy) or "this room").replace("_", " ")
+            room = self.ex.room_at(s.x, s.y)
+        if room is not None and room.startswith("room_"):
+            # Its room has no name yet (a room is named once what's in it has been seen twice): look round it first.
+            self.look_around()
+            s = self.ex._fresh_state()
+            room = self.ex.room_at(s.x, s.y) or room
+        return (room or "this room").replace("_", " ")
+
+    def toward(self, target):
+        """Walk to about a metre short of where the target was last seen: go_to plans through unmapped space,
+        which approach won't, so a target seen through a doorway into an unmapped room can be reached. False if
+        there's nowhere to go."""
+        spot = self.ex._recall(target)
+        if spot is None:
+            return False
+        _, ox, oy = spot
+        x, y, _ = self.here()
+        distance = math.hypot(ox - x, oy - y)
+        if distance < 1.5:
+            return False
+        k = (distance - 1.2) / distance
+        return self.walk_to(x + (ox - x) * k, y + (oy - y) * k, target)
 
     def here(self):
         s = self.ex._fresh_state()
@@ -220,6 +241,8 @@ def search(m):
     def reach():
         """Walk up to the target in view: True when done (found, or seen and out of reach)."""
         room = m.approach(target)
+        if not room and m.toward(target):       # seen into a room not on the map yet: get closer, then try again
+            room = m.approach(target)
         if room:
             found(room)
             return True

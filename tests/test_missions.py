@@ -297,9 +297,9 @@ class ExploreTests(MissionTestCase):
 class MissionToolTests(unittest.TestCase):
     def test_tools_take_their_arguments_and_refuse_others(self):
         self.assertEqual(resolve("search", {"target": "Teddy Bear"})[0].params,
-                         {"mission": "search", "time_limit": 300, "target": "teddy bear", "where": None})
+                         {"mission": "search", "time_limit": 600, "target": "teddy bear", "where": None})
         self.assertEqual(resolve("patrol", {"rooms": ["kitchen"], "every_s": 120})[0].params["every"], 120)
-        self.assertEqual(resolve("explore", None)[0].params["time_limit"], 600)
+        self.assertEqual(resolve("explore", None)[0].params["time_limit"], 1200)
         for tool, args in (("search", {}), ("search", {"target": ""}), ("search", {"target": "x", "colour": 1}),
                            ("search", {"target": "x", "time_limit_s": 5000}), ("patrol", {"every_s": 10}),
                            ("patrol", {"rooms": "kitchen"}), ("guard", {"duration_s": -1})):
@@ -339,6 +339,76 @@ class MockMissionTests(MissionTestCase):
         self.assertTrue(wait_for(lambda: not agent.busy and any("bedroom 2" in m["content"] for m in agent.messages
                                                                if m["role"] == "assistant"), 10))
         self.assertIn("search", [m["tool_name"] for m in agent.messages if m["role"] == "tool"])
+
+
+@unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")
+class SearchInTheSimulatorTests(unittest.TestCase):
+    """#18 acceptance: in the demo house, with nothing remembered, "find the teddy bear" checks rooms in a sensible
+    order, finds it, walks up to it and says which room it was in. On simulated time (simulation/evaluate_missions.py:
+    the same physics, LiDAR, camera and executor), about 3 minutes."""
+
+    @needs_camera
+    def test_finds_the_teddy_bear_in_the_demo_house(self):
+        import evaluate_missions
+        import house
+        demo = house.house_demo()
+        task, state, _, _, _ = evaluate_missions.run(demo, "search", {"target": "teddy bear"}, 1200)
+        mission = task.detail["mission"]
+        self.assertEqual(mission["outcome"], "found", mission)
+        self.assertEqual(mission["room"], "bedroom 2", mission["result"])
+        teddy = next(o for o in demo["objects"] if o["kind"] == "teddy")
+        self.assertLess(math.hypot(state.x - teddy["pos"][0], state.y - teddy["pos"][1]), evaluate_missions.REACHED_M)
+        self.assertFalse(any("checked" in line and ("kitchen" in line or "bathroom" in line) for line in mission["log"]),
+                         f"no unlikely room before the bedrooms: {mission['log']}")
+        self.assertEqual(state.extra["collision_count"], 0)
+        self.assertIsNone(state.fault)
+
+
+@unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")
+class GuardInTheSimulatorTests(unittest.TestCase):
+    """#18 acceptance: guarding the demo house's hallway, Go2 alerts within 3 s with a snapshot when a person walks
+    in, and never moves toward them."""
+
+    @needs_camera
+    def test_alerts_within_3_s_when_a_person_walks_in_and_never_moves(self):
+        from go2.adapters.sim import SimAdapter
+        import house
+        demo = house.house_demo()
+        sim = SimAdapter(python=sys.executable, scene="house", headless=True)
+        sim.connect()
+        self.addCleanup(sim.close)
+        alerts, events = [], []
+        executor = Executor(on_event=events.append, memory_path=tempfile.mkdtemp() + "/memory.json",
+                            on_progress=lambda task, text, alert: alerts.append((time.monotonic(), text, alert))
+                            if alert else None)
+        self.addCleanup(executor.close)
+        executor.attach(sim)
+        start = sim.state()
+        executor.places.remember("watch spot", start.x, start.y, start.yaw)   # the hallway, facing along it
+        self.assertEqual(executor.submit(resolve("guard", {"place": "watch spot", "duration_s": 45}), "g", 1)[0]
+                         ["status"], "queued")
+        self.assertTrue(wait_for(lambda: executor.current is not None and any(
+            "guarding" in line for line in executor.current.detail.get("mission", {}).get("log", [])), 30))
+        settled = sim.state()
+        sim.walker("walker_red", [[3.5, -3.], [3.5, 0.], [0., 0.]], speed=.6)  # out of bedroom 2, along the hallway
+        came_in = None
+        while came_in is None and not events:
+            where = sim.walkers().get("walker_red")
+            if where and house.room_at(demo, *where[:2]) == "hallway" and where[1] > -.6:
+                came_in = time.monotonic()
+            time.sleep(.05)
+        self.assertIsNotNone(came_in, "the person never came into the hallway")
+        self.assertTrue(wait_for(lambda: alerts, 10), "no alert")
+        when, text, alert = alerts[0]
+        self.assertLess(when - came_in, 3., f"alerted {when - came_in:.1f} s after the person came in")
+        self.assertIn("a person", text)
+        self.assertIsNotNone(executor.alert_image(alert["id"]))
+        self.assertTrue(wait_for(lambda: events, 60))
+        self.assertEqual(events[-1].detail["mission"]["outcome"], "done", events[-1].detail)
+        end = sim.state()
+        self.assertLess(math.hypot(end.x - settled.x, end.y - settled.y), .1, "it never moved")
+        self.assertIsNone(end.fault)
+        sim.walker("walker_red")
 
 
 if __name__ == "__main__":

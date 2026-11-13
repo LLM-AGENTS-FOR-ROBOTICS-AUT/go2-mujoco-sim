@@ -13,9 +13,11 @@ explore is scored by the type each room's middle is named as. A line of JSON per
 import argparse
 import json
 import math
+import queue
 import random
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -27,34 +29,66 @@ import numpy as np  # noqa: E402
 import house  # noqa: E402
 from exploration_clock import SteppedSimAdapter  # noqa: E402
 from go2 import executor as X  # noqa: E402
-from go2.adapters.base import CameraFrame  # noqa: E402
+from go2.adapters.base import AdapterError, CameraFrame  # noqa: E402
 from go2.adapters.sim import SimAdapter  # noqa: E402
 from go2.perception import Mask  # noqa: E402
-from go2.tools import resolve  # noqa: E402
+from go2.tools import MISSION_LIMITS, resolve  # noqa: E402
 from sensors import Camera, camera_pose_in_base  # noqa: E402
 
 REACHED_M = 1.5            # a search succeeded if Go2 ended this close to the target
 
 
 class CameraSteppedSim(SteppedSimAdapter):
-    """The offline simulator, with the front camera: images and the simulator's own labels, as sim_server gives."""
+    """The offline simulator, with the front camera: images and the simulator's own labels, as sim_server gives.
+    Rendering has a thread of its own, as in sim_server: a GL context must be made, used and freed by one thread
+    (freeing it from another crashes on Windows)."""
 
     def __init__(self, world):
         super().__init__(world)
-        self._camera = None
+        self._requests = queue.Queue()
+        self._renderer = threading.Thread(target=self._render_loop, daemon=True, name="camera")
+        self._renderer.start()
+
+    def _render_loop(self):
+        camera = None
+        try:
+            while True:
+                reply = self._requests.get()
+                if reply is None:
+                    return
+                try:
+                    if camera is None:
+                        camera = Camera(self.sim.model)
+                    with self.sim.lock:
+                        rgb, bodies = camera.capture(self.sim.data)
+                        raw = self._raw_state()
+                    reply["value"] = rgb, bodies, raw, camera.intrinsics()
+                except Exception as error:
+                    reply["error"] = error
+                reply["done"].set()
+        finally:
+            if camera is not None:
+                camera.close()
 
     def camera(self):
-        with self.sim.lock:
-            if self._camera is None:            # made in the thread that renders (the executor's)
-                self._camera = Camera(self.sim.model)
-            rgb, bodies = self._camera.capture(self.sim.data)
-            raw = self._raw_state()
+        reply = {"done": threading.Event()}
+        self._requests.put(reply)
+        if not reply["done"].wait(30):
+            raise AdapterError("camera render timed out")
+        if "error" in reply:
+            raise AdapterError(f"camera render failed: {reply['error']}")
+        rgb, bodies, raw, intrinsics = reply["value"]
         masks = [Mask(item.label, bodies == body, 1.)
                  for body, item in self.sim.objects.items()
                  if item.label != "wall" and (bodies == body).sum() >= 12]
         pos, rot = camera_pose_in_base(self.sim.model)
-        return CameraFrame(rgb=rgb, masks=masks, intrinsics=self._camera.intrinsics(), camera_pos=pos,
-                           camera_rot=rot, state=SimAdapter._local_state(self, raw))
+        return CameraFrame(rgb=rgb, masks=masks, intrinsics=intrinsics, camera_pos=pos, camera_rot=rot,
+                           state=SimAdapter._local_state(self, raw))
+
+    def close(self):
+        super().close()
+        self._requests.put(None)
+        self._renderer.join(10)
 
     def sport(self, name, **args):
         if name in ("stand", "stand_up", "balance_stand"):
@@ -140,9 +174,9 @@ def main():
     results = []
     for seed in range(args.first, args.first + args.houses):
         if args.mission == "search":
-            result = evaluate_search(seed, args.time_limit or 900)
+            result = evaluate_search(seed, args.time_limit or MISSION_LIMITS["search"][1])
         else:
-            result = evaluate_explore(seed, args.time_limit or 1800)
+            result = evaluate_explore(seed, args.time_limit or MISSION_LIMITS["explore"][1])
         results.append(result)
         print(json.dumps(result, default=str), flush=True)
     if args.mission == "search":

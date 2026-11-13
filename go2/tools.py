@@ -24,7 +24,8 @@ ACROBATICS = ("front_flip", "back_flip", "left_flip", "front_jump", "front_pounc
 GAITS = ("classic", "trot_run", "static_walk", "economic", "free_walk")
 SPEED_LEVELS = {"slow": -1, "normal": 0, "fast": 1}
 MISSIONS = ("search", "guard", "patrol", "explore")
-MISSION_LIMITS = {"search": (300, 900), "guard": (600, 3600), "patrol": (1800, 7200), "explore": (600, 1800)}  # s
+# seconds: (default, most). Exploring walks slowly (0.15 m/s), so searching a whole house takes several minutes.
+MISSION_LIMITS = {"search": (600, 1800), "guard": (600, 3600), "patrol": (1800, 7200), "explore": (1200, 3600)}
 PATROL_EVERY_S = (60, 3600, 600)          # seconds between patrol rounds: least, most, default
 EXPECTED_S = {"stand": 1.5, "stand_up": 2.0, "lie_down": 2.0, "sit": 2.5, "recovery_stand": 3.0, "damp": 1.0,
               "hello": 7.0, "stretch": 4.5, "content": 4.0, "heart": 7.0, "scrape": 7.0, "dance1": 7.0, "dance2": 7.0,
