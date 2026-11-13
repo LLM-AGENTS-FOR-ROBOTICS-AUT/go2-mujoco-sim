@@ -66,4 +66,10 @@ Known limits:
 - Houses 32 and 46 (search): small two-room houses with the teddy bear in a tight spot in the bedroom; Go2 sees it
   but can't find a clear spot near enough, so the search ends `blocked`.
 - House 9 (explore): the kitchen stayed `room_N`; not enough kitchen things were seen from where Go2 looked.
+- House 4 (explore): a large kitchen with a dining table was split into two regions, both named kitchen
+  (`kitchen_1`, `kitchen_2`); the name is right, but it's listed twice.
 - Rooms of one type are numbered in the order they were found (`bedroom_1`, `bedroom_2`), not the house plan's order.
+- Once, the offline evaluation stopped part-way through a house with no processor use (houses 6-9 were re-run and
+  finished normally, with the same results as the run before). The cause wasn't found; it didn't happen again.
+
+The explore results are from the code as committed (re-run after the last change to room naming).
