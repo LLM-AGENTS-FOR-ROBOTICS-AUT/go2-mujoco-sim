@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass, asdict
 
 import numpy as np
+from .footprint import swept_distances
 
 # Go2 body footprint (m): length 0.70, width 0.31, standing height ~0.40
 HALF_LENGTH, HALF_WIDTH = .36, .17
@@ -119,21 +120,37 @@ def obstacles(points_floor):
     return points_floor[(z > OBSTACLE_MIN_Z) & (z < OBSTACLE_MAX_Z)]
 
 
+def _body_dimensions(footprint):
+    if footprint is None:
+        return HALF_LENGTH,HALF_WIDTH
+    try:
+        length,width=(float(v) for v in footprint)
+    except (TypeError,ValueError) as error:
+        raise ValueError('footprint must contain two positive half-dimensions') from error
+    if not all(math.isfinite(v) and v>0 for v in (length,width)):
+        raise ValueError('footprint must contain two positive half-dimensions')
+    return length,width
+
+
 def _corridor(points_floor, ux, uy):
-    """(along, across, extent, half) for a body-wide corridor along unit direction (ux, uy)."""
+    """Legacy travel-aligned body corridor."""
     along = points_floor[:, 0] * ux + points_floor[:, 1] * uy
     across = np.abs(-points_floor[:, 0] * uy + points_floor[:, 1] * ux)
-    extent = abs(ux) * HALF_LENGTH + abs(uy) * HALF_WIDTH
-    half = abs(ux) * HALF_WIDTH + abs(uy) * HALF_LENGTH + .05
+    length,width=HALF_LENGTH,HALF_WIDTH
+    extent = abs(ux)*length+abs(uy)*width
+    half = abs(ux)*width+abs(uy)*length+.05
     return along, across, extent, half
 
 
-def obstacle_along(points_floor, ux, uy):
+def obstacle_along(points_floor, ux, uy, *, footprint=None):
     """Free distance (m) from the body edge to the nearest obstacle along (ux, uy), within the corridor."""
     pts = obstacles(points_floor)
     if not len(pts):
         return math.inf
-    along, across, extent, half = _corridor(pts, ux, uy)
+    if footprint is not None:
+        distance=swept_distances(pts[:,:2],ux,uy,*_body_dimensions(footprint))
+        return float(distance.min())
+    along, across, extent, half = _corridor(pts,ux,uy)
     ahead = (along > 0) & (across < half)
     if not ahead.any():
         return math.inf
@@ -148,13 +165,20 @@ def _filled(beyond, bin_m, max_m):
     return float((np.argmin(bins) if not bins.all() else len(bins)) * bin_m)
 
 
-def drop_along(points_floor, ux, uy, bin_m=.1, max_m=3.0):
+def drop_along(points_floor, ux, uy, bin_m=.1, max_m=3.0, *, footprint=None):
     """Free distance (m) from the body edge to a drop along (ux, uy): where the supported floor ends, when the
     LiDAR sees returns more than STEP_DOWN_Z below the robot's floor in the corridor (a ledge, stairs going
     down, a hole). inf when nothing in the corridor is below the floor."""
     if not len(points_floor):
         return math.inf
-    along, across, extent, half = _corridor(points_floor, ux, uy)
+    if footprint is not None:
+        distance=swept_distances(points_floor[:,:2],ux,uy,*_body_dimensions(footprint))
+        below=(points_floor[:,2]<-STEP_DOWN_Z)&np.isfinite(distance)
+        if not below.any():
+            return math.inf
+        supported=(points_floor[:,2]>=-STEP_DOWN_Z)&np.isfinite(distance)&(distance>0)
+        return float(min(_filled(distance[supported],bin_m,max_m),distance[below].min()))
+    along, across, extent, half = _corridor(points_floor,ux,uy)
     inside = (across < half) & (along > extent)
     z = points_floor[:, 2]
     below = inside & (z < -STEP_DOWN_Z)
@@ -165,27 +189,32 @@ def drop_along(points_floor, ux, uy, bin_m=.1, max_m=3.0):
     return float(max(0., min(floor_end, (along[below] - extent).min())))
 
 
-def clearance_along(points_floor, ux, uy):
+def clearance_along(points_floor, ux, uy, *, footprint=None):
     """Free distance (m) from the body edge along unit direction (ux, uy), within a body-wide corridor: to the
     nearer of an obstacle and a drop."""
-    return min(obstacle_along(points_floor, ux, uy), drop_along(points_floor, ux, uy))
+    return min(obstacle_along(points_floor,ux,uy,footprint=footprint),
+               drop_along(points_floor,ux,uy,footprint=footprint))
 
 
-def observed_along(points_floor, ux, uy, bin_m=.1, max_m=3.0):
+def observed_along(points_floor, ux, uy, bin_m=.1, max_m=3.0, *, footprint=None):
     """How far beyond the body edge the corridor along (ux, uy) is actually observed (a return at the robot's
     floor level or above in every 10 cm step). Space the LiDAR cannot see is never assumed free, and a lower
     floor past a ledge does not count as seeing the corridor."""
     if not len(points_floor):
         return 0.
-    along, across, extent, half = _corridor(points_floor, ux, uy)
+    if footprint is not None:
+        distance=swept_distances(points_floor[:,:2],ux,uy,*_body_dimensions(footprint))
+        seen=np.isfinite(distance)&(distance>0)&(points_floor[:,2]>=-STEP_DOWN_Z)
+        return _filled(distance[seen],bin_m,max_m)
+    along, across, extent, half = _corridor(points_floor,ux,uy)
     seen = (across < half) & (along > extent) & (points_floor[:, 2] >= -STEP_DOWN_Z)
     return _filled(along[seen] - extent, bin_m, max_m)
 
 
-def turn_clearance(points_floor):
+def turn_clearance(points_floor, *, footprint=None):
     """Free margin (m) around the body's turning circle: to the nearest obstacle, or to the nearest point
     below the floor (no floor under the circle means a ledge it could step off while turning)."""
-    radius = math.hypot(HALF_LENGTH, HALF_WIDTH)
+    radius=math.hypot(*_body_dimensions(footprint))
     margin = math.inf
     pts = obstacles(points_floor)
     if len(pts):

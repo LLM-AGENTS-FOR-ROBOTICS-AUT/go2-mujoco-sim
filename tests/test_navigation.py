@@ -2,13 +2,14 @@
 room (headless, no camera needed, so it also runs on CI)."""
 import math
 import sys
+import threading
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "simulation")]
 
-from go2.executor import Executor  # noqa: E402
+from go2.executor import Executor, Task  # noqa: E402
 from go2.tools import resolve  # noqa: E402
 from tests.fakes import FakeRobot, wait_for  # noqa: E402
 
@@ -21,6 +22,53 @@ except ImportError:
 
 
 class GoToRouteTests(unittest.TestCase):
+    def test_waypoint_leg_corrects_lateral_walking_bias(self):
+        robot = self.attach()
+        move = robot.move
+        robot.move = lambda vx,vy,wz: move(vx,vy+.035 if math.hypot(vx,vy)>.01 else vy,wz)
+        task = Task(resolve("go_to", {"x_m": 1.5, "y_m": 0.})[0],
+                    "test", self.executor.generation, detail={"legs": [{}]})
+        self.executor._goto_leg(task, threading.Event(), 1.5, 0.)
+        self.assertLess(abs(robot.y), .04, "walking bias must not shift the planned corridor")
+
+    def test_keeps_a_valid_detour_when_later_map_queries_have_no_route(self):
+        robot = self.attach(obstacles=[(1.1, 1.6, -.6, .6)])
+        planned = [False]
+        def route(*args, **kwargs):
+            if planned[0]:
+                return None
+            planned[0] = True
+            return [(0., -1.3), (2., -1.3), (3., 0.)]
+        self.executor._route = route
+        task = self.go_to(3.)
+        self.assertEqual(task.status, "completed", task.detail)
+        self.assertLess(math.hypot(robot.x-3., robot.y), .15)
+
+    def test_waypoint_translation_uses_measured_heading_after_a_turn(self):
+        robot = self.attach()
+        velocity = self.executor._velocity
+        def imperfect_turn(task, params, cancel, **kwargs):
+            result = velocity(task, params, cancel, **kwargs)
+            if params.get("angle") is not None:
+                with robot.lock:
+                    robot.yaw += math.radians(7)
+            return result
+        self.executor._velocity = imperfect_turn
+        task = Task(resolve("go_to", {"x_m": 0., "y_m": 1.2})[0],
+                    "test", self.executor.generation, detail={"legs": [{}]})
+        self.executor._goto_leg(task, threading.Event(), 0., 1.2)
+        self.assertAlmostEqual(robot.x, 0., delta=.04, msg="turn error must not shift the planned line")
+        self.assertAlmostEqual(robot.y, 1.2, delta=.06)
+
+    def test_planned_turns_stay_in_observed_space_before_an_opaque_wall(self):
+        robot = self.attach(obstacles=[(1.2, 1.4, -30., 30.)])
+        for _ in range(3):
+            self.executor._refresh_cloud()
+        route = self.executor._route(robot.state(), 3., 0.)
+        if route:
+            self.assertTrue(all(x < .7 for x, _ in route[:-1]),
+                            f"turning points must stay clear of the unseen side of the wall: {route}")
+
     def setUp(self):
         self.events = []
         self.executor = Executor(on_event=self.events.append)

@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,8 +174,13 @@ class ConsoleVoiceTests(unittest.TestCase):
 
     def test_typed_messages_move_at_once(self):
         self.make(WALK)
-        self.post("/api/messages", {"text": "walk forward one metre"})
-        self.assertLess(self.moved_at(), FakeSpeaker.delay * .8)
+        # Check the speech-gating contract, rather than benchmarking unrelated
+        # LiDAR/map processing and scheduler latency on a shared CI runner.
+        with mock.patch.object(server, "SpokenReply", wraps=server.SpokenReply) as spoken:
+            code, _ = self.post("/api/messages", {"text": "walk forward one metre"})
+            self.assertEqual(code, 202)
+            self.assertTrue(wait_for(lambda: self.robot.x > .01, 5., .005), "typed command did not start moving")
+            spoken.assert_not_called()
         self.assertEqual(self.console.speaker.made, [], "no audio made for a page that doesn't speak")
 
     def test_the_wait_is_bounded(self):

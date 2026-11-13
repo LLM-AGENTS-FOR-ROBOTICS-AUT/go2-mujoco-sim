@@ -415,7 +415,7 @@ class Agent:
         group_done = task.detail.get("group_remaining", 0) == 0
         group = [t for t in self.executor.history if t.group == task.group]
         noteworthy = status in ("blocked", "failed") or (
-            status == "completed" and group_done and (len(group) > 1 or tool in ("go_to", "approach", "follow")))
+            status == "completed" and group_done and (len(group) > 1 or tool in ("go_to", "go_to_place", "approach", "follow")))
         if status in ("stopped", "cancelled") or not noteworthy:
             return
         # What other requests still have queued. Read now, under the executor lock and before the agent lock
