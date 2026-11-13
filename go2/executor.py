@@ -55,6 +55,7 @@ STALE_S = .5
 ROUTE_CLEARANCE_M = (.5, .42)
 UNKNOWN_COST = 3.           # unmapped cells may be planned through, but known free space is preferred
 MAX_REPLANS = 3             # go_to plans again this many times when blocked by something new
+STAND_BACK_M = (.3, .6, .9, 1.2)     # approach: how much further than asked to stand when nowhere nearer is free
 MAX_DETOUR = 2.5            # a route may be at most this many times the straight distance (+ 2 m)
 TICK_S = .05
 # A motion that can start right away is held back from the model for up to this long, so that the tool
@@ -1812,7 +1813,8 @@ class Executor:
                 # The object itself is in the corridor: being blocked close to it means we arrived.
                 self.look()
                 again = self._track(locked) if locked else self._match(p["target"])[0]
-                if again and again[0].distance_m is not None and again[0].distance_m - P.HALF_LENGTH <= stop_at + .3:
+                reach = stop_at + .3 + task.detail.get("stood_back_m", 0.)     # further, if it's on furniture
+                if again and again[0].distance_m is not None and again[0].distance_m - P.HALF_LENGTH <= reach:
                     task.detail["target"] = again[0].public()
                     task.detail.pop("blocked", None)
                     task.status = "running"
@@ -1837,12 +1839,25 @@ class Executor:
             return False
         bearing = math.atan2(s.y - oy, s.x - ox)
         selected = None
-        for offset in (0., math.pi / 6, -math.pi / 6, math.pi / 3, -math.pi / 3, math.pi / 2, -math.pi / 2):
-            gx = ox + stand_off * math.cos(bearing + offset)
-            gy = oy + stand_off * math.sin(bearing + offset)
-            route = self._route(s, gx, gy)
-            if route is not None:
-                selected = route, gx, gy
+        # The stand-off distance first, on Go2's side and then all the way round. If nowhere there is free, the
+        # object is on or among furniture (a teddy bear on a bed): the nearest free spot further out will do.
+        near = (0., math.pi / 6, -math.pi / 6, math.pi / 3, -math.pi / 3, math.pi / 2, -math.pi / 2)
+        far_side = (2 * math.pi / 3, -2 * math.pi / 3, 5 * math.pi / 6, -5 * math.pi / 6, math.pi)
+        rings = [(stand_off, near + far_side)] + [(stand_off + extra, near + far_side) for extra in STAND_BACK_M]
+        for radius, offsets in rings:
+            if distance <= radius + .08:
+                task.detail["stood_back_m"] = round(radius - stand_off, 2)
+                return False                    # already as close as there's room to stand
+            for offset in offsets:
+                gx = ox + radius * math.cos(bearing + offset)
+                gy = oy + radius * math.sin(bearing + offset)
+                route = self._route(s, gx, gy)
+                if route is not None:
+                    selected = route, gx, gy
+                    break
+            if selected is not None:
+                if radius > stand_off:
+                    task.detail["stood_back_m"] = round(radius - stand_off, 2)
                 break
         if selected is None:
             raise _blocked(task, "no route to a free stand-off position near the object", math.inf, 0.)
