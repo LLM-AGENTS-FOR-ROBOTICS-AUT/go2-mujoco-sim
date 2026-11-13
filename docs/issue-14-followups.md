@@ -180,6 +180,15 @@ The first follow-up CI run exposed additional timing cases despite a complete
 The existing furniture-detour and direction-tracking checks also passed with
 these corrections. Final hosted results still need to confirm this revised head.
 
+A subsequent run passed both Apple Silicon jobs and one Windows job, while the
+other Windows job exposed post-turn heading error in the real-room detour.
+Navigation now projects the next waypoint into the measured post-turn body
+frame. A regression injecting a 7-degree turn error previously drifted 14 cm
+off its planned line; it now passes a 4 cm lateral bound. This retains live
+clearance checks for the exact commanded translation and the existing turn
+accuracy limits. Three consecutive real-simulator room detours passed after
+this correction, as did the remembered-object furniture-detour check.
+
 ## Earlier PR check
 
 An earlier PR #36 Apple Silicon log contained a furniture-detour navigation

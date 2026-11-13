@@ -1132,12 +1132,20 @@ class Executor:
             self._velocity(task, {"vx": 0., "vy": 0., "wz": math.copysign(rate, bearing), "ux": 0., "uy": 0.,
                                   "speed": 0., "turn_rate": rate, "angle": abs(bearing)}, cancel, leg=True)
         s = self._fresh_state()
-        distance = math.hypot(tx - s.x, ty - s.y)
+        dx, dy = tx-s.x, ty-s.y
+        distance = math.hypot(dx, dy)
+        if distance < arrival_tolerance:
+            return 0.
         leg = min(distance, L.MAX_GOTO_LEG_M)
         speed = L.default_speed(leg)
         if max_speed is not None:
             speed = min(speed, max_speed)
-        self._velocity(task, {"vx": speed, "vy": 0., "wz": 0., "ux": 1., "uy": 0., "speed": speed,
+        # Turns have a measured tolerance. Aim the translation at the waypoint
+        # from the actual post-turn pose, rather than extending a heading error
+        # into the obstacle beside the planned line.
+        co, sn = math.cos(s.yaw), math.sin(s.yaw)
+        ux, uy = (co*dx+sn*dy)/distance, (-sn*dx+co*dy)/distance
+        self._velocity(task, {"vx": ux*speed, "vy": uy*speed, "wz": 0., "ux": ux, "uy": uy, "speed": speed,
                               "distance": leg}, cancel, leg=True)
         return leg
 
