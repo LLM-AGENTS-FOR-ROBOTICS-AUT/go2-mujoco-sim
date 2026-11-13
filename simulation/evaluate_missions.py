@@ -36,6 +36,58 @@ from go2.tools import MISSION_LIMITS, resolve  # noqa: E402
 from sensors import Camera, camera_pose_in_base  # noqa: E402
 
 REACHED_M = 1.5            # a search succeeded if Go2 ended this close to the target
+REACHABLE_M = 1.1          # a target counts as reachable if, by the house plan, Go2's centre can get this close
+
+
+def reachable(world, x, y, within=REACHABLE_M):
+    """From the house plan: can Go2's centre get within `within` m of (x, y)? Walls, closed doors and furniture
+    (other than a thing at (x, y) itself) grown by Go2's radius, then flood-filled from the start, as
+    house.reachability does. #18's target counts only reachable targets."""
+    from collections import deque
+    grid = house.GRID
+    xs = [v for room in world["rooms"] for v in room["rect"][0::2]]
+    ys = [v for room in world["rooms"] for v in room["rect"][1::2]]
+    x0, y0 = min(xs), min(ys)
+    nx, ny = int(round((max(xs) - x0) / grid)) + 1, int(round((max(ys) - y0) / grid)) + 1
+
+    def cell(px, py):
+        return int(round((px - x0) / grid)), int(round((py - y0) / grid))
+    blocked = np.zeros((nx, ny), bool)
+
+    def mark(bx0, by0, bx1, by1):
+        (i0, j0), (i1, j1) = cell(bx0, by0), cell(bx1, by1)
+        blocked[max(i0, 0):max(i1 + 1, 0), max(j0, 0):max(j1 + 1, 0)] = True
+    w = house.WALL_THICK
+    for axis, line, a, b, *_ in house.wall_pieces(world):
+        mark(a, line - w, b, line + w) if axis == "x" else mark(line - w, a, line + w, b)
+    for door in world["doors"]:
+        if not door["open"]:
+            (dx, dy), half = door["pos"], door["width"] / 2
+            mark(dx - half, dy - w, dx + half, dy + w) if door["axis"] == "x" else mark(dx - w, dy - half, dx + w, dy + half)
+    for item in world["objects"]:
+        if math.hypot(item["pos"][0] - x, item["pos"][1] - y) > .05:
+            mark(*house.footprint(item))
+    r = int(round(house.ROBOT_RADIUS / grid))
+    padded, grown = np.pad(blocked, r), np.zeros_like(blocked)
+    for di in range(-r, r + 1):
+        for dj in range(-r, r + 1):
+            if di * di + dj * dj <= r * r:
+                grown |= padded[r + di:r + di + nx, r + dj:r + dj + ny]
+    start = cell(*world["start"][:2])
+    seen = np.zeros_like(grown)
+    queue = deque([start]) if not grown[start] else deque()
+    seen[start] = True
+    goal = cell(x, y)
+    reach = within / grid
+    while queue:
+        i, j = queue.popleft()
+        if (i - goal[0]) ** 2 + (j - goal[1]) ** 2 <= reach * reach:
+            return True
+        for a, b in ((i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)):
+            if 0 <= a < nx and 0 <= b < ny and not grown[a, b] and not seen[a, b]:
+                seen[a, b] = True
+                queue.append((a, b))
+    return False
 
 
 class CameraSteppedSim(SteppedSimAdapter):
@@ -137,7 +189,8 @@ def evaluate_search(seed, time_limit):
     gap = math.hypot(state.x - teddy["pos"][0], state.y - teddy["pos"][1])
     collisions = state.extra.get("collision_count")
     ok = mission.get("outcome") == "found" and gap <= REACHED_M and not collisions and not state.fault
-    return {"seed": seed, "ok": ok, "outcome": mission.get("outcome"), "status": task.status,
+    return {"seed": seed, "ok": ok, "reachable": reachable(world, *teddy["pos"]), "outcome": mission.get("outcome"),
+            "status": task.status,
             "error": task.detail.get("error"), "teddy_room": teddy["room"], "said_room": mission.get("room"),
             "gap_m": round(gap, 2), "collisions": collisions, "fault": state.fault,
             "sim_s": round(sim_s or 0.), "wall_s": round(wall_s), "rooms": len(world["rooms"])}
@@ -180,8 +233,11 @@ def main():
         results.append(result)
         print(json.dumps(result, default=str), flush=True)
     if args.mission == "search":
-        ok = sum(r["ok"] for r in results)
-        summary = {"houses": len(results), "found": ok, "rate": round(ok / len(results), 3),
+        reach = [r for r in results if r["reachable"]]
+        ok = sum(r["ok"] for r in reach)
+        summary = {"houses": len(results), "reachable": len(reach), "found": ok,
+                   "rate": round(ok / max(len(reach), 1), 3),
+                   "unreachable_outcomes": [r["outcome"] for r in results if not r["reachable"]],
                    "collisions": sum(bool(r["collisions"]) for r in results),
                    "mean_sim_s": round(float(np.mean([r["sim_s"] for r in results])))}
     else:

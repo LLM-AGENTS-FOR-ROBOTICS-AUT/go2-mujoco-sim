@@ -32,6 +32,7 @@ LOOK_TURNS = 4             # quarter turns to look all round (the camera covers 
 GUARD_LOOK_S = 1.          # guard looks this often, so an alert comes within about 3 s of someone appearing
 NEW_PERSON_S = 10.         # someone seen after nobody was in view for this long is a new arrival
 SAME_PLACE_M = .8          # patrol: an object this close to where it was hasn't moved
+STAND_CLEAR_M = .45        # a room is walked into at a spot at least this clear of anything in the way
 LOG_LINES = 30
 
 # Where things usually are: detector label -> room types, likeliest first (as in the houses of #17, and most homes).
@@ -190,6 +191,13 @@ class Mission:
     def rooms(self):
         return self.ex.rooms(fresh=True)
 
+    def walk_into(self, room):
+        """Walk to a roomy spot in the room: near its middle, clear of furniture (the middle itself can be wedged
+        between a bed and a wardrobe)."""
+        spot = self.ex.room_regions.region_point(room["region"], clearance_m=STAND_CLEAR_M)
+        x, y = spot if spot is not None else (room["x"], room["y"])
+        return self.walk_to(x, y, room["name"].replace("_", " "))
+
     def explore_step(self):
         """Go to the next unexplored spot and look all round there: True, or False once nowhere is left."""
         st = self.state.setdefault("explored", {"visited": [], "blocked": []})
@@ -239,17 +247,15 @@ def search(m):
                  checked=sorted(st["checked_names"]))
 
     def reach():
-        """Walk up to the target in view: True when done (found, or seen and out of reach)."""
+        """Walk up to the target in view: True once found. If there's no way to it from here, the search goes on
+        (more of the house mapped can open a way); it ends 'blocked' only when nowhere is left to look."""
         room = m.approach(target)
         if not room and m.toward(target):       # seen into a room not on the map yet: get closer, then try again
             room = m.approach(target)
         if room:
             found(room)
             return True
-        st["unreachable"] = st.get("unreachable", 0) + 1
-        if st["unreachable"] >= 3:
-            m.finish("blocked", f"I can see the {target} but can't find a way to it", done=False)
-            return True
+        st["seen_unreached"] = True
         return False
 
     place = None
@@ -289,7 +295,7 @@ def search(m):
         if pick:
             room = min(pick, key=lambda r: (rank.get(_kind(r["name"]), len(rank)), math.hypot(r["x"] - x, r["y"] - y)))
             name = room["name"].replace("_", " ")
-            m.walk_to(room["x"], room["y"], name)
+            m.walk_into(room)
             if m.look_around(seen) and reach():
                 return
             st["checked"].add(room["region"])        # only once looked round: a stop on the way leaves it to do
@@ -304,6 +310,12 @@ def search(m):
             st["explored_all"] = True
             continue
         break
+    if st.get("seen_unreached"):
+        if m.toward(target) and m.look_around(seen) and reach():   # one last try with the whole map known
+            return
+        m.finish("blocked", f"I can see the {target} but can't find a way to it; it may be boxed in by furniture",
+                 done=False, checked=sorted(st["checked_names"]))
+        return
     scope = f" in {_the(where)}" if where else " anywhere I could reach"
     m.finish("not_found", f"I searched{scope} and couldn't find the {target}" +
              (f" (checked {', '.join(sorted(st['checked_names']))})" if st["checked_names"] else ""),
@@ -385,7 +397,7 @@ def patrol(m):
                 raise AdapterError(f"I don't know rooms called {', '.join(p['rooms'])}; explore or name them first")
         seen = []
         for room in _route(rooms, m.here()):
-            m.walk_to(room["x"], room["y"], room["name"].replace("_", " "))
+            m.walk_into(room)
             seen += [{**thing, "room": ex.room_at(thing["x"], thing["y"]) or room["name"]}
                      for thing in m.look_around()]
         rounds += 1
