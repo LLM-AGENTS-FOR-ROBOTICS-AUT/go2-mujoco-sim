@@ -22,7 +22,7 @@ from .room_map import FREE, OCCUPIED
 # in a thin wall; a gap beside furniture has something thick on at least one side (the furniture, or a wall
 # running along the way through), or is wider than any doorway once the regions' border bends round it. Regions
 # that meet at such a gap are one room.
-JAMB_M = .3
+JAMB_M = .45               # a 10 cm wall scans up to 0.3-0.4 m thick; furniture is mostly 0.5 m or deeper
 WIDE_GAP_M = 1.6           # wider than any doorway
 PROBE_M = (.1, .35)        # how far past each end of a gap to look for its side
 # Rooms are split on a map with cells about this size, and finer maps take their labels from it: at 5 cm the

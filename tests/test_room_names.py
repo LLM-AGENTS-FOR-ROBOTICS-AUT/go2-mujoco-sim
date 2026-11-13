@@ -3,6 +3,7 @@ houses from #17."""
 import collections
 import math
 import random
+import re
 import sys
 import tempfile
 import time
@@ -23,7 +24,14 @@ from go2.room_map import FREE, OCCUPIED, UNKNOWN, OccupancyGrid  # noqa: E402
 from go2.room_names import EVIDENCE, RoomNamer  # noqa: E402
 from go2.room_regions import RoomRegions  # noqa: E402
 from go2.tools import ToolError, resolve  # noqa: E402
-from tests.fakes import FakeRobot, wait_for  # noqa: E402
+from tests.fakes import FakeRobot, needs_camera, wait_for  # noqa: E402
+
+try:
+    import mujoco  # noqa: F401
+    import torch  # noqa: F401
+    HAVE_SIM = True                          # the simulator, and the walking policy (torch)
+except ImportError:
+    HAVE_SIM = False
 
 
 def name_from_house(h, looks=2):
@@ -428,6 +436,36 @@ class GoToRoomTests(unittest.TestCase):
         calls = [(m["tool_name"], m["content"]) for m in agent.messages if m["role"] == "tool"]
         self.assertEqual([name for name, _ in calls[-2:]], ["query_memory", "go_to_place"], calls)
         self.assertIn('"queued"', calls[-1][1])
+
+
+@unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")
+class HouseRoomsInTheSimulatorTests(unittest.TestCase):
+    """End to end in the simulator: Go2 looks all round each room of the demo house, then the map it built is
+    split into rooms and they're named from what its camera saw."""
+
+    @needs_camera
+    def test_the_demo_houses_rooms_are_named_from_what_go2_sees(self):
+        from go2.adapters.sim import SimAdapter
+        demo = house.house_demo()
+        sim = SimAdapter(python=sys.executable, scene="house", headless=True)
+        sim.connect()
+        self.addCleanup(sim.close)
+        executor = Executor(memory_path=tempfile.mkdtemp() + "/memory.json")
+        self.addCleanup(executor.close)
+        executor.attach(sim)
+        middles = {room["name"]: ((room["rect"][0] + room["rect"][2]) / 2, (room["rect"][1] + room["rect"][3]) / 2)
+                   for room in demo["rooms"]}
+        for x, y in middles.values():
+            for k in range(8):                                # look all round, an eighth of a turn at a time
+                sim.reset(x, y, k * math.pi / 4)
+                time.sleep(.2)
+                executor.look()
+        rooms = {name: executor.room_at(x, y) for name, (x, y) in middles.items()}
+        self.assertEqual(len(set(rooms.values())), len(rooms), f"two rooms share a region: {rooms}")
+        for room in demo["rooms"]:
+            if room["type"] != "hallway":
+                with self.subTest(room=room["name"]):
+                    self.assertEqual(re.sub(r"_\d+$", "", rooms[room["name"]] or ""), room["type"], rooms)
 
 
 if __name__ == "__main__":
