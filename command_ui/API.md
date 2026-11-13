@@ -84,6 +84,7 @@ and `robot` before treating its contents as current.
 | `POST /api/semantic-memory` | `{"on": true}` or `{"on": false}` | Switch the semantic object memory on or off (`--visual-memory` starts with it on). 400 with the reason when it can't be switched on (the model isn't downloaded). The state's `semantic_memory` says `on`, `ready`, `error` and how many things it `remembered`. |
 | `POST /api/arm` | `{"armed": true}` or `{"armed": false}` | Real robot only: allow or forbid motion. The state |
 | `GET /api/camera.png` | `?size=full` for full size | The last camera frame Go2 looked at (640 x 360, or 1280 x 720 full). **404** before the first look |
+| `GET /api/alert/<id>.png` | | The camera snapshot of mission alert `id` (see `alerts`). **404** once it's dropped: the last 20 are kept |
 
 `voice: true` marks a message as spoken (shown in its entry). `speak` says the page plays Go2's reply aloud:
 `true` (the default voice) or a voice's name from `voice.speech.voices`, and by default the same as `voice`.
@@ -157,6 +158,8 @@ A stop phrase ("stop", "halt", ...) always goes through, as does `/api/stop`.
 | `actions` | What the robot is doing (`current`), what's waiting (`queued`, in order) and the last 8 finished (`recent`): steps, described below |
 | `conversation` | `id` changes when the conversation is cleared (start a fresh log); `entries` are below |
 | `camera` | Set after Go2 has looked: see "Camera" |
+| `actions.current.mission` | While a mission (`search`, `guard`, `patrol`, `explore`) runs: its `kind`, `goal`, `log` (its last 30 progress lines, the same words as its robot updates), and once it ends `outcome` (`found`, `not_found`, `blocked`, `explored`, `done`, `timed_out`) and `result` (one plain sentence). The page shows the goal and latest lines, and a Cancel button that does what Stop does. |
+| `alerts` | Mission alerts, newest last (up to 20): `{"id", "mission", "text", "stamp", "url"}`, `url` being the camera snapshot taken when it happened. Guard's "someone came in" is one. Each is also told in the conversation as a robot update. |
 | `feedback.upload` | Flagged replies are also sent to the project's Firebase server, so **warn before flagging one** (see "Bad reply"). False with `--mock`, `--no-upload` or `GO2_FEEDBACK_UPLOAD=0`, or when the upload couldn't start: flags then stay on this computer. |
 
 ## Conversation entries

@@ -220,8 +220,10 @@ class HouseMujocoTests(unittest.TestCase):
             with self.subTest(seed=seed):
                 h = house.random_house(random.Random(seed))
                 model, objects = world.build("house", h)
-                self.assertEqual(sum(item.label != "wall" and item.label != "door" for item in objects.values()),
+                self.assertEqual(sum(item.label not in ("wall", "door", "person") for item in objects.values()),
                                  len(h["objects"]))
+                self.assertEqual(sum(item.label == "person" for item in objects.values()), len(world.WALKERS),
+                                 "the walking people, parked under the floor until asked to walk (#18)")
 
     def test_without_the_furniture_download_houses_use_plain_shapes(self):
         import tempfile

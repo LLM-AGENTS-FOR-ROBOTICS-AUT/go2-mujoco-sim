@@ -147,9 +147,15 @@ class Task:
 
 
 class Executor:
-    def __init__(self, on_event=None, memory_path=None):
+    def __init__(self, on_event=None, memory_path=None, on_progress=None):
         self.adapter = None
         self.on_event = on_event or (lambda task: None)
+        # f(task, text, alert): a running mission's progress (#18), as robot updates; alert is set for an alert
+        # with a snapshot ({id, text, stamp}; its image from alert_image(id)).
+        self.on_progress = on_progress or (lambda task, text, alert: None)
+        self.alerts = deque(maxlen=20)      # mission alerts with their snapshots, newest last
+        self._alert_count = 0
+        self._missions = {}                 # mission key -> (state, when last run): for carrying on after a stop
         self.lock = threading.RLock()
         self.wake = threading.Condition(self.lock)
         self.queue = deque()
@@ -211,6 +217,7 @@ class Executor:
             self.room_regions = RoomRegions()
             self.room_sightings.clear()
             self._rooms_cache = None
+            self._missions.clear()          # their rooms and spots belong to the old map
             self.history.clear()
             self.activity, self.activity_since = [], time.monotonic()
             self.last_detections = []
@@ -340,6 +347,85 @@ class Executor:
             if d.x_m is not None and tells_room(d.label):
                 self.room_sightings.append((pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m,
                                             d.label))
+
+    # ---- missions (#18, go2/missions.py) -----------------------------------------------------------------
+    def now(self):
+        """This executor's clock (offline evaluations run it on simulated time)."""
+        return time.monotonic()
+
+    def _idle(self, seconds, cancel):
+        """Wait without moving, in this executor's time; Stop ends the wait (Cancelled)."""
+        end = time.monotonic() + seconds
+        while True:
+            self._check(cancel)
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(.1, left))
+
+    def _subtask(self, command, parent):
+        """A step of a mission, run directly by the mission (in this worker), not through the queue. Its route and
+        destination show on the mission task too, so the live map draws where the mission is going."""
+        class Shown(dict):
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                if key in ("route", "destination"):
+                    parent.detail[key] = value
+        task = Task(command, parent.group, parent.generation, user_turn=parent.user_turn, held=True)
+        task.detail = Shown()
+        return task
+
+    def _step_budget(self, cancel, seconds):
+        return _MotionDeadline(cancel, seconds)
+
+    def _mission_state(self, key, resume_s):
+        """(state, resumed): the state of an unfinished mission asked for again within resume_s, else a new one."""
+        with self.lock:
+            state, when = self._missions.get(key, (None, None))
+            resumed = state is not None and not state.get("finished") and time.monotonic() - when <= resume_s
+            if not resumed:
+                state = {}
+            self._missions[key] = (state, time.monotonic())
+            return state, resumed
+
+    def _mission_progress(self, task, text, image=None):
+        """A mission's progress line, or an alert when it comes with a camera image."""
+        alert = None
+        if image is not None:
+            with self.lock:
+                self._alert_count += 1
+                alert = {"id": self._alert_count, "mission": task.command.tool, "text": text, "stamp": time.time()}
+                self.alerts.append({**alert, "image": np.array(image, copy=True)})
+        try:
+            self.on_progress(task, text, alert)
+        except Exception:
+            pass
+
+    def alert_image(self, alert_id):
+        """The camera image of alert `alert_id`, or None once it's been dropped."""
+        with self.lock:
+            return next((a["image"] for a in self.alerts if a["id"] == alert_id), None)
+
+    def _detections(self):
+        with self.lock:
+            return list(self.last_detections)
+
+    def _sightings(self):
+        """What the last look saw, as {label, color, clothing, x, y} in map coordinates."""
+        out = []
+        for d, (x, y, yaw) in self._detections():
+            if d.x_m is not None and d.label != "wall":
+                out.append({"label": d.label, "color": d.color, "clothing": getattr(d, "clothing", None),
+                            "x": x + math.cos(yaw) * d.x_m - math.sin(yaw) * d.y_m,
+                            "y": y + math.sin(yaw) * d.x_m + math.cos(yaw) * d.y_m})
+        return out
+
+    def _way_in(self, x, y):
+        """The heading (radians) from (x, y) toward the nearest way into its room (where it meets another room),
+        or None when the room has no known way in."""
+        self.room_regions.update(self.room_map)
+        door = self.room_regions.way_in(x, y)
+        return None if door is None else math.atan2(door[1] - y, door[0] - x)
 
     def name_room(self, name):
         """Name the room the robot is in (the user's name wins over a guess). Lasts as long as this map."""
@@ -863,6 +949,14 @@ class Executor:
                                    "on the real Go2")
             self._ensure_standing(task, cancel)
             self._follow(task, cancel)
+        elif kind == "mission":
+            if self.adapter.kind == "go2":
+                raise AdapterError("missions only run in the simulator for now: unattended runs on the real Go2 "
+                                   "need its safety work first (#34)")
+            from . import missions          # here, not at the top: missions builds on this module
+            self._ensure_standing(task, cancel)
+            self._hold(task, cancel)
+            missions.run(self, task, cancel)
         else:
             raise AdapterError(f"unsupported command {kind}")
 

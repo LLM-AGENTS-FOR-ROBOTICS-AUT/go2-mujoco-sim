@@ -258,6 +258,27 @@ class RoomRegions:
             row, col = cells[np.argmin(((cells - centre) ** 2).sum(axis=1))]
             return self.map.cell_to_world(int(row), int(col))
 
+    def way_in(self, x, y):
+        """(x, y) of the nearest place where the region at (x, y) meets another region (a doorway), or None."""
+        with self._lock:
+            region = None if self.map is None else self.region_near(x, y)
+            if region is None:
+                return None
+            labels = self.labels
+            inside = labels == region
+            other = (labels > 0) & ~inside
+            edge = np.zeros_like(inside)
+            edge[1:] |= inside[1:] & other[:-1]
+            edge[:-1] |= inside[:-1] & other[1:]
+            edge[:, 1:] |= inside[:, 1:] & other[:, :-1]
+            edge[:, :-1] |= inside[:, :-1] & other[:, 1:]
+            cells = np.argwhere(edge)
+            if not len(cells):
+                return None
+            here = np.array(self.map.world_to_cell(x, y) or (0, 0))
+            row, col = cells[np.argmin(((cells - here) ** 2).sum(axis=1))]
+            return self.map.cell_to_world(int(row), int(col))
+
     def name_room(self, x, y, name):
         if not isinstance(name, str) or not name.strip():
             raise ValueError("room name must be nonempty")

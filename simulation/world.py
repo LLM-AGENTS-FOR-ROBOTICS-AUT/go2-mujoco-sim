@@ -249,8 +249,8 @@ def build(scene: str = "room", world=None):
     if scene == "hazards":
         import hazards   # simulation/hazards.py: platform, ledge, stairs down and a glass pane (#22)
         hazards.build_hazards(spec, objects, WorldObject)
-    if scene in ("room", "empty"):
-        _add_walkers(spec, objects)   # not in houses or the procedural training rooms, which stay as they were
+    if scene in ("room", "empty", "house"):
+        _add_walkers(spec, objects)   # houses too, for guard and patrol (#18); not the procedural training rooms
     model = spec.compile()
     by_body = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name): item for name, item in objects}
     return model, by_body
