@@ -11,7 +11,7 @@ you type / speak  ->  LLM agent (go2-ft-04)  ->  tool calls  ->  safety executor
 | | Before (`main`) | This branch (`llm-agent`) |
 |---|---|---|
 | Understanding | Keyword rules (`agent.py`, the placeholder) | Gemma 4 E2B fine-tuned for Go2 (`go2-ft-04`), via a private Ollama |
-| Actions | Walk, strafe, turn, stop | 13 tools: move, turn, go_to, approach, follow (simulator only), posture (sit, stand, lie), trick, acrobatic, body pose, look, wait, get_status, stop |
+| Actions | Walk, strafe, turn, stop | 18 tools: move, turn, go_to, approach, follow (simulator only), posture (sit, stand, lie), trick, acrobatic, body pose, look, wait, get_status, stop; places and rooms: remember_place, name_room, go_to_place (a saved place or a room, "go to the kitchen"), list_places, query_memory |
 | Safety | Speed and duration bounds | Per-call limits (0.8 m/s, 5 s, 4 m, 57 deg/s) plus LiDAR clearance checks before and during each move |
 | Robot | Flat floor, walking only | Indoor room with household objects, simulated L1 LiDAR and front camera, or the real Go2 EDU |
 | Voice | Records 5 s, faster-whisper base | Ends when you pause; hands-free conversation you can cut into; Whisper large-v3-turbo in, Kokoro voice out |

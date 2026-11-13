@@ -87,6 +87,9 @@ TOOLS = [
     _fn("remember_place", "Remember your current spot under the user's name, such as 'front door'. "
         "Updates that name if it already exists. Saves a map-frame pose; starts no movement.",
         {"name": {"type": "string"}}, ["name"]),
+    _fn("name_room", "Name the room you are standing in, as the user calls it ('this is the office'). Your name "
+        "wins over one guessed from what is in the room. Starts no movement.",
+        {"name": {"type": "string"}}, ["name"]),
     _fn("go_to_place", "Return to a named place previously saved with remember_place, or go into a room you have "
         "seen by its name, such as 'kitchen' or 'bedroom 2' ('bedroom' is the nearest one). "
         "Plans a checked route, up to 20 m from your current position. Unknown names are refused.",
@@ -128,7 +131,7 @@ TOOLS = [
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 # Tools the fine-tuned models haven't been trained on yet (#16). They are left out of the compact prompt so it
 # stays exactly as trained; use --mock or a full-prompt model (e.g. go2-ft-04@full) to try them.
-UNTRAINED = {"follow", "remember_place", "go_to_place", "list_places", "query_memory"}
+UNTRAINED = {"follow", "remember_place", "name_room", "go_to_place", "list_places", "query_memory"}
 # Fine-tuned models know the tools by heart: declare names only (~270 prompt tokens instead of ~1,450).
 COMPACT_TOOLS = [{"type": "function", "function": {"name": t["function"]["name"], "parameters": {"type": "object", "properties": {}}}}
                  for t in TOOLS if t["function"]["name"] not in UNTRAINED]
@@ -442,6 +445,15 @@ def _named_place(args, *, movement=False):
                     summary=f"{'go to' if movement else 'remember'} place {name!r}")]
 
 
+def _name_room(args):
+    _exact("name_room", args, ("name",))
+    try:
+        name = place_name(args.get("name"))
+    except ValueError as error:
+        raise ToolError(str(error).replace("place name", "room name")) from error
+    return [Command("name_room", "name_room", args, {"name": name}, summary=f"name this room {name!r}")]
+
+
 def _memory_query(args, *, places_only=False):
     tool = "list_places" if places_only else "query_memory"
     _exact(tool, args, ("limit",) if places_only else ("target", "limit"))
@@ -457,7 +469,7 @@ def _memory_query(args, *, places_only=False):
 
 
 RESOLVERS = {"move": _move, "turn": _turn, "go_to": _go_to, "approach": _approach, "follow": _follow,
-             "remember_place": _named_place,
+             "remember_place": _named_place, "name_room": _name_room,
              "go_to_place": lambda args: _named_place(args, movement=True),
              "list_places": lambda args: _memory_query(args, places_only=True),
              "query_memory": _memory_query,

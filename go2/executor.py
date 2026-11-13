@@ -341,6 +341,19 @@ class Executor:
                 self.room_sightings.append((pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m,
                                             d.label))
 
+    def name_room(self, name):
+        """Name the room the robot is in (the user's name wins over a guess). Lasts as long as this map."""
+        with self.lock:
+            self._require_adapter()
+            state = self._fresh_state()
+        self.room_regions.update(self.room_map)
+        region = self.room_regions.region_near(state.x, state.y)
+        if region is None:
+            raise ValueError("I can't tell which room I'm in yet; look around first so I can map it")
+        self.room_regions.name_room(*self.room_regions.region_point(region), name)
+        self._rooms_cache = None
+        return {"name": name, "area_m2": round(self.room_regions.areas().get(region, 0.), 1)}
+
     def remember_place(self, name):
         with self.lock:
             self._require_adapter()
@@ -475,10 +488,12 @@ class Executor:
         if command.kind == "look":
             self._after_group(group)
             return {"status": "done", **self.look()}
-        if command.kind in ("remember_place", "places", "memory"):
+        if command.kind in ("remember_place", "name_room", "places", "memory"):
             self._after_group(group)
             if command.kind == "remember_place":
                 return {"status": "done", "place": self.remember_place(command.params["name"])}
+            if command.kind == "name_room":
+                return {"status": "done", "room": self.name_room(command.params["name"])}
             return {"status": "done", **self.memory_report(command.params["target"],
                     command.params["limit"], places_only=command.kind == "places")}
         with self.lock:

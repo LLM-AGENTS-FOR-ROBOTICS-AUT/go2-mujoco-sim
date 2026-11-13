@@ -22,7 +22,7 @@ from go2.perception import Detection  # noqa: E402
 from go2.room_map import FREE, OCCUPIED, UNKNOWN, OccupancyGrid  # noqa: E402
 from go2.room_names import EVIDENCE, RoomNamer  # noqa: E402
 from go2.room_regions import RoomRegions  # noqa: E402
-from go2.tools import resolve  # noqa: E402
+from go2.tools import ToolError, resolve  # noqa: E402
 from tests.fakes import FakeRobot, wait_for  # noqa: E402
 
 
@@ -387,6 +387,37 @@ class GoToRoomTests(unittest.TestCase):
         self.assertEqual([r["name"] for r in result["rooms"]], ["kitchen"])
         view = map_view(self.executor)
         self.assertTrue({"bedroom_1", "kitchen", "bedroom_2"} <= {r["name"] for r in view["rooms"]}, view["rooms"])
+
+    def test_the_user_names_the_room_go2_is_in_and_can_go_back_to_it(self):
+        self.assertEqual(self.executor.room_at(0., 0.), "kitchen")            # Go2 starts in the kitchen
+        result = self.executor.submit(resolve("name_room", {"name": "Pantry"}), "g", 1)[0]
+        self.assertEqual(result["status"], "done", result)
+        self.assertEqual(self.executor.room_at(0., 0.), "Pantry")
+        self.assertIn("Pantry", {r["name"] for r in self.executor.rooms()})
+        self.assertNotIn("kitchen", {r["name"] for r in self.executor.rooms()})
+        self.assertFalse(any(c[0] == "move" for c in self.robot.calls))
+        x, y, name = self.executor._room_destination("pantry", *self.rooms[0])
+        self.assertEqual(name, "Pantry")
+
+    def test_naming_a_room_needs_go2_to_be_in_one_on_the_map(self):
+        with self.robot.lock:
+            self.robot.x, self.robot.y = 4.5, 0.                             # 3.5 m into unmapped wall
+        result = self.executor.submit(resolve("name_room", {"name": "office"}), "g", 1)[0]
+        self.assertEqual(result["status"], "rejected", result)
+        self.assertIn("which room", result["error"])
+        for args in ({}, {"name": ""}, {"name": "office", "x_m": 1}):
+            with self.subTest(args=args), self.assertRaises(ToolError):
+                resolve("name_room", args)
+
+    def test_mock_model_names_the_room(self):
+        agent = Agent(MockModel(), self.executor)
+        agent.robot_line = lambda: "standing"
+        self.addCleanup(agent.close)
+        agent.submit("this is the office")
+        self.assertTrue(wait_for(lambda: not agent.busy, 5))
+        self.assertEqual([m["tool_name"] for m in agent.messages if m["role"] == "tool"], ["name_room"])
+        self.assertIn("office", agent.messages[-1]["content"])
+        self.assertEqual(self.executor.room_at(0., 0.), "office")
 
     def test_mock_model_goes_to_a_room_by_name(self):
         agent = Agent(MockModel(), self.executor)
