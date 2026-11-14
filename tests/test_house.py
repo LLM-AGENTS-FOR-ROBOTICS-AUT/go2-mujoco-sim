@@ -53,7 +53,7 @@ class HouseDescriptionTests(unittest.TestCase):
                 h = house.random_house(random.Random(seed))
                 self.assertEqual(house.reachability(h), (True, []))
                 self.assertTrue(house.furnished(h))
-                self.assertTrue(2 <= len(h["rooms"]) <= 7)
+                self.assertTrue(2 <= house.room_count(h) <= 7)
                 self.assertEqual(sum(o["kind"] == "teddy" for o in h["objects"]), 1)
                 self.assertTrue(all(d["width"] >= house.DOOR_MIN_WIDTH for d in h["doors"]))
                 front = [d for d in h["doors"] if d["name"] == "front_door"]
@@ -76,7 +76,7 @@ class HouseDescriptionTests(unittest.TestCase):
 
     def test_room_count_can_be_chosen(self):
         for n in range(2, 8):
-            self.assertEqual(len(house.random_house(random.Random(n), n)["rooms"]), n)
+            self.assertEqual(house.room_count(house.random_house(random.Random(n), n)), n)
 
     def test_hallways_are_kept_clear(self):
         for seed in range(30):
@@ -462,6 +462,181 @@ class OnFurnitureMujocoTests(unittest.TestCase):
                         self.assertGreater((bodies == model.body(item["name"]).id).sum(), 40)
             finally:
                 camera.close()
+
+
+class LayoutShapeTests(unittest.TestCase):
+    """L, T and Z-shaped houses, two hallways at right angles, and open-plan living rooms with kitchens (#21)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.houses = [house.random_house(random.Random(seed)) for seed in range(150)]
+
+    def test_at_least_a_third_are_not_plain_rectangles(self):
+        shaped = sum(not house.rectangular(h) for h in self.houses)
+        self.assertGreaterEqual(shaped, len(self.houses) / 3)
+        self.assertTrue(any(sum(r["type"] == "hallway" for r in h["rooms"]) == 2 for h in self.houses))
+        self.assertTrue(any(d.get("opening") and "kitchen" in d["rooms"] for h in self.houses for d in h["doors"]))
+
+    def test_every_house_is_reachable_with_unique_room_names_and_no_overlaps(self):
+        for seed, h in enumerate(self.houses):
+            with self.subTest(seed=seed):
+                self.assertEqual(house.reachability(h), (True, []))
+                names = [r["name"] for r in h["rooms"]]
+                self.assertEqual(len(names), len(set(names)))
+                rects = [r["rect"] for r in h["rooms"]]
+                for i, a in enumerate(rects):
+                    for b in rects[i + 1:]:
+                        overlap_x = min(a[2], b[2]) - max(a[0], b[0])
+                        overlap_y = min(a[3], b[3]) - max(a[1], b[1])
+                        self.assertFalse(overlap_x > 1e-6 and overlap_y > 1e-6, (a, b))
+
+    def test_an_opening_is_the_whole_shared_wall_with_no_wall_left_in_it(self):
+        found = 0
+        for seed, h in enumerate(self.houses):
+            rooms = {r["name"]: r for r in h["rooms"]}
+            pieces = house.wall_pieces(h)
+            for door in (d for d in h["doors"] if d.get("opening")):
+                found += 1
+                with self.subTest(seed=seed, opening=door["name"]):
+                    a, b = (rooms[n] for n in door["rooms"])
+                    self.assertIn({a["type"], b["type"]}, ({"hallway"}, {"living_room", "kitchen"}))
+                    axis, line, lo, hi = house._shared_wall(a["rect"], b["rect"])
+                    self.assertEqual(door["axis"], axis)
+                    self.assertAlmostEqual(door["width"], hi - lo, places=2)
+                    self.assertTrue(door["open"])
+                    for p_axis, p_line, p_a, p_b, *_ in pieces:
+                        if p_axis == axis and abs(p_line - line) < 1e-6:
+                            self.assertFalse(min(p_b, hi) - max(p_a, lo) > 1e-3, "a wall piece in the opening")
+        self.assertGreater(found, 20)
+
+    def test_open_spaces_groups_rooms_joined_by_openings(self):
+        for seed, h in enumerate(self.houses):
+            spaces = house.open_spaces(h)
+            with self.subTest(seed=seed):
+                self.assertEqual(sorted(n for space in spaces for n in space), sorted(r["name"] for r in h["rooms"]))
+                joined = {frozenset(d["rooms"]) for d in h["doors"] if d.get("opening")}
+                self.assertEqual(len(spaces), len(h["rooms"]) - len(joined))
+                for pair in joined:
+                    self.assertTrue(any(pair <= set(space) for space in spaces))
+        self.assertEqual(house.open_spaces(house.house_demo()), [[r["name"]] for r in house.house_demo()["rooms"]])
+
+    def test_big_furniture_never_backs_onto_an_opening(self):
+        for seed, h in enumerate(self.houses):
+            for door in (d for d in h["doors"] if d.get("opening")):
+                line = door["pos"][1] if door["axis"] == "x" else door["pos"][0]
+                half = door["width"] / 2
+                along = door["pos"][0] if door["axis"] == "x" else door["pos"][1]
+                for item in h["objects"]:
+                    if not house.KINDS[item["kind"]][2] or item["room"] not in door["rooms"]:
+                        continue
+                    x0, y0, x1, y1 = house.footprint(item)
+                    near, lo, hi = ((min(abs(y0 - line), abs(y1 - line)), x0, x1) if door["axis"] == "x"
+                                    else (min(abs(x0 - line), abs(x1 - line)), y0, y1))
+                    with self.subTest(seed=seed, item=item["name"], opening=door["name"]):
+                        self.assertFalse(near < .2 and hi > along - half and lo < along + half,
+                                         "backed onto the open side")
+
+    @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
+    def test_no_lintel_over_an_opening_in_mujoco(self):
+        import world
+        h = next(h for h in self.houses if any(d.get("opening") for d in h["doors"]))
+        model, _ = world.build("house", h)
+        bodies = {model.body(i).name for i in range(model.nbody)}
+        for door in h["doors"]:
+            self.assertEqual(f"{door['name']}_lintel" in bodies, not door.get("opening"), door["name"])
+
+
+class TileFloorTests(unittest.TestCase):
+    """Kitchen and bathroom tiles that show from Go2's camera (#21)."""
+
+    def test_tiles_have_darker_grout_and_vary_a_little(self):
+        import numpy as np
+        for kind, (tile, grout, _) in house.TILE_LOOK.items():
+            pixels = house.tile_pixels(tile, grout).astype(float).mean(2)
+            middle = pixels[house.TILE_PIXELS // 2::house.TILE_PIXELS, house.TILE_PIXELS // 2::house.TILE_PIXELS]
+            self.assertGreater(middle.min() - pixels[0, :].max(), 50, f"{kind}: grout clearly darker")
+            self.assertGreater(middle.std(), 1, f"{kind}: tiles differ a little in shade")
+            np.testing.assert_array_equal(house.tile_pixels(tile, grout), house.tile_pixels(tile, grout))
+
+    @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
+    @needs_camera
+    def test_go2s_camera_sees_the_tiles(self):
+        import numpy as np
+        import world
+        from sensors import Camera
+        for kind in house.TILE_LOOK:
+            h = {"scene": "house", "rooms": [{"name": "r", "type": kind, "rect": [-1., -3., 5., 3.]}], "doors": [],
+                 "objects": [], "start": [0., 0., 0.]}
+            model, _ = world.build("house", h)
+            data = mujoco.MjData(model)
+            data.qpos[:3], data.qpos[3:7] = (0, 0, .32), (1, 0, 0, 0)
+            mujoco.mj_forward(model, data)
+            camera = Camera(model)
+            try:
+                rgb, bodies = camera.capture(data)
+            finally:
+                camera.close()
+            near = bodies == model.body("floor_r").id
+            near[:int(len(near) * .75)] = False                 # the bottom quarter: floor within about a metre
+            light = rgb[near].astype(float) @ [.299, .587, .114]
+            with self.subTest(kind=kind):
+                self.assertGreater(np.percentile(light, 95) - np.percentile(light, 5), 50, "grout lines show")
+                self.assertLess(np.median(light), 220, "not washed out to white")
+
+
+class ColourTests(unittest.TestCase):
+    """Random colours by kind, named in the description (#21)."""
+
+    def test_each_palette_word_is_the_colour_the_simulator_reports(self):
+        import colorsys
+        import world
+        for kind, palette in house.PALETTES.items():
+            for word, rgba in palette:
+                self.assertEqual(world.colour_word(*colorsys.rgb_to_hsv(*rgba[:3])), word, (kind, rgba))
+
+    def test_random_houses_vary_colours_and_name_them(self):
+        seen = {}
+        for seed in range(100):
+            for item in house.random_house(random.Random(seed))["objects"]:
+                if "colour" not in item:
+                    continue
+                with self.subTest(seed=seed, item=item["name"]):
+                    self.assertNotIn("gso", item, "a scanned object shows its own texture")
+                    self.assertIn((item["colour"], tuple(item["rgba"])), house.PALETTES[item["kind"]])
+                seen.setdefault(item["kind"], []).append(item["colour"])
+        for kind, palette in house.PALETTES.items():
+            if len(seen.get(kind, [])) >= 15:                   # rare kinds (a second backpack) may show fewer
+                self.assertGreaterEqual(len(set(seen[kind])), min(4, len(palette)), (kind, set(seen[kind])))
+        for kind in ("ball", "book", "dining_table", "refrigerator", "sink"):    # cups: mostly the one scanned mug
+            self.assertIn(kind, seen)
+
+    def test_the_demo_house_keeps_its_colours(self):
+        self.assertFalse([o["name"] for o in house.house_demo()["objects"] if "colour" in o])
+
+    @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
+    @needs_camera
+    def test_go2s_camera_names_each_colour_as_the_description_does(self):
+        import world
+        from go2.perception import color_name
+        from sensors import Camera
+        for kind, palette in house.PALETTES.items():
+            far = 2.6 if house.KINDS[kind][2] else 1.3          # big furniture further off, to fit in view
+            for word, rgba in palette:
+                h = {"scene": "house", "rooms": [{"name": "r", "type": "living_room", "rect": [-1., -3., 5., 3.]}],
+                     "doors": [], "start": [0., 0., 0.],
+                     "objects": [{"name": "thing", "label": kind, "kind": kind, "room": "r", "pos": [far, 0.],
+                                  "yaw": 2., "rgba": list(rgba)}]}
+                model, _ = world.build("house", h)
+                data = mujoco.MjData(model)
+                data.qpos[:3], data.qpos[3:7] = (0, 0, .32), (1, 0, 0, 0)
+                mujoco.mj_forward(model, data)
+                camera = Camera(model)
+                try:
+                    rgb, bodies = camera.capture(data)
+                finally:
+                    camera.close()
+                with self.subTest(kind=kind, colour=word):
+                    self.assertEqual(color_name(rgb[bodies == model.body("thing").id]), word)
 
 
 @unittest.skipUnless(HAVE_SIM, "simulation requirements not installed")

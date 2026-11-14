@@ -234,9 +234,13 @@ class RoomSplittingTests(unittest.TestCase):
     def test_no_two_rooms_merge_and_nearly_all_stay_whole_in_20_random_houses(self):
         whole = total = 0
         for seed in range(20):
-            rooms = split_rooms(house.random_house(random.Random(seed)))
+            h = house.random_house(random.Random(seed))
+            rooms = split_rooms(h)
+            spaces = house.open_spaces(h)      # open plan (#21): rooms with no wall between them are one space
             with self.subTest(seed=seed):
-                self.assertEqual(len({region for region, _ in rooms.values()}), len(rooms), "rooms merged")
+                self.assertEqual(len({region for region, _ in rooms.values()}), len(spaces), "rooms merged")
+                for space in spaces:
+                    self.assertEqual(len({rooms[name][0] for name in space}), 1, f"{space} is one space")
             whole += sum(share > .98 for _, share in rooms.values())
             total += len(rooms)
         self.assertGreaterEqual(whole / total, .95, f"{whole} of {total} rooms whole")
