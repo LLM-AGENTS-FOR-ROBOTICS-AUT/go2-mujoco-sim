@@ -8,7 +8,8 @@ file for the simulator process and replayed later:
    "doors":   [{"name": "door_0", "rooms": ["hallway", "bedroom_2"], "pos": [x, y], "axis": "x" | "y",
                 "width": 1.0, "open": true}, ...],
    "objects": [{"name": "teddy_bear", "label": "teddy bear", "kind": "teddy", "room": "bedroom_2",
-                "pos": [x, y], "yaw": 0.8, "rgba": [r, g, b, 1], "gso": "teddy_bear"}, ...],
+                "pos": [x, y], "yaw": 0.8, "rgba": [r, g, b, 1], "gso": "teddy_bear"},
+               {"name": "laptop", ..., "on": "desk_1"}, ...],     # "on": standing on that furniture
    "start":   [x, y, yaw]}
 
 Rooms are axis-aligned rectangles that tile the house. A door sits on a wall line: axis "x" means the
@@ -105,6 +106,33 @@ MODELS = {"chair": [("dining_chair_02", 0., 0, 0), ("painted_wooden_chair_01", 0
           "oven": [("electric_stove", 0., 0, 0)]}
 FADED = .01                                # opacity of the shapes under a model (0 would hide them from the LiDAR)
 
+# Things on furniture (#21): a teddy bear on the bed, a laptop on the desk, cups on the table. Random houses only;
+# the demo house keeps everything on the floor. SURFACES: kind -> (height of its top, usable top in its own
+# frame (x0, y0, x1, y1)), from the plain shapes in _geoms (the bed's top stops short of the pillow). In MuJoCo
+# each thing is set down on whatever is drawn there (rest_on_furniture), so on a realistic model too.
+SURFACES = {"bed": (.43, (-.62, -.91, .62, .55)),
+            "desk": (.76, (-.58, -.33, .58, .33)),
+            "dining_table": (.78, (-.58, -.38, .58, .38))}
+# What goes on each surface, with the chance that a thing of that kind in the room ends up there rather than on
+# the floor. Keyboards, bowls, clocks and books are left off desks and tables: from Go2's camera, about 0.36 m
+# up, something that flat is hidden behind the table's edge wherever it stands (see sight_share).
+ON_TOP = {"bed": {"teddy": .5, "book": .4, "backpack": .3, "laptop": .4, "toy_dog": .4, "toy_elephant": .4},
+          "desk": {"laptop": .85, "cup": .4},
+          "dining_table": {"cup": .7, "laptop": .4}}
+# Height of each thing that can go on furniture: the lower of its plain shapes and its scanned model (which is
+# only used when downloaded), so a sight-line check never counts on the taller one.
+HEIGHTS = {"teddy": .37, "book": .04, "backpack": .4, "laptop": .19, "cup": .1, "toy_dog": .2, "toy_elephant": .27}
+# Go2's camera, for the sight-line check (views): height when standing, the top of its view (half of the 88.5
+# degree vertical field of view), how far back it stands to look at most, and how far ahead of the body's
+# centre the camera is (world.CAMERA_POS).
+CAMERA_EYE, VIEW_UP_DEG, STANDOFF, CAMERA_AHEAD = .36, 44., 1.5, .33
+SCREEN_BACK = .15                          # a laptop faces Go2 (_place_on): its screen, the part that shows, is
+                                           # this much further back than its middle
+VISIBLE_SHARE = .5                         # at least half of a thing on furniture can be seen from the floor
+# Things taller than the sight line, on the floor or beside the thing on the furniture: they hide what is behind.
+BLOCKS_VIEW = {"bed", "refrigerator", "oven", "sink", "tv", "couch", "dining_table", "desk", "toilet", "chair",
+               "plant", "backpack", "teddy", "laptop", "toy_elephant", "toy_dog"}
+
 
 def room_at(house, x, y):
     """The name of the room containing (x, y), or None outside the house."""
@@ -135,6 +163,120 @@ def footprint(item):
 def _gap(box, x, y):
     """Distance from point (x, y) to rectangle `box` (0 inside)."""
     return math.hypot(max(box[0] - x, 0, x - box[2]), max(box[1] - y, 0, y - box[3]))
+
+
+def _local(furniture, x, y):
+    """(x, y) in `furniture`'s own frame."""
+    fx, fy = furniture["pos"]
+    c, s = math.cos(furniture["yaw"]), math.sin(furniture["yaw"])
+    return c * (x - fx) + s * (y - fy), -s * (x - fx) + c * (y - fy)
+
+
+def _crosses(box, a, b):
+    """True if the segment from a to b passes through rectangle box (x0, y0, x1, y1)."""
+    t0, t1 = 0., 1.
+    for p, d, lo, hi in ((a[0], b[0] - a[0], box[0], box[2]), (a[1], b[1] - a[1], box[1], box[3])):
+        if abs(d) < 1e-9:
+            if not lo <= p <= hi:
+                return False
+            continue
+        ta, tb = sorted(((lo - p) / d, (hi - p) / d))
+        t0, t1 = max(t0, ta), min(t1, tb)
+        if t0 > t1:
+            return False
+    return True
+
+
+def views(house, item):
+    """Where Go2 can stand to see `item` on a piece of furniture, best first, as [(share, (x, y, yaw))]: the
+    share of the thing (0 to 1) in view over the furniture's edge, and the pose of Go2's body (its centre and
+    heading). Empty when there is nowhere to see it from.
+
+    Side view of one spot: the camera is CAMERA_EYE up, e metres back from the top's edge, and the thing is s
+    metres in from that edge. The line from the camera grazing the edge rises to CAMERA_EYE + (top -
+    CAMERA_EYE) * (e + s) / e above the thing; only the part above that line is in view, and below the top of
+    the camera's view. Spots are tried in front of each open side (not a bed's head end, where the headboard
+    is), straight on and half a metre to either side, up to STANDOFF back. A spot needs room for Go2's body
+    inside the room, and a clear line from the camera to the thing past other furniture taller than the
+    camera. Simplified: the thing's own shape is ignored, and a chair or plant either blocks the line or not."""
+    furniture = next(o for o in house["objects"] if o["name"] == item["on"])
+    top, (x0, y0, x1, y1) = SURFACES[furniture["kind"]]
+    height = HEIGHTS[item["kind"]]
+    fx, fy = furniture["pos"]
+    c, sn = math.cos(furniture["yaw"]), math.sin(furniture["yaw"])
+    u, v = _local(furniture, *item["pos"])
+    tx, ty = item["pos"]
+    rx0, ry0, rx1, ry1 = next(r["rect"] for r in house["rooms"] if r["name"] == furniture["room"])
+    floor = [o for o in house["objects"] if not o.get("on")]
+    blockers = [footprint(o) for o in floor if o is not furniture and o["kind"] in BLOCKS_VIEW]
+    blockers += [footprint(o) for o in house["objects"]                # a teddy bear in front of a book
+                 if o.get("on") == furniture["name"] and o["name"] != item.get("name") and o["kind"] in BLOCKS_VIEW]
+    room_for_body = ROBOT_RADIUS + WALL_THICK
+    out = []
+    sides = [((0, -1), v - y0, (u, y0)), ((-1, 0), u - x0, (x0, v)), ((1, 0), x1 - u, (x1, v))]
+    if furniture["kind"] != "bed":
+        sides.append(((0, 1), y1 - v, (u, y1)))
+    deeper = SCREEN_BACK if item["kind"] == "laptop" else 0.
+    for (su, sv), s, (eu, ev) in sides:
+        s += deeper
+        nx, ny = c * su - sn * sv, sn * su + c * sv                   # outward, in the world
+        px, py = fx + c * eu - sn * ev, fy + sn * eu + c * ev         # the edge, level with the thing
+        for e in (STANDOFF, 1., .6):
+            lowest = max(top, CAMERA_EYE + (top - CAMERA_EYE) * (e + s) / e)
+            for side_step in (0., -.5, .5):
+                cx, cy = px + nx * e - ny * side_step, py + ny * e + nx * side_step       # the camera
+                yaw = math.atan2(ty - cy, tx - cx)
+                bx, by = cx - CAMERA_AHEAD * math.cos(yaw), cy - CAMERA_AHEAD * math.sin(yaw)
+                if not all(rx0 + room_for_body <= x <= rx1 - room_for_body and
+                           ry0 + room_for_body <= y <= ry1 - room_for_body for x, y in ((bx, by), (cx, cy))):
+                    continue
+                if any(_gap(footprint(o), bx, by) < ROBOT_RADIUS or _gap(footprint(o), cx, cy) < .05 for o in floor):
+                    continue                                          # no room for Go2 there
+                if any(_crosses(box, (cx, cy), (tx, ty)) for box in blockers):
+                    continue
+                d = math.hypot(tx - cx, ty - cy)
+                highest = min(top + height, CAMERA_EYE + math.tan(math.radians(VIEW_UP_DEG)) * d)
+                share = min(max((highest - lowest) / height, 0.), 1.)
+                out.append((round(share, 2), (round(bx, 2), round(by, 2), round(yaw, 2))))
+    out.sort(key=lambda view: -view[0])                               # stable: further back first on ties
+    return out
+
+
+def sight_share(house, item):
+    """How much of `item` (0 to 1) Go2 can see from the best spot on the floor (views). 1 for things on the
+    floor, which this doesn't check."""
+    if not item.get("on"):
+        return 1.
+    found = views(house, item)
+    return found[0][0] if found else 0.
+
+
+def _place_on(rng, house, furniture, kind, on_top):
+    """A spot for `kind` on top of `furniture` where Go2 can see it from the floor, as (x, y, yaw), or None.
+    on_top: what is already on it, as (x, y, radius)."""
+    _, (x0, y0, x1, y1) = SURFACES[furniture["kind"]]
+    r = math.hypot(*KINDS[kind][1])
+    if kind == "laptop":         # turned square to the side it's seen from, so it needs less margin
+        r = max(KINDS[kind][1]) + .02
+    if x1 - x0 < 2 * r or y1 - y0 < 2 * r:
+        return None
+    c, s = math.cos(furniture["yaw"]), math.sin(furniture["yaw"])
+    for _ in range(30):
+        u, v = rng.uniform(x0 + r, x1 - r), rng.uniform(y0 + r, y1 - r)
+        x = round(furniture["pos"][0] + c * u - s * v, 2)
+        y = round(furniture["pos"][1] + s * u + c * v, 2)
+        if any(math.hypot(x - ox, y - oy) < r + orad + .03 for ox, oy, orad in on_top):
+            continue
+        yaw = round(furniture["yaw"] + rng.uniform(-.3, .3), 2)      # facing out, like the furniture
+        found = views(house, {"kind": kind, "pos": [x, y], "on": furniture["name"]})
+        if not found or found[0][0] < VISIBLE_SHARE:
+            continue
+        if kind == "laptop":     # opened towards where it's seen from: edge on, a laptop is a thin line
+            bx, by, look = found[0][1]
+            dx, dy = bx + CAMERA_AHEAD * math.cos(look) - x, by + CAMERA_AHEAD * math.sin(look) - y
+            yaw = round(math.atan2(dx, -dy), 2)                       # its keyboard side (-y) towards Go2
+        return x, y, yaw
+    return None
 
 
 def _place(rng, house, room, kind, taken):
@@ -176,14 +318,32 @@ def _place(rng, house, room, kind, taken):
     return None
 
 
-def furnish(rng, house, teddy_room=None):
+def furnish(rng, house, teddy_room=None, on_furniture=False):
     """Fill house["objects"] with furniture that fits each room type, mostly in likely places, plus one
     teddy bear (in `teddy_room` when given). Each scanned object is used once; repeats are plain shapes.
-    Kinds with realistic models name one, the styles taking turns."""
-    objects, taken, used, counts = [], [], set(), {}
+    Kinds with realistic models name one, the styles taking turns. With on_furniture, some small things go
+    on a bed, desk or table (ON_TOP), always where Go2 can see them from the floor; otherwise all stay on the
+    floor (the demo house, which must not change)."""
+    objects, taken, used, counts, on_top = [], [], set(), {}, {}
+    house["objects"] = objects                     # sight_share looks the furniture up as things are added
 
-    def add(kind, room):
-        spot = _place(rng, house, room, kind, taken)
+    def surface_for(kind, room):
+        """Furniture in `room` that `kind` could go on this time, or None."""
+        if not on_furniture:
+            return None
+        tops = [o for o in objects if o["room"] == room["name"] and kind in ON_TOP.get(o["kind"], {})]
+        if not tops:
+            return None
+        furniture = rng.choice(tops)
+        return furniture if rng.random() < ON_TOP[furniture["kind"]][kind] else None
+
+    def add(kind, room, furniture=None):
+        if furniture is not None:
+            spot = _place_on(rng, house, furniture, kind, on_top.setdefault(furniture["name"], []))
+            if spot is None:
+                return add(kind, room)             # no spot in view up there: on the floor instead
+        else:
+            spot = _place(rng, house, room, kind, taken)
         if spot is None:
             return False
         x, y, yaw = spot
@@ -197,8 +357,12 @@ def furnish(rng, house, teddy_room=None):
             item["gso"] = gso
         if kind in MODELS:          # in turn rather than at random, so the houses themselves don't change
             item["model"] = MODELS[kind][(counts[kind] - 1) % len(MODELS[kind])][0]
+        if furniture is not None:
+            item["on"] = furniture["name"]
+            on_top[furniture["name"]].append((x, y, math.hypot(*KINDS[kind][1])))
+        else:
+            taken.append(footprint(item))          # things on furniture leave the floor free
         objects.append(item)
-        taken.append(footprint(item))
         return True
 
     rooms = [r for r in house["rooms"] if r["type"] != "hallway"]      # hallways stay clear
@@ -212,13 +376,32 @@ def furnish(rng, house, teddy_room=None):
         homes = bedrooms if bedrooms and rng.random() < TEDDY_IN_BEDROOM else list(rooms)
         rng.shuffle(homes)
     for room in homes + [r for r in rooms if r not in homes]:   # the next room if its first home is full
-        if add("teddy", room):
+        if add("teddy", room, surface_for("teddy", room)):
             break
     for kind, room in [w for w in wishes if not KINDS[w[0]][2]]:
         if kind in PORTABLE and len(rooms) > 1 and rng.random() < UNLIKELY_SHARE:
             room = rng.choice([r for r in rooms if r is not room])
-        add(kind, room)
-    house["objects"] = objects
+        add(kind, room, surface_for(kind, room))
+    # Floor things added after something went up on a table can hide it, or stand where Go2 would look from:
+    # move it to another spot up there that is in view, or else down to the floor.
+    for item in [o for o in objects if o.get("on")] * 2:              # twice: a move can hide another
+        if item not in objects or sight_share(house, item) >= VISIBLE_SHARE:
+            continue
+        mine = on_top[item["on"]]
+        mine[:] = [t for t in mine if [t[0], t[1]] != item["pos"]]
+        furniture = next(o for o in objects if o["name"] == item["on"])
+        spot = _place_on(rng, house, furniture, item["kind"], mine)
+        if spot is not None:
+            mine.append((spot[0], spot[1], math.hypot(*KINDS[item["kind"]][1])))
+        else:
+            del item["on"]
+            spot = _place(rng, house, next(r for r in rooms if r["name"] == item["room"]), item["kind"], taken)
+            if spot is None:
+                objects.remove(item)
+                continue
+        item["pos"], item["yaw"] = [spot[0], spot[1]], spot[2]
+        if not item.get("on"):
+            taken.append(footprint(item))
     return house
 
 
@@ -440,8 +623,9 @@ def random_house(rng, n_rooms=None):
         else:
             start, yaw = [_snap((x0 + x1) / 2), _snap((y0 + y1) / 2)], _snap(rng.uniform(-math.pi, math.pi))
         house = {"scene": "house", "rooms": rooms, "doors": doors, "objects": [], "start": start + [round(yaw, 2)]}
-        furnish(rng, house)
-        if furnished(house) and reachability(house)[0]:
+        furnish(rng, house, on_furniture=True)
+        teddies = sum(o["kind"] == "teddy" for o in house["objects"])
+        if furnished(house) and teddies == 1 and reachability(house)[0]:
             return house
     raise RuntimeError(f"no furnished {n}-room house with every room reachable in 100 tries")
 
@@ -599,7 +783,8 @@ def _geoms(kind, rgba, W):
         "backpack": [("box", (.15, .1, .2), (0, 0, .2), rgba)],
         "cup": [("cylinder", (.045, .05), (0, 0, .05), rgba)],
         "bowl": [("cylinder", (.1, .03), (0, 0, .03), rgba)],
-        "laptop": [("box", (.17, .12, .012), (0, 0, .012), rgba)],
+        "laptop": [("box", (.17, .12, .012), (0, 0, .012), rgba),                    # open: base and screen
+                   ("box", (.17, .008, .11), (0, .115, .13), (.1, .1, .12, 1))],
         "keyboard": [("box", (.21, .07, .01), (0, 0, .01), rgba)],
         "book": [("box", (.11, .08, .02), (0, 0, .02), rgba)],
         "clock": [("cylinder", (.07, .03), (0, 0, .03), rgba)],
@@ -648,6 +833,40 @@ def _add_model(spec, body, item, added):
         geom.quat = (math.cos(angle / 2), 0, 0, math.sin(angle / 2))
         geom.contype = geom.conaffinity = 0           # only looks: the plain shapes are the body
     return shown
+
+
+def rest_on_furniture(model, house):
+    """Set each thing that is "on" furniture down on what is drawn under it, once the house is compiled: the
+    plain top, or the realistic model's (a bed model's mattress isn't at the plain shapes' height). A ray
+    straight down through the thing's centre, against the furniture's visible shapes only."""
+    import mujoco
+    import numpy as np
+    items = [o for o in house["objects"] if o.get("on")]
+    if not items:
+        return
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    down = np.array([0., 0., -1.])
+    for item in items:
+        furniture = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, item["on"])
+        body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, item["name"])
+        start = np.array([*item["pos"], CEILING])
+        hits = []
+        for g in range(model.ngeom):
+            if model.geom_bodyid[g] != furniture:
+                continue
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+                d = mujoco.mj_rayMesh(model, data, g, start, down)
+            elif model.geom_rgba[g][3] > FADED:
+                d = mujoco.mju_rayGeom(data.geom_xpos[g], data.geom_xmat[g], model.geom_size[g], start, down,
+                                       model.geom_type[g])
+            else:
+                continue                                  # a faded shape under a model: not what is seen
+            if d >= 0:
+                hits.append(d)
+        kind = next(o["kind"] for o in house["objects"] if o["name"] == item["on"])
+        top = CEILING - min(hits) if hits else SURFACES[kind][0]
+        model.body_pos[body][2] += top
 
 
 def build_house(spec, house, objects):
