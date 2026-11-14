@@ -205,6 +205,20 @@ class SearchTests(MissionTestCase):
         self.assertEqual(task.detail["mission"]["outcome"], "not_found")
         self.assertEqual(self.house.walks, ["kitchen"])
 
+    def test_rooms_renumbered_as_the_map_grows_are_each_checked_once(self):
+        split, listed = [0], self.house.rooms
+
+        def rooms(fresh=False):                          # every split of the map numbers the rooms afresh
+            split[0] += 1
+            return [{**r, "region": 100 * split[0] + r["region"]} for r in listed()]
+
+        def region_near(x, y, radius_m=1., among=None):
+            return 100 * split[0] + list(ROOMS).index(room_of(x, y)) if room_of(x, y) else None
+        self.executor.rooms, self.executor.room_regions.region_near = rooms, region_near
+        task = self.run_mission("search", {"target": "umbrella"}, timeout=10)
+        self.assertEqual(task.detail["mission"]["outcome"], "not_found", task.detail)
+        self.assertEqual(sorted(self.house.walks), sorted(ROOMS), "each room once")
+
     def test_a_saved_place_it_cant_get_to_isnt_reported_as_searched(self):
         self.executor.places.remember("toy box", 4., -3., 0.)
         self.executor._goto = lambda task, cancel: (_ for _ in ()).throw(AdapterError("no route to the toy box"))

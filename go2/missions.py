@@ -295,10 +295,15 @@ def search(m):
         elif m.look_around(seen) and reach():
             return
 
+    st.setdefault("looked_from", [])                    # where it looked round in each checked room
     while True:
         m.check()
         x, y, _ = m.here()
-        rooms = [r for r in m.rooms() if r["region"] not in st["checked"]]
+        # A room is checked if it was looked round in: by its region, and by where Go2 stood, since the map's
+        # regions can be renumbered as it grows (the same hallway, a new number) and it mustn't be checked again.
+        rooms = m.rooms()                               # splits the map first: the spots are placed on this split
+        checked = st["checked"] | {ex.room_regions.region_near(px, py, 0.) for px, py in st["looked_from"]}
+        rooms = [r for r in rooms if r["region"] not in checked]
         if where:
             wanted = _kind(where)
             rooms = [r for r in rooms if _kind(r["name"]) in (wanted, wanted.removeprefix("the_"))]
@@ -313,6 +318,7 @@ def search(m):
             if m.look_around(seen) and reach():
                 return
             st["checked"].add(room["region"])        # only once looked round: a stop on the way leaves it to do
+            st["looked_from"].append(m.here()[:2])
             st["checked_names"].add(name)
             m.say(f"checked {_the(name)}: no {target}")
             continue
