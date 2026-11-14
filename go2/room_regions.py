@@ -71,7 +71,13 @@ def _way_through(labels, a, b, centre, reach):
     """Unit (row, col) direction from region a's floor to region b's, right by the gap at `centre`."""
     r0, c0 = (max(int(v) - reach, 0) for v in centre)
     window = labels[r0:int(centre[0]) + reach + 1, c0:int(centre[1]) + reach + 1]
-    sides = [np.argwhere(window == label).mean(axis=0) for label in (a, b)]
+    sides = []
+    for label in (a, b):
+        cells = np.argwhere(window == label) + (r0, c0)
+        if not len(cells):         # a long or bent border: its middle can be far from one region's floor
+            cells = np.argwhere(labels == label)
+            cells = cells[[np.argmin(((cells - centre) ** 2).sum(axis=1))]]
+        sides.append(cells.mean(axis=0))
     step = sides[1] - sides[0]
     return step / (np.linalg.norm(step) or 1.)
 
@@ -96,6 +102,19 @@ def _is_doorway(border, grid, resolution, across):
     return True                        # thin sides (or unseen ones: don't merge on a guess)
 
 
+def _gaps(cells):
+    """Border cell positions grouped into separate gaps: runs of positions next to each other."""
+    left, out = set(cells), []
+    while left:
+        queue = [left.pop()]
+        for r, c in queue:                     # grows as neighbours are found
+            near = [p for p in left if abs(p[0] - r) <= 1 and abs(p[1] - c) <= 1]
+            left.difference_update(near)
+            queue.extend(near)
+        out.append(np.array(sorted(queue)))
+    return sorted(out, key=lambda gap: tuple(gap[0]))
+
+
 def _merge_furniture_splits(labels, grid, resolution):
     """Merge neighbouring regions that meet at a gap that isn't a doorway; labels renumbered 1..n."""
     borders = {}
@@ -113,10 +132,12 @@ def _merge_furniture_splits(labels, grid, resolution):
         return i
     reach = int(np.ceil(.6 / resolution))
     for (la, lb), cells in sorted(borders.items()):
-        cells = np.array(cells)
-        across = _way_through(labels, la, lb, cells.mean(axis=0), reach)
-        if root(la) != root(lb) and not _is_doorway(cells, grid, resolution, across):
-            parent[max(root(la), root(lb))] = min(root(la), root(lb))
+        # Two regions can meet at more than one gap (two doors into one room): judge each gap on its own, or
+        # together they look like one gap wider than any doorway.
+        for gap in _gaps(cells):
+            across = _way_through(labels, la, lb, gap.mean(axis=0), reach)
+            if root(la) != root(lb) and not _is_doorway(gap, grid, resolution, across):
+                parent[max(root(la), root(lb))] = min(root(la), root(lb))
     roots = sorted({root(i) for i in range(1, len(parent))})
     lookup = np.zeros(len(parent), dtype=np.int32)
     for i in range(1, len(parent)):
