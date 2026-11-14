@@ -122,7 +122,8 @@ class ApiTests(unittest.TestCase):
         self.make()
         state = self.get("/api/state")
         self.assertEqual(set(state), {"revision", "robot", "model", "voice", "agent", "actions", "conversation", "camera", "semantic_memory",
-                                      "feedback"})
+                                      "feedback", "alerts"})
+        self.assertEqual(state["alerts"], [], "no mission has raised an alert (#18)")
         self.assertEqual(state["feedback"], {"upload": False}, "no uploader: flags stay on this computer")
         robot = state["robot"]
         self.assertEqual((robot["kind"], robot["connected"], robot["requires_arming"], robot["armed"], robot["scene"]),

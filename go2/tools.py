@@ -23,6 +23,10 @@ ACROBATICS = ("front_flip", "back_flip", "left_flip", "front_jump", "front_pounc
               "handstand", "walk_upright", "cross_step", "free_bound", "free_jump")
 GAITS = ("classic", "trot_run", "static_walk", "economic", "free_walk")
 SPEED_LEVELS = {"slow": -1, "normal": 0, "fast": 1}
+MISSIONS = ("search", "guard", "patrol", "explore")
+# seconds: (default, most). Exploring walks slowly (0.15 m/s), so searching a whole house takes several minutes.
+MISSION_LIMITS = {"search": (600, 1800), "guard": (600, 3600), "patrol": (1800, 7200), "explore": (1200, 3600)}
+PATROL_EVERY_S = (60, 3600, 600)          # seconds between patrol rounds: least, most, default
 EXPECTED_S = {"stand": 1.5, "stand_up": 2.0, "lie_down": 2.0, "sit": 2.5, "recovery_stand": 3.0, "damp": 1.0,
               "hello": 7.0, "stretch": 4.5, "content": 4.0, "heart": 7.0, "scrape": 7.0, "dance1": 7.0, "dance2": 7.0,
               "front_flip": 4.0, "back_flip": 4.0, "left_flip": 4.0, "front_jump": 3.0, "front_pounce": 3.0}
@@ -102,6 +106,33 @@ TOOLS = [
         "matching is remembered. Use approach to visit and visually check an object.",
         {"target": {"type": "string", "description": "optional object description or place name"},
          "limit": {"type": "integer", "description": "1 to 10; default 3"}}),
+    # Missions (#18): long tasks that run on their own. Names, arguments and results are fixed for training (#19).
+    _fn("search", "Look for something anywhere in the house: what you remember first, then room by room (the "
+        "likeliest rooms first), exploring where you haven't been, until you see it and walk up to it, or have "
+        "looked everywhere you can reach. It runs on its own and reports progress; stop cancels it, and asking again "
+        "for the same thing carries on where it left off. Simulator only for now.",
+        {"target": {"type": "string", "description": "what to find, e.g. 'teddy bear' or 'the laptop'"},
+         "where": {"type": "string", "description": "only this room or saved place, e.g. 'kitchen'"},
+         "time_limit_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['search'][1]}; "
+                          f"default {MISSION_LIMITS['search'][0]}"}}, ["target"]),
+    _fn("guard", "Go to a room or saved place (or stay here), sit facing the way in and watch for people, alerting "
+        "the user with a snapshot when someone comes in. You only watch and report: you never move toward anyone. "
+        "Simulator only for now.",
+        {"place": {"type": "string", "description": "a room or saved place, e.g. 'hallway' or 'front door'; "
+                   "default where you are"},
+         "duration_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['guard'][1]}; "
+                        f"default {MISSION_LIMITS['guard'][0]}"}}),
+    _fn("patrol", "Walk through rooms on a schedule, looking round each one, and report what changed since the last "
+        "round: things moved, new or gone, and people seen. Simulator only for now.",
+        {"rooms": {"type": "array", "items": {"type": "string"}, "description": "default every room you know"},
+         "every_s": {"type": "number", "description": f"seconds between rounds, {PATROL_EVERY_S[0]} to "
+                     f"{PATROL_EVERY_S[1]}; default {PATROL_EVERY_S[2]}"},
+         "duration_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['patrol'][1]}; "
+                        f"default {MISSION_LIMITS['patrol'][0]}"}}),
+    _fn("explore", "Explore the house: go everywhere you can reach, mapping it and naming its rooms, then say which "
+        "rooms there are. Simulator only for now.",
+        {"time_limit_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['explore'][1]}; "
+                          f"default {MISSION_LIMITS['explore'][0]}"}}),
     _fn("look", "See what is around you: objects in front of you with distance and direction, plus the free "
         "space on every side. To check behind or beside you, turn and look again."),
     _fn("posture", "Change posture. stand = balanced and ready to walk; stand_up = stiff locked stand; "
@@ -131,7 +162,7 @@ TOOLS = [
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 # Tools the fine-tuned models haven't been trained on yet (#16). They are left out of the compact prompt so it
 # stays exactly as trained; use --mock or a full-prompt model (e.g. go2-ft-04@full) to try them.
-UNTRAINED = {"follow", "remember_place", "name_room", "go_to_place", "list_places", "query_memory"}
+UNTRAINED = {"follow", "remember_place", "name_room", "go_to_place", "list_places", "query_memory", *MISSIONS}
 # Fine-tuned models know the tools by heart: declare names only (~270 prompt tokens instead of ~1,450).
 COMPACT_TOOLS = [{"type": "function", "function": {"name": t["function"]["name"], "parameters": {"type": "object", "properties": {}}}}
                  for t in TOOLS if t["function"]["name"] not in UNTRAINED]
@@ -454,6 +485,52 @@ def _name_room(args):
     return [Command("name_room", "name_room", args, {"name": name}, summary=f"name this room {name!r}")]
 
 
+def _text(args, key, what, *, required=False):
+    value = args.get(key)
+    if value is None or (isinstance(value, str) and not value.strip() and not required):
+        if required:
+            raise ToolError(f"{key} is required: {what}")
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > 80:
+        raise ToolError(f"{key} must be {what}, at most 80 characters")
+    return " ".join(value.split())
+
+
+def _mission(tool):
+    def build(args):
+        args = {} if args is None else args
+        allowed = {"search": ("target", "where", "time_limit_s"), "guard": ("place", "duration_s"),
+                   "patrol": ("rooms", "every_s", "duration_s"), "explore": ("time_limit_s",)}[tool]
+        _exact(tool, args, allowed)
+        default, most = MISSION_LIMITS[tool]
+        limit_key = "time_limit_s" if tool in ("search", "explore") else "duration_s"
+        limit = _number(args, limit_key, 0, most, "s")
+        params = {"mission": tool, "time_limit": default if limit is None else limit}
+        if tool == "search":
+            params["target"] = _text(args, "target", "what to find, e.g. 'teddy bear'", required=True).lower()
+            params["where"] = _text(args, "where", "a room or saved place")
+            summary = f"search for the {params['target']}" + (f" in the {params['where']}" if params["where"] else "")
+        elif tool == "guard":
+            params["place"] = _text(args, "place", "a room or saved place")
+            summary = f"guard the {params['place']}" if params["place"] else "guard this spot"
+        elif tool == "patrol":
+            rooms = args.get("rooms")
+            if rooms is not None and (not isinstance(rooms, list) or len(rooms) > 12 or
+                                      not all(isinstance(r, str) and r.strip() for r in rooms)):
+                raise ToolError("rooms must be a list of up to 12 room names")
+            params["rooms"] = [" ".join(r.split()) for r in rooms] if rooms else None
+            every = _number(args, "every_s", 0, PATROL_EVERY_S[1], "s")
+            if every is not None and every < PATROL_EVERY_S[0]:
+                raise ToolError(f"every_s must be at least {PATROL_EVERY_S[0]} s")
+            params["every"] = PATROL_EVERY_S[2] if every is None else every
+            summary = "patrol " + (", ".join(params["rooms"]) if params["rooms"] else "the house") + \
+                f" every {params['every'] / 60:g} min"
+        else:
+            summary = "explore the house"
+        return [Command("mission", tool, args, params, summary=summary)]
+    return build
+
+
 def _memory_query(args, *, places_only=False):
     tool = "list_places" if places_only else "query_memory"
     _exact(tool, args, ("limit",) if places_only else ("target", "limit"))
@@ -473,6 +550,7 @@ RESOLVERS = {"move": _move, "turn": _turn, "go_to": _go_to, "approach": _approac
              "go_to_place": lambda args: _named_place(args, movement=True),
              "list_places": lambda args: _memory_query(args, places_only=True),
              "query_memory": _memory_query,
+             **{name: _mission(name) for name in MISSIONS},
              "posture": _posture,
              "trick": _trick, "acrobatic": _acrobatic, "body": _body, "wait": _wait,
              "stop": _simple("stop"), "look": _simple("look"), "get_status": _simple("get_status")}
