@@ -9,6 +9,7 @@ from .adapters.base import AdapterError
 def map_view(executor, max_pixels=384):
     if not isinstance(max_pixels, int) or not 32 <= max_pixels <= 512:
         raise ValueError("map view must have 32 to 512 pixels per side")
+    rooms = executor.rooms()          # cached for a few seconds: splitting the map takes a few tenths of a second
     with executor.lock:
         adapter, grid = executor.adapter, executor.room_map
         current = executor.current
@@ -62,5 +63,6 @@ def map_view(executor, max_pixels=384):
                 robot=robot, route=[[float(x) for x in p[:2]] for p in route],
                 places=[dict(name=p.name, x=p.x, y=p.y, yaw=p.yaw) for p in places[:200]],
                 places_total=len(places),
+                rooms=[dict(name=r["name"], x=r["x"], y=r["y"]) for r in rooms[:50]], rooms_total=len(rooms),
                 objects=[{k: p.get(k) for k in ("id", "label", "color", "x", "y", "state", "last_seen")}
                          for p in objects[-200:]], objects_total=len(objects))

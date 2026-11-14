@@ -34,6 +34,7 @@ from .path_planner import astar, simplify, turning_astar, keep_turns
 from .room_map import OccupancyGrid
 from .exploration import ExplorationMap, next_viewpoint, _pose, _safe_cells, recovery_route
 from .room_regions import RoomRegions
+from .room_names import RoomNamer, tells_room
 from .exploration_navigation import (ExplorationNavigation,MOVES as EXPLORATION_STEPS,
                                      BODY_HALF_LENGTH_M,BODY_HALF_WIDTH_M)
 from .tools import Command
@@ -98,6 +99,14 @@ COLOR_FAMILY = {"red": {"orange", "pink", "brown"}, "orange": {"red", "brown", "
                 "blue": {"cyan", "purple"}, "purple": {"blue", "pink"}, "pink": {"red", "purple"},
                 "white": {"grey"}, "grey": {"white", "black"}, "gray": {"white", "black", "grey"}, "black": {"grey", "brown"}}
 MEMORY_S = 180.
+ROOMS_CACHE_S = 3.          # rooms() splits the map at most this often (it takes a few tenths of a second)
+MIN_ROOM_M2 = 1.5           # smaller regions (a pocket behind furniture) aren't listed as rooms
+ROOM_STAND_M = .45          # go_to_place into a room stops somewhere at least this far from anything in the way
+
+
+def _room_key(name):
+    """A room name to compare: "The living room" -> "living_room"."""
+    return re.sub(r"^the_", "", "_".join(re.findall(r"[a-z0-9]+", str(name).casefold())))
 
 
 class Cancelled(Exception):
@@ -157,6 +166,8 @@ class Executor:
         self._cloud_lock = threading.RLock()   # the follow camera thread reads the cloud too
         self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True)
         self.room_regions = RoomRegions()
+        self.room_sightings = deque(maxlen=2000)   # (x, y, label) of things that tell a room's type (#35)
+        self._rooms_cache = None                   # (when, rooms()) for the live map's once-a-second polls
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
         self._places_path = (Path(memory_path).with_name(Path(memory_path).stem + ".places.json")
@@ -198,6 +209,8 @@ class Executor:
             self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True,
                                           detect_low=adapter.kind == "sim")
             self.room_regions = RoomRegions()
+            self.room_sightings.clear()
+            self._rooms_cache = None
             self.history.clear()
             self.activity, self.activity_since = [], time.monotonic()
             self.last_detections = []
@@ -273,9 +286,73 @@ class Executor:
                               planning_resolution_m=self.room_map.resolution), visited)
 
     def room_at(self, x, y):
-        """Observed geometric region, optionally explicitly named, or None."""
+        """Observed geometric region, or None: the user's name for it, else its name from what's been seen in it
+        ("kitchen", #35), else room_N."""
         self.room_regions.update(self.room_map)
-        return self.room_regions.room_at(x, y)
+        region = self.room_regions.region_near(x, y, radius_m=0.)
+        if region is None:
+            return None
+        return self.room_regions.names.get(region) or self._room_names().get(region) or f"room_{region}"
+
+    def _room_names(self):
+        """{region: name} from what's been seen where: each sighting votes for the region it's in now, so names
+        follow the regions as the map grows. Run when asked, not on every look (updating the regions is slow)."""
+        namer = RoomNamer()
+        for x, y, label in list(self.room_sightings):
+            namer.saw(self.room_regions.region_near(x, y), label)
+        return namer.names()
+
+    def rooms(self, fresh=False):
+        """The observed rooms as [{name, region, x, y, area_m2}], named as room_at names them, (x, y) a spot near
+        each one's middle. From a cache up to ROOMS_CACHE_S old unless fresh."""
+        cached = self._rooms_cache
+        if not fresh and cached is not None and time.monotonic() - cached[0] < ROOMS_CACHE_S:
+            return cached[1]
+        self.room_regions.update(self.room_map)
+        guessed = self._room_names()
+        rooms = []
+        for region, area in sorted(self.room_regions.areas().items()):
+            spot = self.room_regions.region_point(region) if area >= MIN_ROOM_M2 else None
+            if spot is not None:
+                name = self.room_regions.names.get(region) or guessed.get(region) or f"room_{region}"
+                rooms.append({"name": name, "region": region, "x": spot[0], "y": spot[1], "area_m2": round(area, 1)})
+        self._rooms_cache = (time.monotonic(), rooms)
+        return rooms
+
+    def _room_destination(self, name, x, y):
+        """(x, y, room name) of a spot inside the room called `name` ("kitchen", "bedroom 2", "the living room"),
+        or None. A room type ("bedroom") means the nearest room of that type to (x, y)."""
+        wanted = _room_key(name)
+        rooms = self.rooms(fresh=True)
+        matches = ([r for r in rooms if _room_key(r["name"]) == wanted] or
+                   [r for r in rooms if not r["name"].startswith("room_") and
+                    re.sub(r"_\d+$", "", _room_key(r["name"])) == wanted])
+        if not matches:
+            return None
+        room = min(matches, key=lambda r: math.hypot(r["x"] - x, r["y"] - y))
+        spot = self.room_regions.region_point(room["region"], clearance_m=ROOM_STAND_M)
+        return (*spot, room["name"]) if spot else None
+
+    def _note_room_sightings(self, detections, pose):
+        """Note where each thing in view that tells a room's type (a bed, a fridge) was seen."""
+        c, sn = math.cos(pose[2]), math.sin(pose[2])
+        for d in detections:
+            if d.x_m is not None and tells_room(d.label):
+                self.room_sightings.append((pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m,
+                                            d.label))
+
+    def name_room(self, name):
+        """Name the room the robot is in (the user's name wins over a guess). Lasts as long as this map."""
+        with self.lock:
+            self._require_adapter()
+            state = self._fresh_state()
+        self.room_regions.update(self.room_map)
+        region = self.room_regions.region_near(state.x, state.y)
+        if region is None:
+            raise ValueError("I can't tell which room I'm in yet; look around first so I can map it")
+        self.room_regions.name_room(*self.room_regions.region_point(region), name)
+        self._rooms_cache = None
+        return {"name": name, "area_m2": round(self.room_regions.areas().get(region, 0.), 1)}
 
     def remember_place(self, name):
         with self.lock:
@@ -298,6 +375,10 @@ class Executor:
             result["warning"] = self.places.load_error
         if places_only:
             return result
+        rooms = [r for r in self.rooms() if all(w in _room_key(r["name"]) for w in words)]
+        result["rooms"] = [{"name": r["name"], "x_m": r["x"], "y_m": r["y"], "area_m2": r["area_m2"],
+                            "frame": "map"} for r in rooms[:limit]]
+        result["rooms_total"] = len(rooms)
         candidates = []
         for item in self.object_memory.snapshot():
             detection = SimpleNamespace(label=item.get("label", ""), color=item.get("color"))
@@ -407,17 +488,28 @@ class Executor:
         if command.kind == "look":
             self._after_group(group)
             return {"status": "done", **self.look()}
-        if command.kind in ("remember_place", "places", "memory"):
+        if command.kind in ("remember_place", "name_room", "places", "memory"):
             self._after_group(group)
             if command.kind == "remember_place":
                 return {"status": "done", "place": self.remember_place(command.params["name"])}
+            if command.kind == "name_room":
+                return {"status": "done", "room": self.name_room(command.params["name"])}
             return {"status": "done", **self.memory_report(command.params["target"],
                     command.params["limit"], places_only=command.kind == "places")}
         with self.lock:
             self._require_adapter()
             if command.tool == "go_to_place":
-                place = self.places.get(command.params["name"])
-                command = replace(command, params={**command.params, "x": place.x, "y": place.y})
+                try:
+                    place = self.places.get(command.params["name"])
+                    target = (place.x, place.y, place.name)
+                except ValueError as unknown:      # not a saved place: perhaps a room ("go to the kitchen", #35)
+                    s = self._fresh_state()
+                    target = self._room_destination(command.params["name"], s.x, s.y)
+                    if target is None:
+                        raise ValueError(f"I do not know a place or room named {command.params['name']!r}; remember "
+                                         "the place first, or explore so I can find the room") from unknown
+                command = replace(command, params={**command.params, "x": target[0], "y": target[1],
+                                                   "name": target[2]})
             if command.kind == "sport":
                 missing = self.adapter.supports(command.params["name"])
                 if missing:
@@ -613,6 +705,7 @@ class Executor:
                 self._stable_ids(detections, (s.x, s.y, s.yaw))
                 self.last_detections = [(d, (s.x, s.y, s.yaw)) for d in detections]
                 seen_ids = self._remember(detections, (s.x, s.y, s.yaw), save=False)
+                self._note_room_sightings(detections, (s.x, s.y, s.yaw))
                 if adapter.kind == "sim":
                     self._verify_saved_objects(frame, camera_floor_cloud, detections, seen_ids)
                 try:
