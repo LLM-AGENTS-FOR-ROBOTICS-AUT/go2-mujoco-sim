@@ -245,13 +245,16 @@ def build(scene: str = "room", world=None):
         _add_procedural(spec, world, objects)
     if scene == "house":
         import house     # simulation/house.py, kept apart so the room scenes never change
-        house.build_house(spec, world if world is not None else house.house_demo(), objects)
+        world = world if world is not None else house.house_demo()
+        house.build_house(spec, world, objects)
     if scene == "hazards":
         import hazards   # simulation/hazards.py: platform, ledge, stairs down and a glass pane (#22)
         hazards.build_hazards(spec, objects, WorldObject)
     if scene in ("room", "empty"):
         _add_walkers(spec, objects)   # not in houses or the procedural training rooms, which stay as they were
     model = spec.compile()
+    if scene == "house":
+        house.rest_on_furniture(model, world)     # things on beds, desks and tables (#21)
     by_body = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name): item for name, item in objects}
     return model, by_body
 
