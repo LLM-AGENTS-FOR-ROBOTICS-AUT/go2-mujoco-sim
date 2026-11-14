@@ -12,16 +12,18 @@ Long tasks Go2 carries out on its own in a house: `search`, `guard`, `patrol` an
 - A stopped or timed-out `search`, `patrol` or `explore`, asked for again within 10 minutes, carries on where it
   left off ("carry on" → the same call again). `guard` always starts afresh.
 - Simulator only for now: on the real Go2 they're refused until its safety work is done (#34).
+- The simulator's walking people (`walker_red`, `walker_blue`) are in a house only when its description has
+  `"people": true` (the guard test uses it); other house scenes are unchanged.
 - They're full-prompt tools: left out of the compact prompt until a model is trained on them (`UNTRAINED`).
 
 ## The tools (names and arguments are fixed)
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `search` | `target` (required), `where`, `time_limit_s` (default 600, up to 1800) | What's remembered first; else looks all round where it is; then room by room, likeliest rooms first (`missions.LIKELY`), exploring where the map has no rooms yet; walks up to the target and says the room. `where`: only that room (a room name or type) or saved place. |
-| `guard` | `place`, `duration_s` (default 600, up to 3600) | Goes to the room or saved place (default: stays), faces the way in (a saved place's heading, or the nearest doorway), sits, and looks about once a second. When someone comes in after nobody was in view for 10 s, it alerts with a camera snapshot. It never moves once there. |
-| `patrol` | `rooms` (list; default all known), `every_s` (60 to 3600, default 600), `duration_s` (default 1800, up to 7200) | Explores first if no rooms are known. Each round: every room nearest-next, looking all round; then reports things moved (same label and colour more than 0.8 m away), new, gone, and people seen. |
-| `explore` | `time_limit_s` (default 1200, up to 3600) | Visits exploration spots (#14) until none are left, looking all round at each; names rooms as it finds them (#35); then lists them. |
+| `search` | `target` (required), `where`, `time_limit_s` (default 600, 10 to 1800) | What's remembered first; else looks all round where it is; then room by room, likeliest rooms first (`missions.LIKELY`), exploring where the map has no rooms yet; walks up to the target and says the room. `where`: only that room (a room name or type) or saved place; if it can't get to a saved place it ends `blocked` (not "it isn't there"). |
+| `guard` | `place`, `duration_s` (default 600, 10 to 3600) | Goes to the room or saved place (default: stays), faces the way in (a saved place's heading, or the nearest doorway), sits, and looks about once a second. When someone comes in after nobody was in view for 10 s, it alerts with a camera snapshot. It never moves once there. |
+| `patrol` | `rooms` (list; default all known), `every_s` (60 to 3600, default 600), `duration_s` (default 1800, 10 to 7200) | Explores first if no rooms are known. Each round: every room nearest-next, looking all round; then reports things moved (same label and colour more than 0.8 m away), new, gone, and people seen. Rooms are compared by where things were seen, with the rooms' current names, so a room named between rounds isn't a change. |
+| `explore` | `time_limit_s` (default 1200, 10 to 3600) | Visits exploration spots (#14) until none are left, looking all round at each; a spot it can't reach gets one more try once nowhere new is left, then is given up; names rooms as it finds them (#35); then lists them. |
 
 ## Results (fixed)
 

@@ -343,6 +343,24 @@ class ExecutorRoomNameTests(unittest.TestCase):
         self.executor.attach(self.robot)
         self.assertEqual(list(self.executor.room_sightings), [])
 
+    def test_room_at_splits_the_map_again_only_once_it_has_changed(self):
+        for _ in range(2):
+            self.executor._note_room_sightings([seen("bed", *self.left)], (0., 0., 0.))
+        regions = self.executor.room_regions
+        self.assertEqual(self.executor.room_at(*self.left), "bedroom")
+        splits = regions.splits
+        began = time.perf_counter()
+        for _ in range(50):                              # missions ask for each thing seen
+            self.assertEqual(self.executor.room_at(*self.left), "bedroom")
+            self.assertRegex(self.executor.room_at(*self.right), r"^room_\d+$")
+        self.assertEqual(regions.splits, splits, "the same map isn't split again")
+        self.assertLess(time.perf_counter() - began, .5)
+        self.executor.room_map.grid[40:50, 44:46] = OCCUPIED   # the doorway closes: now it must be split again
+        self.executor.room_at(*self.left)
+        self.assertEqual(regions.splits, splits + 1)
+        self.executor._note_room_sightings([seen("oven", *self.right)] * 2, (0., 0., 0.))
+        self.assertEqual(self.executor.room_at(*self.right), "kitchen", "something new seen names its room")
+
     def test_a_pocket_too_small_to_be_a_room_takes_no_votes(self):
         m = self.executor.room_map                           # a 1.2 x 1.2 m walled-off pocket in the left room's corner
         m.grid[10:23, 10:23] = OCCUPIED

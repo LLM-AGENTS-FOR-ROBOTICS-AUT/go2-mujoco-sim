@@ -173,6 +173,8 @@ class Executor:
         self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True)
         self.room_regions = RoomRegions()
         self.room_sightings = deque(maxlen=2000)   # (x, y, label) of things that tell a room's type (#35)
+        self._sightings_noted = 0                  # how many have ever been noted (the deque's length stops at 2000)
+        self._names_cache = None                   # (what they were worked out from, _room_names())
         self._rooms_cache = None                   # (when, rooms()) for the live map's once-a-second polls
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
@@ -216,7 +218,7 @@ class Executor:
                                           detect_low=adapter.kind == "sim")
             self.room_regions = RoomRegions()
             self.room_sightings.clear()
-            self._rooms_cache = None
+            self._names_cache = self._rooms_cache = None
             self._missions.clear()          # their rooms and spots belong to the old map
             self.history.clear()
             self.activity, self.activity_since = [], time.monotonic()
@@ -305,14 +307,21 @@ class Executor:
         """{region: name} from what's been seen where: each sighting votes for the region it's in now, so names
         follow the regions as the map grows. Run when asked, not on every look (updating the regions is slow).
         Only regions big enough to be listed as rooms take votes: a pocket behind the fridge named "kitchen" too
-        would make the kitchen "kitchen_1" with no kitchen_2 on the list."""
+        would make the kitchen "kitchen_1" with no kitchen_2 on the list. Worked out again only once something
+        new has been seen or the map has been split again: missions ask room_at for each thing seen."""
+        key = (id(self.room_regions), self.room_regions.splits, self._sightings_noted)
+        cached = self._names_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
         rooms = {region for region, area in self.room_regions.areas().items() if area >= MIN_ROOM_M2}
         namer = RoomNamer()
         for x, y, label in list(self.room_sightings):
             region = self.room_regions.region_near(x, y, among=rooms)
             if region is not None:
                 namer.saw(region, label)
-        return namer.names()
+        names = namer.names()
+        self._names_cache = (key, names)
+        return names
 
     def rooms(self, fresh=False):
         """The observed rooms as [{name, region, x, y, area_m2}], named as room_at names them, (x, y) a spot near
@@ -352,6 +361,7 @@ class Executor:
             if d.x_m is not None and tells_room(d.label):
                 self.room_sightings.append((pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m,
                                             d.label))
+                self._sightings_noted += 1
 
     # ---- missions (#18, go2/missions.py) -----------------------------------------------------------------
     def now(self):

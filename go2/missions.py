@@ -33,6 +33,8 @@ GUARD_LOOK_S = 1.          # guard looks this often, so an alert comes within ab
 NEW_PERSON_S = 10.         # someone seen after nobody was in view for this long is a new arrival
 SAME_PLACE_M = .8          # patrol: an object this close to where it was hasn't moved
 STAND_CLEAR_M = .45        # a room is walked into at a spot at least this clear of anything in the way
+SAME_SPOT_M = .5           # explore: an exploration spot this close to one tried before is the same spot (as #14's
+                           # visited radius)
 LOG_LINES = 30
 
 # Where things usually are: detector label -> room types, likeliest first (as in the houses of #17, and most homes).
@@ -199,15 +201,25 @@ class Mission:
         return self.walk_to(x, y, room["name"].replace("_", " "))
 
     def explore_step(self):
-        """Go to the next unexplored spot and look all round there: True, or False once nowhere is left."""
-        st = self.state.setdefault("explored", {"visited": [], "blocked": []})
-        goal = self.ex.exploration_viewpoint(st["visited"] + st["blocked"])
+        """Go to the next unexplored spot: the spot, or None once nowhere is left.
+
+        A spot that can't be reached is put aside; once nowhere new is left, each spot put aside gets one more try
+        (more of the map is known by then, which can open a way). A spot that fails its second try is given up for
+        good, so a spot that can never be reached (boxed in by furniture) can't be tried forever."""
+        st = self.state.setdefault("explored", {"visited": [], "blocked": [], "retrying": [], "given_up": []})
+        goal = self.ex.exploration_viewpoint(st["visited"] + st["blocked"] + st["given_up"])
         if goal is None and st["blocked"]:
-            st["blocked"].clear()           # try once more the spots that couldn't be reached
-            goal = self.ex.exploration_viewpoint(st["visited"])
+            st["retrying"] += st["blocked"]
+            st["blocked"].clear()
+            goal = self.ex.exploration_viewpoint(st["visited"] + st["given_up"])
         if goal is None:
-            return False
-        (st["visited"] if self.visit(goal) else st["blocked"]).append(goal)
+            return None
+        if self.visit(goal):
+            st["visited"].append(goal)
+        elif any(math.hypot(goal[0] - x, goal[1] - y) < SAME_SPOT_M for x, y, *_ in st["retrying"]):
+            st["given_up"].append(goal)     # its second try
+        else:
+            st["blocked"].append(goal)
         return goal
 
 
@@ -266,7 +278,9 @@ def search(m):
         except ValueError:
             pass
     if place:                                           # a saved place: look round there, and that's all
-        m.walk_to(*place)
+        if not m.walk_to(*place):                       # not "it isn't there" without having been there
+            m.finish("blocked", f"I couldn't get to {_the(place[2])} to look for the {target}")
+            return
         if m.look_around(seen) and reach():
             return
         m.finish("not_found", f"I looked round {_the(place[2])} and the {target} isn't there")
@@ -402,7 +416,7 @@ def patrol(m):
                      for thing in m.look_around()]
         rounds += 1
         st["rounds"] = rounds
-        changes = _changes(st.get("last"), _merge(seen), {r["name"] for r in rooms})
+        changes = _changes(st.get("last"), _merge(seen), {r["name"] for r in rooms}, ex.room_at)
         st["last"] = _merge(seen)
         m.say(f"patrol round {rounds}: " + ("; ".join(changes) if changes else
                                             "nothing has changed" if rounds > 1 else "noted where everything is"))
@@ -436,18 +450,23 @@ def _merge(seen):
     return things
 
 
-def _changes(before, now, rooms):
-    """Plain sentences for what changed between two rounds' sightings, in the patrolled rooms."""
+def _changes(before, now, rooms, room_at):
+    """Plain sentences for what changed between two rounds' sightings, in the patrolled rooms. Each thing's room
+    is worked out now from where it was seen, with the rooms' names as they are now: a room named since the last
+    round (room_3 became the kitchen) isn't a change."""
     def name(t):
         return " ".join(filter(None, (t["color"], t["label"])))
 
+    def room_now(t):
+        return room_at(t["x"], t["y"]) or t["room"]
+
     def room(t):
-        return _the(t["room"])
+        return _the(room_now(t))
     out = [f"a person{' in ' + t['clothing'] if t.get('clothing') else ''} in {room(t)}"
            for t in now if t["label"] == "person"]
     if before is None:
         return out
-    before = [t for t in before if t["label"] != "person" and t["room"] in rooms]
+    before = [t for t in before if t["label"] != "person" and room_now(t) in rooms]
     now = [t for t in now if t["label"] != "person"]
     unmatched = list(now)
     for t in before:

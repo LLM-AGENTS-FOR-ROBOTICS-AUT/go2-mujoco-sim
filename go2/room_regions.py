@@ -169,6 +169,7 @@ class RoomRegions:
         self.core_radius_m = core_radius_m
         self.map = self.labels = None
         self.names, self._next_id = {}, 1
+        self.splits = 0                      # how many times the map has been split: changes when the regions may have
         self._lock = threading.RLock()
 
     def _split(self, m):
@@ -186,7 +187,14 @@ class RoomRegions:
         return _merge_furniture_splits(_flood(seeds, m.grid), m.grid, m.resolution)
 
     def update(self, occupancy):
+        """Split the map into regions; nothing to do if it hasn't changed since the last split (splitting takes
+        a few tenths of a second, and room_at is asked for each thing seen)."""
         m = occupancy.snapshot()
+        with self._lock:
+            last = self.map
+            if (last is not None and m.resolution == last.resolution and m.grid.shape == last.grid.shape and
+                    (m._min_row, m._min_col) == (last._min_row, last._min_col) and np.array_equal(m.grid, last.grid)):
+                return self
         k = max(1, int(round(SPLIT_AT_M / m.resolution)))
         if k == 1:
             labels, count = self._split(m)
@@ -227,6 +235,7 @@ class RoomRegions:
                     self._next_id += 1
                 lookup[i] = assigned[i]
             self.map, self.labels = m, lookup[labels]
+            self.splits += 1
         return self
 
     def room_at(self, x, y):

@@ -136,6 +136,14 @@ class StandInHouse:
         self.look()
 
 
+def mission(tool, args, time_limit=None):
+    """The mission tool's command; time_limit (s) set directly, for tests quicker than the tool's least (10 s)."""
+    commands = resolve(tool, args)
+    if time_limit is not None:
+        commands[0].params["time_limit"] = time_limit
+    return commands
+
+
 class MissionTestCase(unittest.TestCase):
     things = [["teddy bear", "brown", 4.5, -3.5, None], ["refrigerator", "white", 4., 4., None],
               ["sports ball", "red", -3., 3., None], ["backpack", "blue", -4., -3., None]]
@@ -154,9 +162,9 @@ class MissionTestCase(unittest.TestCase):
         self.house = StandInHouse(self, self.executor, self.robot, [list(t) for t in self.things],
                                   known=getattr(self, "known", ("hallway",)))
 
-    def run_mission(self, tool, args, timeout=30):
+    def run_mission(self, tool, args, timeout=30, time_limit=None):
         before = len(self.events)
-        result = self.executor.submit(resolve(tool, args), "g", 1)[0]
+        result = self.executor.submit(mission(tool, args, time_limit), "g", 1)[0]
         self.assertEqual(result["status"], "queued", result)
         self.assertTrue(wait_for(lambda: len(self.events) > before, timeout), "the mission didn't end")
         return self.events[-1]
@@ -197,6 +205,15 @@ class SearchTests(MissionTestCase):
         self.assertEqual(task.detail["mission"]["outcome"], "not_found")
         self.assertEqual(self.house.walks, ["kitchen"])
 
+    def test_a_saved_place_it_cant_get_to_isnt_reported_as_searched(self):
+        self.executor.places.remember("toy box", 4., -3., 0.)
+        self.executor._goto = lambda task, cancel: (_ for _ in ()).throw(AdapterError("no route to the toy box"))
+        task = self.run_mission("search", {"target": "teddy bear", "where": "toy box"})
+        mission = task.detail["mission"]
+        self.assertEqual(mission["outcome"], "blocked", mission)
+        self.assertIn("couldn't get to the toy box", mission["result"])
+        self.assertNotIn("isn't there", mission["result"])
+
     def test_stop_cancels_and_asking_again_carries_on(self):
         self.house.walk_delay = 1.
         self.executor.submit(resolve("search", {"target": "teddy bear"}), "g", 1)
@@ -214,13 +231,18 @@ class SearchTests(MissionTestCase):
 
     def test_time_limit_ends_the_search_and_says_so(self):
         self.house.walk_delay = 2.
-        task = self.run_mission("search", {"target": "umbrella", "time_limit_s": 3})
+        task = self.run_mission("search", {"target": "umbrella"}, time_limit=3)
         self.assertEqual(task.detail["mission"]["outcome"], "timed_out")
         self.assertIn("ask again to carry on", task.detail["mission"]["result"])
 
 
 class SearchExploringTests(MissionTestCase):
     """Only the hallway is on the map at first: the search explores to find the rooms."""
+
+    def test_a_room_that_can_never_be_reached_doesnt_keep_the_search_going(self):
+        unreachable(self.house, "bathroom")
+        task = self.run_mission("search", {"target": "umbrella"}, timeout=10)
+        self.assertEqual(task.detail["mission"]["outcome"], "not_found", task.detail)
 
     def test_explores_to_find_rooms_then_searches_them(self):
         task = self.run_mission("search", {"target": "teddy bear"})
@@ -233,7 +255,7 @@ class GuardTests(MissionTestCase):
 
     def test_alerts_with_a_snapshot_when_someone_comes_in_and_never_moves(self):
         self.executor.places.remember("front door", -4.5, 0., math.pi)
-        result = self.executor.submit(resolve("guard", {"place": "front door", "duration_s": 4}), "g", 1)[0]
+        result = self.executor.submit(mission("guard", {"place": "front door"}, 4), "g", 1)[0]
         self.assertEqual(result["status"], "queued", result)
         self.assertTrue(wait_for(lambda: any("guarding" in t for t in self.said()), 5))
         moves = len([c for c in self.robot.calls if c[0] == "move"])
@@ -253,7 +275,7 @@ class GuardTests(MissionTestCase):
         self.assertIn(("sport", "sit"), self.robot.calls)
 
     def test_an_unknown_place_is_refused(self):
-        task = self.run_mission("guard", {"place": "garage", "duration_s": 5})
+        task = self.run_mission("guard", {"place": "garage", "duration_s": 10})
         self.assertEqual(task.status, "failed")
         self.assertIn("garage", task.detail["error"])
 
@@ -279,6 +301,21 @@ class PatrolTests(MissionTestCase):
         self.executor.stop("user")
         self.assertTrue(wait_for(lambda: self.events and self.events[-1].status == "stopped", 3))
 
+    def test_a_room_named_between_rounds_isnt_a_change(self):
+        unnamed = {"kitchen": "room_7"}                  # the kitchen isn't named yet in round 1
+        listed = self.house.rooms
+        self.executor.room_at = lambda x, y: unnamed.get(room_of(x, y), room_of(x, y))
+        self.executor.rooms = lambda fresh=False: [{**r, "name": unnamed.get(r["name"], r["name"])} for r in listed()]
+        command = mission("patrol", {}, 600)
+        command[0].params["every"] = 2.
+        self.assertEqual(self.executor.submit(command, "g", 1)[0]["status"], "queued")
+        self.assertTrue(wait_for(lambda: any("round 1" in t for t in self.said()), 10))
+        unnamed.clear()                                  # by round 2 it's the kitchen; nothing has moved
+        self.assertTrue(wait_for(lambda: any("round 2" in t for t in self.said()), 15))
+        self.assertIn("nothing has changed", next(t for t in self.said() if "round 2" in t))
+        self.executor.stop("user")
+        self.assertTrue(wait_for(lambda: self.events and self.events[-1].status == "stopped", 3))
+
 
 class ExploreTests(MissionTestCase):
     def test_visits_everywhere_and_lists_the_rooms(self):
@@ -293,6 +330,27 @@ class ExploreTests(MissionTestCase):
         self.assertIn("1 I couldn't name", mission["result"])
         self.assertIn("found the kitchen", self.said())
 
+    def test_a_spot_that_can_never_be_reached_gets_one_more_try_then_explore_finishes(self):
+        tries = unreachable(self.house, "bathroom")
+        task = self.run_mission("explore", {}, timeout=10)
+        self.assertEqual(task.detail["mission"]["outcome"], "explored", task.detail)
+        self.assertEqual(tries, ["bathroom", "bathroom"], "tried once, then once more at the end, then given up")
+        self.assertEqual(sorted(self.house.visited), sorted(set(ROOMS) - {"hallway", "bathroom"}))
+
+
+def unreachable(house, room):
+    """Make the exploration spot in `room` impossible to reach (boxed in by furniture); the attempts on it."""
+    tries, visit = [], house._visit_viewpoint
+
+    def blocked_there(task, cancel):
+        p = task.command.params
+        if room_of(p["x"], p["y"]) == room:
+            tries.append(room)
+            raise AdapterError("no route there")
+        visit(task, cancel)
+    house.ex._visit_viewpoint = blocked_there
+    return tries
+
 
 class MissionToolTests(unittest.TestCase):
     def test_tools_take_their_arguments_and_refuse_others(self):
@@ -300,9 +358,12 @@ class MissionToolTests(unittest.TestCase):
                          {"mission": "search", "time_limit": 600, "target": "teddy bear", "where": None})
         self.assertEqual(resolve("patrol", {"rooms": ["kitchen"], "every_s": 120})[0].params["every"], 120)
         self.assertEqual(resolve("explore", None)[0].params["time_limit"], 1200)
+        self.assertEqual(resolve("guard", {"duration_s": 10})[0].params["time_limit"], 10)
         for tool, args in (("search", {}), ("search", {"target": ""}), ("search", {"target": "x", "colour": 1}),
                            ("search", {"target": "x", "time_limit_s": 5000}), ("patrol", {"every_s": 10}),
-                           ("patrol", {"rooms": "kitchen"}), ("guard", {"duration_s": -1})):
+                           ("patrol", {"rooms": "kitchen"}), ("guard", {"duration_s": -1}),
+                           ("guard", {"duration_s": 0}), ("patrol", {"duration_s": .01}),
+                           ("explore", {"time_limit_s": 9.9})):        # a moment would end the mission at once
             with self.subTest(tool=tool, args=args), self.assertRaises(ToolError):
                 resolve(tool, args)
 
@@ -373,8 +434,8 @@ class GuardInTheSimulatorTests(unittest.TestCase):
     def test_alerts_within_3_s_when_a_person_walks_in_and_never_moves(self):
         from go2.adapters.sim import SimAdapter
         import house
-        demo = house.house_demo()
-        sim = SimAdapter(python=sys.executable, scene="house", headless=True)
+        demo = {**house.house_demo(), "people": True}     # the walking people are only in houses that ask
+        sim = SimAdapter(python=sys.executable, scene="house", headless=True, world=demo)
         sim.connect()
         self.addCleanup(sim.close)
         alerts, events = [], []

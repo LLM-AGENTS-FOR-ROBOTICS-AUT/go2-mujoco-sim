@@ -26,6 +26,7 @@ SPEED_LEVELS = {"slow": -1, "normal": 0, "fast": 1}
 MISSIONS = ("search", "guard", "patrol", "explore")
 # seconds: (default, most). Exploring walks slowly (0.15 m/s), so searching a whole house takes several minutes.
 MISSION_LIMITS = {"search": (600, 1800), "guard": (600, 3600), "patrol": (1800, 7200), "explore": (1200, 3600)}
+MISSION_MIN_S = 10                         # the shortest time limit a mission takes
 PATROL_EVERY_S = (60, 3600, 600)          # seconds between patrol rounds: least, most, default
 EXPECTED_S = {"stand": 1.5, "stand_up": 2.0, "lie_down": 2.0, "sit": 2.5, "recovery_stand": 3.0, "damp": 1.0,
               "hello": 7.0, "stretch": 4.5, "content": 4.0, "heart": 7.0, "scrape": 7.0, "dance1": 7.0, "dance2": 7.0,
@@ -113,25 +114,25 @@ TOOLS = [
         "for the same thing carries on where it left off. Simulator only for now.",
         {"target": {"type": "string", "description": "what to find, e.g. 'teddy bear' or 'the laptop'"},
          "where": {"type": "string", "description": "only this room or saved place, e.g. 'kitchen'"},
-         "time_limit_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['search'][1]}; "
+         "time_limit_s": {"type": "number", "description": f"seconds, {MISSION_MIN_S} to {MISSION_LIMITS['search'][1]}; "
                           f"default {MISSION_LIMITS['search'][0]}"}}, ["target"]),
     _fn("guard", "Go to a room or saved place (or stay here), sit facing the way in and watch for people, alerting "
         "the user with a snapshot when someone comes in. You only watch and report: you never move toward anyone. "
         "Simulator only for now.",
         {"place": {"type": "string", "description": "a room or saved place, e.g. 'hallway' or 'front door'; "
                    "default where you are"},
-         "duration_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['guard'][1]}; "
+         "duration_s": {"type": "number", "description": f"seconds, {MISSION_MIN_S} to {MISSION_LIMITS['guard'][1]}; "
                         f"default {MISSION_LIMITS['guard'][0]}"}}),
     _fn("patrol", "Walk through rooms on a schedule, looking round each one, and report what changed since the last "
         "round: things moved, new or gone, and people seen. Simulator only for now.",
         {"rooms": {"type": "array", "items": {"type": "string"}, "description": "default every room you know"},
          "every_s": {"type": "number", "description": f"seconds between rounds, {PATROL_EVERY_S[0]} to "
                      f"{PATROL_EVERY_S[1]}; default {PATROL_EVERY_S[2]}"},
-         "duration_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['patrol'][1]}; "
+         "duration_s": {"type": "number", "description": f"seconds, {MISSION_MIN_S} to {MISSION_LIMITS['patrol'][1]}; "
                         f"default {MISSION_LIMITS['patrol'][0]}"}}),
     _fn("explore", "Explore the house: go everywhere you can reach, mapping it and naming its rooms, then say which "
         "rooms there are. Simulator only for now.",
-        {"time_limit_s": {"type": "number", "description": f"seconds, up to {MISSION_LIMITS['explore'][1]}; "
+        {"time_limit_s": {"type": "number", "description": f"seconds, {MISSION_MIN_S} to {MISSION_LIMITS['explore'][1]}; "
                           f"default {MISSION_LIMITS['explore'][0]}"}}),
     _fn("look", "See what is around you: objects in front of you with distance and direction, plus the free "
         "space on every side. To check behind or beside you, turn and look again."),
@@ -505,6 +506,8 @@ def _mission(tool):
         default, most = MISSION_LIMITS[tool]
         limit_key = "time_limit_s" if tool in ("search", "explore") else "duration_s"
         limit = _number(args, limit_key, 0, most, "s")
+        if limit is not None and limit < MISSION_MIN_S:       # a mission given a moment would end at once
+            raise ToolError(f"{limit_key} must be at least {MISSION_MIN_S} s")
         params = {"mission": tool, "time_limit": default if limit is None else limit}
         if tool == "search":
             params["target"] = _text(args, "target", "what to find, e.g. 'teddy bear'", required=True).lower()
