@@ -535,6 +535,44 @@ class LayoutShapeTests(unittest.TestCase):
             self.assertEqual(f"{door['name']}_lintel" in bodies, not door.get("opening"), door["name"])
 
 
+class TileFloorTests(unittest.TestCase):
+    """Kitchen and bathroom tiles that show from Go2's camera (#21)."""
+
+    def test_tiles_have_darker_grout_and_vary_a_little(self):
+        import numpy as np
+        for kind, (tile, grout, _) in house.TILE_LOOK.items():
+            pixels = house.tile_pixels(tile, grout).astype(float).mean(2)
+            middle = pixels[house.TILE_PIXELS // 2::house.TILE_PIXELS, house.TILE_PIXELS // 2::house.TILE_PIXELS]
+            self.assertGreater(middle.min() - pixels[0, :].max(), 50, f"{kind}: grout clearly darker")
+            self.assertGreater(middle.std(), 1, f"{kind}: tiles differ a little in shade")
+            np.testing.assert_array_equal(house.tile_pixels(tile, grout), house.tile_pixels(tile, grout))
+
+    @unittest.skipUnless(HAVE_MUJOCO, "mujoco not installed")
+    @needs_camera
+    def test_go2s_camera_sees_the_tiles(self):
+        import numpy as np
+        import world
+        from sensors import Camera
+        for kind in house.TILE_LOOK:
+            h = {"scene": "house", "rooms": [{"name": "r", "type": kind, "rect": [-1., -3., 5., 3.]}], "doors": [],
+                 "objects": [], "start": [0., 0., 0.]}
+            model, _ = world.build("house", h)
+            data = mujoco.MjData(model)
+            data.qpos[:3], data.qpos[3:7] = (0, 0, .32), (1, 0, 0, 0)
+            mujoco.mj_forward(model, data)
+            camera = Camera(model)
+            try:
+                rgb, bodies = camera.capture(data)
+            finally:
+                camera.close()
+            near = bodies == model.body("floor_r").id
+            near[:int(len(near) * .75)] = False                 # the bottom quarter: floor within about a metre
+            light = rgb[near].astype(float) @ [.299, .587, .114]
+            with self.subTest(kind=kind):
+                self.assertGreater(np.percentile(light, 95) - np.percentile(light, 5), 50, "grout lines show")
+                self.assertLess(np.median(light), 220, "not washed out to white")
+
+
 class ColourTests(unittest.TestCase):
     """Random colours by kind, named in the description (#21)."""
 

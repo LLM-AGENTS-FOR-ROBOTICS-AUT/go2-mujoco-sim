@@ -833,15 +833,37 @@ def reachability(house):
 
 
 # ---- building a house into MuJoCo ----------------------------------------------------------------------
-# Matte floor per room type, textured like the single room's so camera frames (and YOLO) see a real-looking
-# floor: wood boards, or small tiles in the kitchen and bathroom. Rooms differ in tone, though Go2 shouldn't
-# rely on it. type -> (colour 1, colour 2, joint colour, texture repeats: 2 gives the room's 0.5 m checks)
+# Matte floor per room type, so camera frames (and YOLO) see a real-looking floor. Wood boards, textured like
+# the single room's: type -> (colour 1, colour 2, joint colour, texture repeats: 2 gives the room's 0.5 m checks).
+# Rooms differ in tone, though Go2 shouldn't rely on it.
 FLOOR_LOOK = {"bedroom": ((.62, .5, .38), (.58, .46, .35), (.5, .4, .3), 2.),
               "living_room": ((.55, .42, .3), (.51, .39, .28), (.44, .33, .24), 2.),
               "hallway": ((.66, .58, .46), (.62, .55, .43), (.54, .47, .37), 2.),
-              "office": ((.5, .44, .38), (.47, .41, .35), (.4, .35, .3), 2.),
-              "kitchen": ((.82, .82, .79), (.76, .76, .73), (.6, .6, .58), 5.),
-              "bathroom": ((.78, .84, .86), (.72, .79, .82), (.58, .63, .66), 5.)}
+              "office": ((.5, .44, .38), (.47, .41, .35), (.4, .35, .3), 2.)}
+# Tiles in kitchens and bathrooms (#21): square tiles with dark grout lines, a little uneven in shade, not so
+# bright that the camera washes them out. type -> (tile colour, grout colour, tile size in metres)
+TILE_LOOK = {"kitchen": ((.66, .64, .6), (.33, .32, .3), .3),
+             "bathroom": ((.6, .68, .72), (.32, .36, .38), .2)}
+TILE_PIXELS, GROUT_SHARE = 64, .03         # texture pixels per tile; grout width as a share of a tile (each side)
+
+
+def tile_pixels(tile, grout, tiles=4, seed=0):
+    """A square texture of tiles x tiles tiles, as an (H, W, 3) uint8 array: each tile a slightly different
+    shade, with grout lines between."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    size = tiles * TILE_PIXELS
+    shade = 1 + rng.uniform(-.04, .04, (tiles, tiles))
+    image = np.empty((size, size, 3))
+    image[:] = np.asarray(tile) * np.kron(shade, np.ones((TILE_PIXELS, TILE_PIXELS)))[..., None]
+    edge = max(1, round(GROUT_SHARE * TILE_PIXELS))
+    inside = np.arange(size) % TILE_PIXELS
+    line = (inside < edge) | (inside >= TILE_PIXELS - edge)
+    image[line, :] = grout
+    image[:, line] = grout
+    return np.clip(image * 255, 0, 255).astype(np.uint8)
+
+
 WALL_RGBA, DOOR_RGBA = (.86, .84, .8, 1), (.5, .34, .2, 1)
 
 
@@ -995,6 +1017,18 @@ def build_house(spec, house, objects):
     spec.visual.headlight.ambient = (.45, .45, .45)     # same indoor light as the single room
     spec.visual.headlight.diffuse = (.5, .5, .5)
     materials = {}
+    for kind, (tile, grout, size) in TILE_LOOK.items():
+        pixels = tile_pixels(tile, grout)
+        texture = spec.add_texture()
+        texture.name, texture.type = f"floor_{kind}", mujoco.mjtTexture.mjTEXTURE_2D
+        texture.width, texture.height, texture.nchannel = pixels.shape[1], pixels.shape[0], 3
+        texture.data = pixels.tobytes()
+        material = spec.add_material()
+        material.name, material.specular, material.shininess, material.reflectance = f"floor_{kind}", .05, .05, 0.
+        repeat = 2 / (4 * size)                # texuniform: repeats per 2 m; the texture is 4 tiles across
+        material.texuniform, material.texrepeat = True, (repeat, repeat)
+        material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
+        materials[kind] = material.name
     for kind, (rgb1, rgb2, joints, repeat) in FLOOR_LOOK.items():
         texture = spec.add_texture()
         texture.name, texture.type, texture.builtin = f"floor_{kind}", mujoco.mjtTexture.mjTEXTURE_2D, mujoco.mjtBuiltin.mjBUILTIN_CHECKER
