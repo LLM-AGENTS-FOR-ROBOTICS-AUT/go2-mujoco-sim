@@ -57,6 +57,7 @@ class StandInHouse:
         self.views = [middle(name) for name in ROOMS if name not in known]
         self.visited, self.walks = [], []
         self.walk_delay = 0.
+        self.on_things = True                       # room_at(radius 0) on a thing's own spot finds no room
         for name in ("rooms", "_goto", "_visit_viewpoint", "_turn_by", "look", "_approach", "_sport",
                      "exploration_viewpoint", "room_at", "_way_in"):
             setattr(executor, name, getattr(self, name))
@@ -71,7 +72,9 @@ class StandInHouse:
         return [{"name": name, "region": i, "x": middle(name)[0], "y": middle(name)[1], "area_m2": 10.}
                 for i, name in enumerate(ROOMS) if name in self.known]
 
-    def room_at(self, x, y):
+    def room_at(self, x, y, radius_m=0.):
+        if radius_m == 0. and self.on_things and any(math.hypot(t[2] - x, t[3] - y) < .1 for t in self.things):
+            return None                              # as on the real map: a thing's own spot is occupied
         return room_of(x, y)
 
     def _way_in(self, x, y):
@@ -219,6 +222,36 @@ class SearchTests(MissionTestCase):
         self.assertEqual(task.detail["mission"]["outcome"], "not_found", task.detail)
         self.assertEqual(sorted(self.house.walks), sorted(ROOMS), "each room once")
 
+    def test_a_room_it_cant_get_into_isnt_reported_as_checked(self):
+        tries, walk = [], self.house._goto
+
+        def blocked_door(task, cancel):                 # bedroom 2's doorway is blocked
+            p = task.command.params
+            if room_of(p["x"], p["y"]) == "bedroom_2":
+                tries.append("bedroom_2")
+                raise AdapterError("no route into bedroom 2")
+            walk(task, cancel)
+        self.executor._goto = blocked_door
+        task = self.run_mission("search", {"target": "teddy bear"})
+        mission = task.detail["mission"]
+        self.assertEqual(mission["outcome"], "blocked", mission)
+        self.assertIn("couldn't get into bedroom 2", mission["result"])
+        self.assertNotIn("bedroom 2", mission["checked"])
+        self.assertFalse(any("checked bedroom 2" in text for text in self.said()), self.said())
+        self.assertEqual(tries, ["bedroom_2", "bedroom_2"], "tried, then once more after the other rooms")
+
+    def test_a_numbered_room_means_that_room_only(self):
+        task = self.run_mission("search", {"target": "teddy bear", "where": "bedroom 1"})
+        self.assertEqual(task.detail["mission"]["outcome"], "not_found", task.detail)
+        self.assertEqual(self.house.walks, ["bedroom_1"], "not bedroom 2, where the teddy bear is")
+
+    def test_a_search_limited_to_a_room_doesnt_go_to_one_remembered_elsewhere(self):
+        self.executor.object_memory.remember("teddy bear", 4.5, -3.5, "brown")      # in bedroom 2
+        task = self.run_mission("search", {"target": "teddy bear", "where": "the kitchen"})
+        self.assertEqual(task.detail["mission"]["outcome"], "not_found", task.detail)
+        self.assertEqual(self.house.walks, ["kitchen"])
+        self.assertFalse(any("I remember seeing" in text for text in self.said()))
+
     def test_a_saved_place_it_cant_get_to_isnt_reported_as_searched(self):
         self.executor.places.remember("toy box", 4., -3., 0.)
         self.executor._goto = lambda task, cancel: (_ for _ in ()).throw(AdapterError("no route to the toy box"))
@@ -242,6 +275,24 @@ class SearchTests(MissionTestCase):
         self.assertEqual(task.detail["mission"]["outcome"], "found")
         self.assertTrue(any("carrying on the search" in text for text in self.said()))
         self.assertEqual(self.house.walks.count("bedroom_1"), 1, "bedroom 1 isn't checked twice")
+
+    def test_asking_again_after_a_timeout_carries_on(self):
+        # The resume window counts from when the mission stopped: here it times out 3 s after it began, later than
+        # a 2 s window from its start (as search's default 600 s limit equals the 600 s window).
+        original, missions.RESUME_S = missions.RESUME_S, 2.
+        self.addCleanup(setattr, missions, "RESUME_S", original)
+        self.house.walk_delay = 1.
+        first = self.run_mission("search", {"target": "umbrella"}, time_limit=3)
+        self.assertEqual(first.detail["mission"]["outcome"], "timed_out")
+        checked = len(first.detail["mission"]["checked"])
+        self.assertGreater(checked, 0)
+        self.house.walk_delay = 0.
+        walked = len(self.house.walks)
+        task = self.run_mission("search", {"target": "umbrella"})
+        self.assertTrue(any("carrying on the search" in text for text in self.said()), self.said())
+        self.assertEqual(task.detail["mission"]["outcome"], "not_found")
+        self.assertEqual(len(self.house.walks) - walked, len(ROOMS) - checked,
+                         "rooms checked before the timeout aren't checked again")
 
     def test_time_limit_ends_the_search_and_says_so(self):
         self.house.walk_delay = 2.
@@ -288,6 +339,12 @@ class GuardTests(MissionTestCase):
         self.assertEqual((self.robot.x, self.robot.y), position)
         self.assertIn(("sport", "sit"), self.robot.calls)
 
+    def test_a_saved_place_faces_the_way_in_not_the_heading_it_was_saved_with(self):
+        self.executor.places.remember("front door", -4.5, 0., math.pi / 2)        # saved facing the wall
+        self.executor._way_in = lambda x, y: 0.                                   # the way in is along +x
+        self.run_mission("guard", {"place": "front door"}, time_limit=1)
+        self.assertAlmostEqual(math.cos(self.robot.yaw), 1., places=3, msg="it guards the way in, not the wall")
+
     def test_an_unknown_place_is_refused(self):
         task = self.run_mission("guard", {"place": "garage", "duration_s": 10})
         self.assertEqual(task.status, "failed")
@@ -315,10 +372,23 @@ class PatrolTests(MissionTestCase):
         self.executor.stop("user")
         self.assertTrue(wait_for(lambda: self.events and self.events[-1].status == "stopped", 3))
 
+    def test_rooms_are_read_as_go_to_place_reads_them(self):
+        task = self.run_mission("patrol", {"rooms": ["the kitchen", "bedroom 1"]}, time_limit=600)  # one round
+        self.assertEqual(task.status, "completed", task.detail)
+        self.assertEqual(sorted(self.house.walks), ["bedroom_1", "kitchen"], "not every bedroom")
+        task = self.run_mission("patrol", {"rooms": ["garage"]})
+        self.assertEqual(task.status, "failed")
+        self.assertIn("garage", task.detail["error"])
+
     def test_a_room_named_between_rounds_isnt_a_change(self):
         unnamed = {"kitchen": "room_7"}                  # the kitchen isn't named yet in round 1
         listed = self.house.rooms
-        self.executor.room_at = lambda x, y: unnamed.get(room_of(x, y), room_of(x, y))
+        house_room_at = self.house.room_at                # a thing's own spot finds no room, as on the real map
+
+        def room_at(x, y, radius_m=0.):
+            room = house_room_at(x, y, radius_m)
+            return unnamed.get(room, room)
+        self.executor.room_at = room_at
         self.executor.rooms = lambda fresh=False: [{**r, "name": unnamed.get(r["name"], r["name"])} for r in listed()]
         command = mission("patrol", {}, 600)
         command[0].params["every"] = 2.

@@ -104,6 +104,13 @@ MIN_ROOM_M2 = 1.5           # smaller regions (a pocket behind furniture) aren't
 ROOM_STAND_M = .45          # go_to_place into a room stops somewhere at least this far from anything in the way
 
 
+def world_xy(detection, pose):
+    """Where a detection is on the map: its (x_m ahead, y_m left) of the robot at pose (x, y, yaw)."""
+    x, y, yaw = pose
+    c, s = math.cos(yaw), math.sin(yaw)
+    return x + c * detection.x_m - s * detection.y_m, y + s * detection.x_m + c * detection.y_m
+
+
 def _room_key(name):
     """A room name to compare: "The living room" -> "living_room"."""
     return re.sub(r"^the_", "", "_".join(re.findall(r"[a-z0-9]+", str(name).casefold())))
@@ -294,11 +301,12 @@ class Executor:
                               heading_aware=True, forbidden_steps=navigation.forbidden,
                               planning_resolution_m=self.room_map.resolution), visited)
 
-    def room_at(self, x, y):
+    def room_at(self, x, y, radius_m=0.):
         """Observed geometric region, or None: the user's name for it, else its name from what's been seen in it
-        ("kitchen", #35), else room_N."""
+        ("kitchen", #35), else room_N. radius_m=0 is the region at (x, y) itself, for where the robot stands; a
+        thing seen is on cells the map marks occupied, so ask with a radius (THING_ROOM_M) to get the room around it."""
         self.room_regions.update(self.room_map)
-        region = self.room_regions.region_near(x, y, radius_m=0.)
+        region = self.room_regions.region_near(x, y, radius_m=radius_m)
         if region is None:
             return None
         return self.room_regions.names.get(region) or self._room_names().get(region) or f"room_{region}"
@@ -356,11 +364,9 @@ class Executor:
 
     def _note_room_sightings(self, detections, pose):
         """Note where each thing in view that tells a room's type (a bed, a fridge) was seen."""
-        c, sn = math.cos(pose[2]), math.sin(pose[2])
         for d in detections:
             if d.x_m is not None and tells_room(d.label):
-                self.room_sightings.append((pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m,
-                                            d.label))
+                self.room_sightings.append((*world_xy(d, pose), d.label))
                 self._sightings_noted += 1
 
     # ---- missions (#18, go2/missions.py) -----------------------------------------------------------------
@@ -369,11 +375,13 @@ class Executor:
         return time.monotonic()
 
     def _idle(self, seconds, cancel):
-        """Wait without moving, in this executor's time; Stop ends the wait (Cancelled)."""
-        end = time.monotonic() + seconds
+        """Wait without moving, in this executor's time; Stop ends the wait (Cancelled). Unlike _sleep, which
+        waits on the wall clock (cancel.wait), this follows now(): in the offline evaluations time is simulated, and
+        time.sleep is what moves it on, so a mission waiting between patrol rounds doesn't stall the simulation."""
+        end = self.now() + seconds
         while True:
             self._check(cancel)
-            left = end - time.monotonic()
+            left = end - self.now()
             if left <= 0:
                 return
             time.sleep(min(.1, left))
@@ -397,11 +405,17 @@ class Executor:
         """(state, resumed): the state of an unfinished mission asked for again within resume_s, else a new one."""
         with self.lock:
             state, when = self._missions.get(key, (None, None))
-            resumed = state is not None and not state.get("finished") and time.monotonic() - when <= resume_s
+            resumed = state is not None and not state.get("finished") and self.now() - when <= resume_s
             if not resumed:
                 state = {}
-            self._missions[key] = (state, time.monotonic())
+            self._missions[key] = (state, self.now())
             return state, resumed
+
+    def _mission_ended(self, key):
+        """A mission stopped, timed out or finished: it can be carried on for resume_s from now."""
+        with self.lock:
+            if key in self._missions:
+                self._missions[key] = (self._missions[key][0], self.now())
 
     def _mission_progress(self, task, text, image=None):
         """A mission's progress line, or an alert when it comes with a camera image."""
@@ -430,9 +444,9 @@ class Executor:
         out = []
         for d, (x, y, yaw) in self._detections():
             if d.x_m is not None and d.label != "wall":
+                wx, wy = world_xy(d, (x, y, yaw))
                 out.append({"label": d.label, "color": d.color, "clothing": getattr(d, "clothing", None),
-                            "x": x + math.cos(yaw) * d.x_m - math.sin(yaw) * d.y_m,
-                            "y": y + math.sin(yaw) * d.x_m + math.cos(yaw) * d.y_m})
+                            "x": wx, "y": wy})
         return out
 
     def _way_in(self, x, y):

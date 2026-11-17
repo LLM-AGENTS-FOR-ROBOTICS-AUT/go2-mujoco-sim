@@ -24,6 +24,7 @@ import re
 from types import SimpleNamespace
 
 from .adapters.base import AdapterError
+from .executor import _room_key, world_xy
 from .tools import Command, resolve
 
 RESUME_S = 600.            # a stopped mission asked for again this soon carries on where it left off
@@ -35,6 +36,9 @@ SAME_PLACE_M = .8          # patrol: an object this close to where it was hasn't
 STAND_CLEAR_M = .45        # a room is walked into at a spot at least this clear of anything in the way
 SAME_SPOT_M = .5           # explore: an exploration spot this close to one tried before is the same spot (as #14's
                            # visited radius)
+THING_ROOM_M = 1.          # a thing's room: the room most of the floor within this of it belongs to (as room naming:
+                           # the thing itself is on cells the map marks occupied)
+ENTER_TRIES = 2            # search: a room it can't get into is tried this many times, then given up
 LOG_LINES = 30
 
 # Where things usually are: detector label -> room types, likeliest first (as in the houses of #17, and most homes).
@@ -60,6 +64,8 @@ def run(ex, task, cancel):
         {"search": search, "guard": guard, "patrol": patrol, "explore": explore}[mission.kind](mission)
     except TimeUp:
         mission.timed_out()
+    finally:
+        ex._mission_ended(mission.key)   # "carry on" counts from when it stopped, not from when it began
 
 
 class Mission:
@@ -158,10 +164,8 @@ class Mission:
         room = None
         match = self.ex._match(target)[0]
         if match and match[0].x_m is not None:
-            det, (x, y, yaw) = match
-            room = self.ex.room_at(x + math.cos(yaw) * det.x_m - math.sin(yaw) * det.y_m,
-                                   y + math.sin(yaw) * det.x_m + math.cos(yaw) * det.y_m)
-        if room is None:                     # the target's own spot is occupied on the map: the room Go2 is in
+            room = _thing_room(self.ex, *world_xy(*match))
+        if room is None:                     # not on the map yet: the room Go2 is in, next to it
             s = self.ex._fresh_state()
             room = self.ex.room_at(s.x, s.y)
         if room is not None and room.startswith("room_"):
@@ -233,6 +237,23 @@ def _kind(name):
     return re.sub(r"_\d+$", "", name.replace(" ", "_").casefold())
 
 
+def _rooms_called(rooms, name):
+    """The rooms `name` means, as go_to_place reads a room name: "bedroom 2" or "the kitchen" is that room; a room
+    type ("bedroom") is every room of that type."""
+    wanted = _room_key(name)
+    return ([r for r in rooms if _room_key(r["name"]) == wanted] or
+            [r for r in rooms if not r["name"].startswith("room_") and _kind(_room_key(r["name"])) == wanted])
+
+
+def _is_called(room, name):
+    return bool(room) and bool(_rooms_called([{"name": room}], name))
+
+
+def _thing_room(ex, x, y):
+    """The room a thing seen at (x, y) is in, or None."""
+    return ex.room_at(x, y, radius_m=THING_ROOM_M)
+
+
 def _the(room):
     """'the kitchen', but 'bedroom 2'."""
     room = room.replace("_", " ")
@@ -250,8 +271,19 @@ def search(m):
         m.say(f"carrying on the search for the {target}" +
               (f": already checked {', '.join(sorted(st['checked_names']))}" if st["checked_names"] else ""))
 
+    def in_where(x, y, unknown):
+        """Is (x, y) in a room `where` means (any room without `where`)? `unknown` when it isn't in a known room."""
+        if not where:
+            return True
+        room = _thing_room(ex, x, y)
+        return unknown if room is None else _is_called(room, where)
+
     def seen():
-        return ex._match(target)[0]
+        """The target in view; with `where`, not one that's in another room."""
+        match = ex._match(target)[0]
+        if match and match[0].x_m is not None and not in_where(*world_xy(*match), unknown=True):
+            return None
+        return match
 
     def found(room):
         m.say(f"found the {target} in {_the(room)}")
@@ -287,34 +319,51 @@ def search(m):
         return
 
     if not st.get("memory_tried"):                      # remembered, or in view where Go2 stands: go straight there
-        st["memory_tried"] = True
-        if ex._recall(target) is not None:
+        st["memory_tried"] = True                       # (with `where`, only if that's in the room asked for)
+        remembered = ex._recall(target)
+        if remembered is not None and in_where(remembered[1], remembered[2], unknown=False):
             m.say(f"I remember seeing a {target}; checking there first")
             if reach():
                 return
-        elif m.look_around(seen) and reach():
-            return
+        elif not where or _is_called(ex.room_at(*m.here()[:2]), where):
+            if m.look_around(seen) and reach():
+                return
 
     st.setdefault("looked_from", [])                    # where it looked round in each checked room
+    st.setdefault("not_in", [])                         # (region, x, y) of each try at a room it couldn't get into
+    st.setdefault("not_entered", set())                 # rooms given up on: never got in
+
+    def tries(room):
+        """How often it couldn't get into `room` (found by its number, or by where it is, as for checked rooms)."""
+        return sum(1 for region, px, py in st["not_in"]
+                   if region == room["region"] or ex.room_regions.region_near(px, py, 0.) == room["region"])
+
     while True:
         m.check()
         x, y, _ = m.here()
         # A room is checked if it was looked round in: by its region, and by where Go2 stood, since the map's
         # regions can be renumbered as it grows (the same hallway, a new number) and it mustn't be checked again.
         rooms = m.rooms()                               # splits the map first: the spots are placed on this split
+        if where:                                       # before leaving out checked rooms: "bedroom 2" checked
+            rooms = _rooms_called(rooms, where)         # mustn't fall back to meaning every bedroom
         checked = st["checked"] | {ex.room_regions.region_near(px, py, 0.) for px, py in st["looked_from"]}
-        rooms = [r for r in rooms if r["region"] not in checked]
-        if where:
-            wanted = _kind(where)
-            rooms = [r for r in rooms if _kind(r["name"]) in (wanted, wanted.removeprefix("the_"))]
+        rooms = [r for r in rooms if r["region"] not in checked and tries(r) < ENTER_TRIES]
         rank = {kind: i for i, kind in enumerate(likely)}
-        likely_rooms = rooms if where else [r for r in rooms if _kind(r["name"]) in rank]
-        # Likely rooms first; then explore for more; then whatever rooms are left (unknown kinds, hallways).
-        pick = likely_rooms or ([] if not st.get("explored_all") else rooms)
+        first = [r for r in rooms if not tries(r)]      # rooms it hasn't failed to get into
+        likely_rooms = first if where else [r for r in first if _kind(r["name"]) in rank]
+        # Likely rooms first; then explore for more; then whatever rooms are left (unknown kinds, hallways); then
+        # one more try at each room it couldn't get into.
+        pick = likely_rooms or ([] if not st.get("explored_all") else (first or rooms))
         if pick:
             room = min(pick, key=lambda r: (rank.get(_kind(r["name"]), len(rank)), math.hypot(r["x"] - x, r["y"] - y)))
             name = room["name"].replace("_", " ")
-            m.walk_into(room)
+            if not m.walk_into(room):                   # not "checked" from the hallway: try again later
+                st["not_in"].append((room["region"], room["x"], room["y"]))
+                again = tries(room) < ENTER_TRIES
+                if not again:
+                    st["not_entered"].add(name)
+                m.say(f"I couldn't get into {_the(name)}" + ("; I'll try again later" if again else ""))
+                continue
             if m.look_around(seen) and reach():
                 return
             st["checked"].add(room["region"])        # only once looked round: a stop on the way leaves it to do
@@ -335,6 +384,11 @@ def search(m):
             return
         m.finish("blocked", f"I can see the {target} but can't find a way to it; it may be boxed in by furniture",
                  done=False, checked=sorted(st["checked_names"]))
+        return
+    if st["not_entered"]:                               # it may be in a room it never got into
+        rooms = ", ".join(_the(n) for n in sorted(st["not_entered"]))
+        m.finish("blocked", f"I couldn't get into {rooms}, and the {target} isn't in the rooms I could check",
+                 done=False, checked=sorted(st["checked_names"]), not_entered=sorted(st["not_entered"]))
         return
     scope = f" in {_the(where)}" if where else " anywhere I could reach"
     m.finish("not_found", f"I searched{scope} and couldn't find the {target}" +
@@ -361,7 +415,8 @@ def guard(m):
         x, y, name, yaw = destination
         if not m.walk_to(x, y, name):
             raise AdapterError(f"I couldn't get to the {name}")
-        facing = yaw if yaw is not None else ex._way_in(x, y)
+        way_in = ex._way_in(x, y)            # face the way in; a saved place's own heading only when there isn't one
+        facing = way_in if way_in is not None else yaw   # (it may have been saved facing the wall)
         if facing is not None:
             m.turn(_wrap(facing - m.here()[2]))
     m.step(ex._sport, resolve("posture", {"name": "sit"})[0])
@@ -409,21 +464,21 @@ def patrol(m):
         m.check()
         started = ex.now()
         rooms = m.rooms()
-        if p["rooms"]:
-            wanted = {_kind(r) for r in p["rooms"]}
-            rooms = [r for r in rooms if _kind(r["name"]) in wanted or r["name"].casefold() in
-                     {w.casefold() for w in p["rooms"]}]
-            if not rooms:
-                raise AdapterError(f"I don't know rooms called {', '.join(p['rooms'])}; explore or name them first")
+        if p["rooms"]:                       # as go_to_place reads room names: "the kitchen", "bedroom 2", "bedroom"
+            unknown = [w for w in p["rooms"] if not _rooms_called(rooms, w)]
+            if unknown:
+                raise AdapterError(f"I don't know rooms called {', '.join(unknown)}; explore or name them first")
+            rooms = list({r["region"]: r for w in p["rooms"] for r in _rooms_called(rooms, w)}.values())
         seen = []
         for room in _route(rooms, m.here()):
             m.walk_into(room)
-            seen += [{**thing, "room": ex.room_at(thing["x"], thing["y"]) or room["name"]}
+            seen += [{**thing, "room": _thing_room(ex, thing["x"], thing["y"]) or room["name"]}
                      for thing in m.look_around()]
         rounds += 1
         st["rounds"] = rounds
-        changes = _changes(st.get("last"), _merge(seen), {r["name"] for r in rooms}, ex.room_at)
-        st["last"] = _merge(seen)
+        now = _merge(seen)
+        changes = _changes(st.get("last"), now, {r["name"] for r in rooms}, lambda x, y: _thing_room(ex, x, y))
+        st["last"] = now
         m.say(f"patrol round {rounds}: " + ("; ".join(changes) if changes else
                                             "nothing has changed" if rounds > 1 else "noted where everything is"))
         wait = p["every"] - (ex.now() - started)
