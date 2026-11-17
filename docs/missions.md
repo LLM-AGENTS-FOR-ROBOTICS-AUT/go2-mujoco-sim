@@ -56,24 +56,26 @@ random houses on simulated time (the offline simulator from #14, with the camera
 a summary. The #18 targets: search finds the teddy bear in at least 90% of 50 houses with no collisions; explore names
 at least 80% of rooms correctly.
 
-Results (houses 0-49 and 0-9, 14 November 2026):
+Results (houses 0-49 and 0-9, 17 November 2026, on this branch merged with the support-range fix in
+`support-range-check`; since #38, things can sit on furniture, and the teddy bear is on a bed in 31 of the 50 houses):
 
 | Mission | Result | Target |
 |---|---|---|
-| search, 50 houses | found in 43 of the 45 houses where the teddy bear can be reached (95.6%); 0 collisions; 265 s of simulated time on average | 90%, no collisions |
-| search, unreachable teddy bear | 4 of 5 ended `blocked` (seen, no way to it); 1 was reached anyway (the plan check, `reachable()`, is slightly cautious) | says so, doesn't loop |
-| explore, 10 houses | 36 of 37 rooms named right (97.3%); 0 collisions | 80% |
+| search, 50 houses | found in 36 of the 40 houses where the teddy bear can be reached (90.0%), ending 1.01 m from it on average; 0 collisions; 338 s of simulated time on average | 90%, no collisions |
+| search, unreachable teddy bear | 8 of 10 found the right room and got as close as the furniture allows (1.2-1.7 m); 2 ended `blocked` | says so, doesn't loop |
+| explore, 10 houses | 37 of 37 rooms named right (100%); 0 collisions | 80% |
 
-A teddy bear counts as reachable when, by the house plan, Go2's centre can get within 1.1 m of it (`reachable()`).
+A search succeeds when it says it found the target and Go2 ended within 1.5 m of it (`REACHED_M`). A teddy bear counts
+as reachable when, by the house plan, Go2's centre can get within 1.1 m of it (`reachable()`).
 
-Known limits:
-- Houses 32 and 46 (search): small two-room houses with the teddy bear in a tight spot in the bedroom; Go2 sees it
-  but can't find a clear spot near enough, so the search ends `blocked`.
-- House 9 (explore): the kitchen stayed `room_N`; not enough kitchen things were seen from where Go2 looked.
-- House 4 (explore): a large kitchen with a dining table was split into two regions, both named kitchen
-  (`kitchen_1`, `kitchen_2`); the name is right, but it's listed twice.
+Known limits (all four search misses are a teddy bear on a bed):
+- House 44: a small bedroom almost filled by the bed. From anywhere Go2 can stand in it, the bed's edge hides the teddy
+  bear lying on it (the camera is lower than the bed's top), so the room is checked without seeing it; ends `blocked`
+  (the kitchen couldn't be got into either).
+- House 27: found in the right bedroom, but Go2 ended 1.79 m from it, beside the bed.
+- House 21: `not_found`, and house 34 (a big house with three bedrooms) ran out of its 1800 s.
 - Rooms of one type are numbered in the order they were found (`bedroom_1`, `bedroom_2`), not the house plan's order.
-- Once, the offline evaluation stopped part-way through a house with no processor use (houses 6-9 were re-run and
-  finished normally, with the same results as the run before). The cause wasn't found; it didn't happen again.
 
-The explore results are from the code as committed (re-run after the last change to room naming).
+Earlier results (14 November, before both rounds of review fixes and before #38 put things on furniture): search 43 of
+45 reachable (95.6%), explore 36 of 37 (97.3%). The same 50 seeds now make different houses, so the two aren't
+directly comparable.
