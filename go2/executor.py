@@ -31,7 +31,7 @@ from .object_memory import ObjectMemory
 from .memory_visibility import clear_saved_location
 from .places import NamedPlaces
 from .path_planner import astar, simplify, turning_astar, keep_turns
-from .room_map import OccupancyGrid
+from .room_map import FREE, OCCUPIED, OccupancyGrid
 from .exploration import ExplorationMap, next_viewpoint, _pose, _safe_cells, recovery_route
 from .room_regions import RoomRegions
 from .room_names import RoomNamer, tells_room
@@ -448,6 +448,77 @@ class Executor:
                 out.append({"label": d.label, "color": d.color, "clothing": getattr(d, "clothing", None),
                             "x": wx, "y": wy})
         return out
+
+    def _past_support(self, detection, pose, most_m=2.):
+        """Where a thing ranged by what it's on really is (perception's distance_source "support": the distance is
+        to the side of the bed or desk under it, #49): along the line of sight, the middle of the furniture behind
+        that side, as far as the map shows it (to the far side, a wall, or free floor; at most most_m)."""
+        m = self.room_map.snapshot()
+        x0, y0 = world_xy(detection, pose)
+        heading = math.atan2(y0 - pose[1], x0 - pose[0])
+        c, s = math.cos(heading), math.sin(heading)
+        end, inside, d = 0., False, m.resolution
+        while d <= most_m:
+            cell = m.world_to_cell(x0 + c * d, y0 + s * d)
+            if cell is None or m.grid[cell] == FREE:
+                break
+            if m.grid[cell] == OCCUPIED:
+                if inside:                   # past the near side: the far side, or a wall behind it
+                    break
+            else:
+                inside = True                # its top, which the LiDAR (looking down) doesn't see
+            end, d = d, d + m.resolution
+        return x0 + c * end / 2, y0 + s * end / 2
+
+    def _stand_near(self, x, y, within_m=1.6, clearance_m=.42, tries=12):
+        """The spot nearest (x, y), within within_m, where Go2 has room to stand (clearance_m all round, in seen
+        free space) and that it has a route to: (x, y), or None."""
+        s = self._fresh_state()
+        m = self.room_map.snapshot()
+        rows, cols = np.nonzero(_safe_cells(m, clearance_m))
+        if not len(rows):
+            return None
+        xs = (cols + m._min_col + .5) * m.resolution
+        ys = (rows + m._min_row + .5) * m.resolution
+        gaps = np.hypot(xs - x, ys - y)
+        tried = []
+        for i in np.argsort(gaps):
+            if gaps[i] > within_m or len(tried) >= tries:
+                break
+            gx, gy = float(xs[i]), float(ys[i])
+            if any(math.hypot(gx - tx, gy - ty) < .25 for tx, ty in tried):
+                continue                     # next to a spot already tried: most likely the same answer
+            if self._route(s, gx, gy) is not None:
+                return gx, gy
+            tried.append((gx, gy))
+        return None
+
+    def _far_spot(self, region, x, y, clearance_m=.45, tries=6):
+        """A spot in room `region` as far from (x, y) as the room allows, with room to stand (clearance_m) and a
+        route to it: (x, y), or None. Searching, a second look from there sees over a bed whose edge hid things
+        on it from close up (the camera is lower than a bed's top)."""
+        s = self._fresh_state()
+        self.room_regions.update(self.room_map)
+        with self.room_regions._lock:
+            m, labels = self.room_regions.map, self.room_regions.labels
+        if m is None:
+            return None
+        rows, cols = np.nonzero(_safe_cells(m, clearance_m) & (labels == region))
+        if not len(rows):
+            return None
+        xs = (cols + m._min_col + .5) * m.resolution
+        ys = (rows + m._min_row + .5) * m.resolution
+        tried = []
+        for i in np.argsort(-np.hypot(xs - x, ys - y)):
+            if len(tried) >= tries:
+                break
+            gx, gy = float(xs[i]), float(ys[i])
+            if any(math.hypot(gx - tx, gy - ty) < .5 for tx, ty in tried):
+                continue
+            if self._route(s, gx, gy) is not None:
+                return gx, gy
+            tried.append((gx, gy))
+        return None
 
     def _way_in(self, x, y):
         """The heading (radians) from (x, y) toward the nearest way into its room (where it meets another room),

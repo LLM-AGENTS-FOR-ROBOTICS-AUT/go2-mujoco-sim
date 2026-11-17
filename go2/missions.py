@@ -39,6 +39,11 @@ SAME_SPOT_M = .5           # explore: an exploration spot this close to one trie
 THING_ROOM_M = 1.          # a thing's room: the room most of the floor within this of it belongs to (as room naming:
                            # the thing itself is on cells the map marks occupied)
 ENTER_TRIES = 2            # search: a room it can't get into is tried this many times, then given up
+CLOSE_IN_M = 1.6           # closing in on a target: the nearest spot within this of it that Go2 can stand at
+REACH_M = 1.4              # ...and it has reached the target if it ends this close (by a bed: at its side)
+NEXT_TO_M = 1.             # "I'm next to it" within this; further, "as close as I can get"
+WEDGED = ("to turn safely", "route to turning space")   # a step blocked like this found no room to turn
+SECOND_LOOK_M = 1.5        # search: a likely room gets a second look from its far side, if that's this far away
 LOG_LINES = 30
 
 # Where things usually are: detector label -> room types, likeliest first (as in the houses of #17, and most homes).
@@ -121,26 +126,55 @@ class Mission:
         the time limit end the mission; a fall or lost telemetry ends it with that error."""
         self.check()
         sub = self.ex._subtask(command, self.task)
+        self.wedged = False
         try:
             fn(sub, self.budget())
-            return sub.status not in ("failed", "blocked")
+            ok = sub.status not in ("failed", "blocked")
         except AdapterError:
             self.check()                     # a step cut short by the time limit ends the mission as timed out
             self.ex._fresh_state()           # a fall or lost telemetry ends it (raises); anything else: carry on
-            return False
+            ok = False
+        reason = str(sub.detail.get("blocked", {}).get("reason", "")) if not ok else ""
+        self.wedged = any(words in reason for words in WEDGED)
+        return ok
+
+    def unwedged(self, retry):
+        """retry() once more after backing out, if the step that failed found no room to turn."""
+        return self.wedged and self.back_out() and retry()
+
+    def back_out(self):
+        """No room to turn (furniture close all round, as exploration can leave it): back straight out the way it
+        came, which needs no turn, half a metre at a time and at most a metre, each move with the executor's usual
+        checks. True if it moved."""
+        moved = False
+        for _ in range(2):
+            command = resolve("move", {"direction": "backward", "distance_m": .5})[0]
+            if not self.step(lambda sub, budget: self.ex._velocity(sub, sub.command.params, budget), command):
+                break
+            moved = True
+        if moved:
+            self.say("I had no room to turn, so I backed out")
+        return moved
 
     def walk_to(self, x, y, name):
-        return self.step(self.ex._goto, Command("goto", "go_to_place", {}, {"target": "place", "name": name,
-                                                                         "x": x, "y": y}, summary=f"go to the {name}"))
+        def walk():
+            return self.step(self.ex._goto, Command("goto", "go_to_place", {}, {
+                "target": "place", "name": name, "x": x, "y": y}, summary=f"go to the {name}"))
+        return walk() or self.unwedged(walk)
 
     def visit(self, viewpoint):
         x, y, yaw = viewpoint
-        return self.step(self.ex._visit_viewpoint, Command("viewpoint", "exploration", {}, {
-            "x": x, "y": y, "yaw": yaw, "timeout_s": max(1., min(90., self.left()))}, summary="explore"))
+
+        def go():
+            return self.step(self.ex._visit_viewpoint, Command("viewpoint", "exploration", {}, {
+                "x": x, "y": y, "yaw": yaw, "timeout_s": max(1., min(90., self.left()))}, summary="explore"))
+        return go() or self.unwedged(go)
 
     def turn(self, angle):
-        return self.step(lambda sub, budget: self.ex._turn_by(sub, budget, angle),
-                         Command("velocity", "turn", {}, {}, summary="turn"))
+        def go():
+            return self.step(lambda sub, budget: self.ex._turn_by(sub, budget, angle),
+                             Command("velocity", "turn", {}, {}, summary="turn"))
+        return go() or self.unwedged(go)
 
     def look_around(self, wanted=None):
         """Look all round in quarter turns; stops early and returns wanted() once it gives something."""
@@ -153,18 +187,55 @@ class Mission:
                 found = wanted()
                 if found:
                     return found
-            if quarter < LOOK_TURNS - 1:
-                self.turn(math.pi / 2)
+            if quarter < LOOK_TURNS - 1 and not self.turn(math.pi / 2):
+                break                        # no room to turn here (wedged by furniture): don't keep trying
         return None if wanted is not None else seen
 
-    def approach(self, target):
-        """Walk up to the target; its room, or None if it couldn't be reached."""
-        if not self.step(self.ex._approach, resolve("approach", {"target": target})[0]):
-            return None
-        room = None
+    def target_spot(self, target):
+        """Where the target is, as well as can be told: from the camera, past the side of the furniture it's on
+        when that's what it was ranged by; else where it was last seen. None if neither."""
         match = self.ex._match(target)[0]
         if match and match[0].x_m is not None:
-            room = _thing_room(self.ex, *world_xy(*match))
+            detection, pose = match
+            if getattr(detection, "distance_source", None) == "support":
+                return self.ex._past_support(detection, pose)
+            return world_xy(detection, pose)
+        remembered = self.ex._recall(target)
+        return (remembered[1], remembered[2]) if remembered else None
+
+    def close_in(self, target):
+        """Get as close to the target as the map allows and face it: the spot nearest it that Go2 has room to
+        stand at and a route to (by a bed, the middle of the side nearest the teddy bear on it, not the first
+        edge reached). The distance left to the target, or None if it isn't known where the target is."""
+        spot = self.target_spot(target)
+        if spot is None:
+            return None
+        tx, ty = spot
+        x, y, _ = self.here()
+        stand = self.ex._stand_near(tx, ty, CLOSE_IN_M)
+        if stand is not None and math.hypot(stand[0] - tx, stand[1] - ty) < math.hypot(x - tx, y - ty) - .2:
+            self.walk_to(*stand, target)
+        x, y, yaw = self.here()
+        self.turn(_wrap(math.atan2(ty - y, tx - x) - yaw))
+        self.check()
+        self.ex.look()
+        return math.hypot(tx - x, ty - y)
+
+    def approach(self, target):
+        """Walk up to the target; its room, or None if it couldn't be reached. When the usual walk-up can't find
+        a spot next to it, or the target is on furniture, it closes in on the nearest spot it can get to."""
+        if self.step(self.ex._approach, resolve("approach", {"target": target})[0]):
+            match = self.ex._match(target)[0]
+            if match and getattr(match[0], "distance_source", None) == "support":
+                self.close_in(target)        # ranged by the side under it: go round to the side nearest it
+        else:
+            gap = self.close_in(target)
+            if gap is None or gap > REACH_M or not self.ex._match(target)[0]:
+                return None
+        spot = self.target_spot(target)
+        here = self.here()
+        self.gap = math.hypot(spot[0] - here[0], spot[1] - here[1]) if spot else None
+        room = _thing_room(self.ex, *spot) if spot else None
         if room is None:                     # not on the map yet: the room Go2 is in, next to it
             s = self.ex._fresh_state()
             room = self.ex.room_at(s.x, s.y)
@@ -287,8 +358,11 @@ def search(m):
 
     def found(room):
         m.say(f"found the {target} in {_the(room)}")
-        m.finish("found", f"I found the {target} in {_the(room)} and I'm next to it", room=room,
-                 checked=sorted(st["checked_names"]))
+        gap = getattr(m, "gap", None)
+        where_now = ("I'm next to it" if gap is None or gap <= NEXT_TO_M else
+                     f"I'm as close as I can get to it, about {gap:.1f} m away")
+        m.finish("found", f"I found the {target} in {_the(room)} and {where_now}", room=room,
+                 checked=sorted(st["checked_names"]), **({} if gap is None else {"gap_m": round(gap, 2)}))
 
     def reach():
         """Walk up to the target in view: True once found. If there's no way to it from here, the search goes on
@@ -366,6 +440,12 @@ def search(m):
                 continue
             if m.look_around(seen) and reach():
                 return
+            if where or _kind(room["name"]) in rank:   # a likely room: look again from its far side, since from
+                hx, hy, _ = m.here()                    # close up a bed's edge hides what's lying on it
+                spot = ex._far_spot(room["region"], hx, hy, STAND_CLEAR_M)
+                if (spot is not None and math.hypot(spot[0] - hx, spot[1] - hy) >= SECOND_LOOK_M
+                        and m.walk_to(*spot, name) and m.look_around(seen) and reach()):
+                    return
             st["checked"].add(room["region"])        # only once looked round: a stop on the way leaves it to do
             st["looked_from"].append(m.here()[:2])
             st["checked_names"].add(name)

@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "simulation"))
 from go2 import missions  # noqa: E402
 from go2.adapters.base import AdapterError  # noqa: E402
 from go2.agent import Agent, describe_outcome  # noqa: E402
-from go2.executor import Executor  # noqa: E402
+from go2.executor import Executor, _blocked  # noqa: E402
 from go2.mock_model import MockModel  # noqa: E402
 from go2.perception import Detection  # noqa: E402
 from go2.tools import COMPACT_TOOLS, MISSIONS, TOOLS, ToolError, resolve  # noqa: E402
@@ -58,6 +58,7 @@ class StandInHouse:
         self.visited, self.walks = [], []
         self.walk_delay = 0.
         self.on_things = True                       # room_at(radius 0) on a thing's own spot finds no room
+        self.on_furniture = set()                   # labels ranged by what they're on ("support", on a bed)
         for name in ("rooms", "_goto", "_visit_viewpoint", "_turn_by", "look", "_approach", "_sport",
                      "exploration_viewpoint", "room_at", "_way_in"):
             setattr(executor, name, getattr(self, name))
@@ -114,8 +115,9 @@ class StandInHouse:
             bearing = (bearing + 180) % 360 - 180
             if room_of(x, y) == room_of(s.x, s.y) and math.hypot(dx, dy) < 4 and abs(bearing) < 60:
                 c, sn = math.cos(s.yaw), math.sin(s.yaw)
+                source = "support" if label in self.on_furniture else "lidar"
                 seen.append(Detection(None, label, color, math.hypot(dx, dy), bearing, c * dx + sn * dy,
-                                      -sn * dx + c * dy, "lidar", .9, clothing=clothing))
+                                      -sn * dx + c * dy, source, .9, clothing=clothing))
         pose = (s.x, s.y, s.yaw)
         with self.ex.lock:
             self.ex._stable_ids(seen, pose)
@@ -221,6 +223,84 @@ class SearchTests(MissionTestCase):
         task = self.run_mission("search", {"target": "umbrella"}, timeout=10)
         self.assertEqual(task.detail["mission"]["outcome"], "not_found", task.detail)
         self.assertEqual(sorted(self.house.walks), sorted(ROOMS), "each room once")
+
+    def test_when_the_walk_up_finds_no_spot_it_closes_in_on_the_nearest_one_it_can_reach(self):
+        def no_spot(task, cancel):                       # furniture all round the spots next to it
+            raise _blocked(task, "no route to a free stand-off position near the object", math.inf, 0.)
+        self.executor._approach = no_spot
+        self.executor._stand_near = lambda x, y, within_m=1.6, **kw: (x - 1., y)
+        task = self.run_mission("search", {"target": "teddy bear"})
+        mission = task.detail["mission"]
+        self.assertEqual((mission["outcome"], mission["room"]), ("found", "bedroom 2"), mission)
+        self.assertLessEqual(math.hypot(self.robot.x - 4.5, self.robot.y + 3.5), missions.REACH_M)
+
+    def test_when_the_walk_up_and_closing_in_both_fail_it_isnt_found(self):
+        def no_spot(task, cancel):
+            raise _blocked(task, "no route to a free stand-off position near the object", math.inf, 0.)
+        self.executor._approach = no_spot
+        self.executor._stand_near = lambda x, y, within_m=1.6, **kw: None
+        self.house.things = [["teddy bear", "brown", 5.8, -4.8, None]] + self.house.things[1:]  # boxed into a corner
+        walk = self.house._goto
+
+        def not_near_it(task, cancel):                   # nowhere within 1.5 m of it can be walked to
+            p = task.command.params
+            if math.hypot(p["x"] - 5.8, p["y"] + 4.8) < 1.5:
+                raise AdapterError("no route there")
+            walk(task, cancel)
+        self.executor._goto = not_near_it
+        task = self.run_mission("search", {"target": "teddy bear"}, timeout=15)
+        self.assertNotEqual(task.detail["mission"]["outcome"], "found", task.detail)
+
+    def test_by_a_bed_it_goes_round_to_the_side_nearest_the_teddy_bear(self):
+        self.house.on_furniture.add("teddy bear")       # ranged by the side of the bed under it
+        walk_up = self.house._approach
+
+        def bed_end(task, cancel):                       # the walk-up ends at the far end of the bed, 1.9 m off
+            walk_up(task, cancel)
+            self.house.put(4.5 - 1.9, -3.5, 0.)
+        self.executor._approach = bed_end
+        self.executor._past_support = lambda detection, pose, most_m=2.: (4.5, -3.5)
+        self.executor._stand_near = lambda x, y, within_m=1.6, **kw: (x, y + 1.)   # the long side of the bed
+        task = self.run_mission("search", {"target": "teddy bear"})
+        mission = task.detail["mission"]
+        self.assertEqual(mission["outcome"], "found", mission)
+        self.assertAlmostEqual(math.hypot(self.robot.x - 4.5, self.robot.y + 3.5), 1., places=2)
+        self.assertAlmostEqual(self.robot.yaw % (2 * math.pi), 3 * math.pi / 2, places=2, msg="facing the teddy bear")
+        self.assertIn("next to it", mission["result"])
+
+    def test_a_likely_room_gets_a_second_look_from_its_far_side(self):
+        look = self.house.look
+
+        def bed_edge_in_the_way():                       # from the room's middle, the bed's edge hides the teddy
+            if math.hypot(self.robot.x - 3.5, self.robot.y + 3.) < .5:
+                kept, self.house.things = self.house.things, [t for t in self.house.things if t[0] != "teddy bear"]
+                try:
+                    return look()
+                finally:
+                    self.house.things = kept
+            return look()
+        self.house.look = self.executor.look = bed_edge_in_the_way
+        far = {"bedroom_1": (-5.5, -4.5), "bedroom_2": (2., -4.5)}
+        self.executor._far_spot = lambda region, x, y, clearance_m=.45, **kw: far.get(room_of(x, y))
+        task = self.run_mission("search", {"target": "teddy bear"})
+        self.assertEqual(task.detail["mission"]["outcome"], "found", task.detail)
+        self.assertEqual(self.house.walks, ["bedroom_1", "bedroom_1", "bedroom_2", "bedroom_2"],
+                         "into each bedroom, then to its far side")
+
+    def test_wedged_with_no_room_to_turn_it_backs_out_and_carries_on(self):
+        turns, moves, turn = [0], [], self.house._turn_by
+
+        def wedged_once(task, cancel, angle):
+            turns[0] += 1
+            if turns[0] == 1:
+                raise _blocked(task, "too close to an obstacle or a drop to turn safely", 0., 0.)
+            turn(task, cancel, angle)
+        self.executor._turn_by = wedged_once
+        self.executor._velocity = lambda task, p, cancel, leg=None: moves.append(p["vx"])
+        task = self.run_mission("search", {"target": "umbrella"})
+        self.assertEqual(task.detail["mission"]["outcome"], "not_found", task.detail)
+        self.assertEqual(moves, [-.2, -.2], "backed straight out, 1 m")
+        self.assertIn("I had no room to turn, so I backed out", self.said())
 
     def test_a_room_it_cant_get_into_isnt_reported_as_checked(self):
         tries, walk = [], self.house._goto
@@ -538,9 +618,13 @@ class GuardInTheSimulatorTests(unittest.TestCase):
         sim.walker("walker_red", [[3.5, -3.], [3.5, 0.], [0., 0.]], speed=.6)  # out of bedroom 2, along the hallway
         came_in = None
         while came_in is None and not events:
-            where = sim.walkers().get("walker_red")
+            asked = time.monotonic()                     # when we asked: where it was then (or later)
+            try:                                         # a busy laptop can answer slowly; don't fail on that
+                where = sim._rpc("walkers", timeout=5.).get("walker_red")
+            except AdapterError:
+                continue
             if where and house.room_at(demo, *where[:2]) == "hallway" and where[1] > -.6:
-                came_in = time.monotonic()
+                came_in = asked
             time.sleep(.05)
         self.assertIsNotNone(came_in, "the person never came into the hallway")
         self.assertTrue(wait_for(lambda: alerts, 10), "no alert")
