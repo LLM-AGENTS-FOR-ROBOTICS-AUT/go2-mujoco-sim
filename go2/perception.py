@@ -23,6 +23,10 @@ STEP_DOWN_Z = .06
 # Beyond this the floor-contact estimate is unreliable (one pixel is metres of distance): say "unknown".
 GROUND_PLANE_MAX_M = 6.
 SUPPORT_MIN_POINTS = 3     # LiDAR points on what an object stands on, to range the object by it
+# What a thing can be sitting on. LiDAR points on another seen thing (a book on the floor in front, in the same
+# line of sight) aren't what it's on, unless that thing is one of these.
+SUPPORTS = {"bed", "couch", "chair", "bench", "dining table", "table", "desk", "toilet", "sink", "refrigerator",
+            "oven", "tv", "shelf", "cabinet", "dresser"}
 NO_COLOR = {"person", "wall"}   # a person's "colour" is just their clothes; don't name people by it
 SECTORS = ("front", "front-left", "left", "back-left", "back", "back-right", "right", "front-right")
 
@@ -356,6 +360,11 @@ def fuse(masks, rgb, cloud_base, intrinsics, camera_pos, camera_rot, roll, pitch
                 below = inside.copy()
                 below[inside] = ((u[inside] >= cols.min()) & (u[inside] <= cols.max()) & (v[inside] > bottom)
                                  & (level_cloud[inside, 2] + height > OBSTACLE_MIN_Z))
+                # Not the points on another thing in view in front of it (a book on the floor, closer, in the same
+                # line of sight): that's not what it's on, and would place it there.
+                for other in masks:
+                    if other is not item and other.label not in SUPPORTS:
+                        below[inside] &= ~other.mask[v[inside], u[inside]]
                 under = level_cloud[below]
                 if len(under) >= SUPPORT_MIN_POINTS:
                     horizontal = np.hypot(under[:, 0], under[:, 1])
