@@ -95,7 +95,8 @@ class Console:
         self.robot_info = robot_info or {}       # {"scene": "room"} or {"interface": "en7"}, shown in the state
         # memory_path: where remembered objects are saved (one file per scene; see memory_file), or None to keep
         # them only while running, as in the tests.
-        self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task), memory_path=memory_path)
+        self.executor = Executor(on_event=lambda task: self.agent.on_task_event(task), memory_path=memory_path,
+                                 on_progress=lambda task, text, alert: self.agent.on_mission_update(task, text, alert))
         self.agent = Agent(model, self.executor)
         self.agent.robot_line = lambda: robot_state_line(self.adapter, self.executor)
         self.agent.robot_snapshot = self._robot_snapshot
@@ -502,6 +503,10 @@ class Console:
             return None
         return png_bytes(frame if full else frame[::2, ::2])
 
+    def alert_png(self, alert_id):
+        image = self.executor.alert_image(alert_id)
+        return None if image is None else png_bytes(image[::2, ::2])
+
     def snapshot(self):
         agent, executor, tasks = self.agent.snapshot(), self.executor.snapshot(), self.executor.tasks()
         robot = {"kind": self.adapter.kind, "label": self.adapter.label, "connected": self.adapter.connected,
@@ -530,6 +535,9 @@ class Console:
                             "recent": executor["recent"]},
                 "conversation": {"id": self.conversation_id, "entries": conversation_entries(agent["transcript"], tasks)},
                 "camera": camera,
+                # mission alerts (#18), newest last, each with its snapshot at url
+                "alerts": [{"id": a["id"], "mission": a["mission"], "text": a["text"], "stamp": a["stamp"],
+                            "url": f"/api/alert/{a['id']}.png"} for a in list(self.executor.alerts)],
                 "semantic_memory": {**self.semantic, "remembered": len(self.executor.visual or ())},
                 # flags leave this computer (Firebase): the page warns before sending one
                 "feedback": {"upload": self.uploader is not None}}
@@ -902,6 +910,13 @@ def make_app(console, port):
         if image is None:
             return refused("No camera frame yet: ask Go2 what it sees.", 404)
         return Response(image, mimetype="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.route("/api/alert/<int:alert_id>.png")
+    def api_alert(alert_id):
+        image = console.alert_png(alert_id)
+        if image is None:
+            return refused("No such alert (only the last 20 are kept).", 404)
+        return Response(image, mimetype="image/png", headers={"Cache-Control": "max-age=3600"})
 
     return app
 

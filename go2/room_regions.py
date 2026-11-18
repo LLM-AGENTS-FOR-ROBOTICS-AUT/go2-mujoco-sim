@@ -169,6 +169,7 @@ class RoomRegions:
         self.core_radius_m = core_radius_m
         self.map = self.labels = None
         self.names, self._next_id = {}, 1
+        self.splits = 0                      # how many times the map has been split: changes when the regions may have
         self._lock = threading.RLock()
 
     def _split(self, m):
@@ -186,7 +187,14 @@ class RoomRegions:
         return _merge_furniture_splits(_flood(seeds, m.grid), m.grid, m.resolution)
 
     def update(self, occupancy):
+        """Split the map into regions; nothing to do if it hasn't changed since the last split (splitting takes
+        a few tenths of a second, and room_at is asked for each thing seen)."""
         m = occupancy.snapshot()
+        with self._lock:
+            last = self.map
+            if (last is not None and m.resolution == last.resolution and m.grid.shape == last.grid.shape and
+                    (m._min_row, m._min_col) == (last._min_row, last._min_col) and np.array_equal(m.grid, last.grid)):
+                return self
         k = max(1, int(round(SPLIT_AT_M / m.resolution)))
         if k == 1:
             labels, count = self._split(m)
@@ -227,6 +235,7 @@ class RoomRegions:
                     self._next_id += 1
                 lookup[i] = assigned[i]
             self.map, self.labels = m, lookup[labels]
+            self.splits += 1
         return self
 
     def room_at(self, x, y):
@@ -238,10 +247,11 @@ class RoomRegions:
             identity = int(self.labels[cell])
             return self.names.get(identity, f"room_{identity}")
 
-    def region_near(self, x, y, radius_m=1.):
+    def region_near(self, x, y, radius_m=1., among=None):
         """ID of the region most of the free floor within radius_m of (x, y) belongs to, or None. A seen object's
         position is on the object itself, which the map marks occupied; a bed against a wall has much more of its
-        own room around it than of the room behind the wall. radius_m=0 is just the region at (x, y)."""
+        own room around it than of the room behind the wall. radius_m=0 is just the region at (x, y). `among`, a set
+        of region IDs, counts only those regions (a pocket behind the fridge isn't the kitchen)."""
         with self._lock:
             cell = None if self.map is None else self.map.world_to_cell(x, y)
             if cell is None:
@@ -252,6 +262,8 @@ class RoomRegions:
             rows, cols = np.nonzero(window)
             inside = (rows + r0 - cell[0]) ** 2 + (cols + c0 - cell[1]) ** 2 <= reach * reach
             ids = window[rows[inside], cols[inside]]
+            if among is not None:
+                ids = ids[np.isin(ids, list(among))]
             return int(np.bincount(ids).argmax()) if len(ids) else None
 
     def areas(self):
@@ -277,6 +289,27 @@ class RoomRegions:
                 return None
             centre = np.argwhere(self.labels == region).mean(axis=0)
             row, col = cells[np.argmin(((cells - centre) ** 2).sum(axis=1))]
+            return self.map.cell_to_world(int(row), int(col))
+
+    def way_in(self, x, y):
+        """(x, y) of the nearest place where the region at (x, y) meets another region (a doorway), or None."""
+        with self._lock:
+            region = None if self.map is None else self.region_near(x, y)
+            if region is None:
+                return None
+            labels = self.labels
+            inside = labels == region
+            other = (labels > 0) & ~inside
+            edge = np.zeros_like(inside)
+            edge[1:] |= inside[1:] & other[:-1]
+            edge[:-1] |= inside[:-1] & other[1:]
+            edge[:, 1:] |= inside[:, 1:] & other[:, :-1]
+            edge[:, :-1] |= inside[:, :-1] & other[:, 1:]
+            cells = np.argwhere(edge)
+            if not len(cells):
+                return None
+            here = np.array(self.map.world_to_cell(x, y) or (0, 0))
+            row, col = cells[np.argmin(((cells - here) ** 2).sum(axis=1))]
             return self.map.cell_to_world(int(row), int(col))
 
     def name_room(self, x, y, name):
