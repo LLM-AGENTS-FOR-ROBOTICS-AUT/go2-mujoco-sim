@@ -610,6 +610,10 @@ class ColourTests(unittest.TestCase):
         for kind in ("ball", "book", "dining_table", "refrigerator", "sink"):    # cups: mostly the one scanned mug
             self.assertIn(kind, seen)
 
+    def test_no_kind_with_a_model_gets_a_colour_word(self):
+        # With the furniture downloaded, a kind with a model shows the model's own texture, not the palette colour
+        self.assertFalse(set(house.PALETTES) & set(house.MODELS))
+
     def test_the_demo_house_keeps_its_colours(self):
         self.assertFalse([o["name"] for o in house.house_demo()["objects"] if "colour" in o])
 

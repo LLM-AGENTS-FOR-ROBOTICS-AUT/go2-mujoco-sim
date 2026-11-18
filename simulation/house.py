@@ -93,7 +93,7 @@ BALL_COLOURS = [(.85, .1, .1, 1), (.15, .3, .85, 1), (.2, .6, .25, 1), (.95, .8,
 # Random houses pick each thing's colour from its kind's palette and name it in the description ("colour"), so
 # a mission can ask for "the blue cup" (#21). Each word is what go2.perception.color_name says when Go2's camera
 # sees that colour in a house (tests/test_house.py renders them all). Kinds with a realistic model (beds, couches,
-# chairs, plants, TVs) or a scanned one (its first teddy, mug, laptop...) keep their fixed colour and get no
+# chairs, plants, TVs, ovens) or a scanned one (its first teddy, mug, laptop...) keep their fixed colour and get no
 # word: the model's own texture is what shows. Laptops have none either: from the front Go2 sees the black screen.
 RED, BLUE, GREEN, YELLOW = (.8, .12, .1, 1), (.15, .3, .8, 1), (.2, .6, .25, 1), (.95, .8, .1, 1)
 ORANGE, PINK, PURPLE = (.95, .45, .1, 1), (.9, .4, .65, 1), (.5, .25, .7, 1)
@@ -110,7 +110,6 @@ PALETTES = {
     "dining_table": [("brown", BROWN), ("white", WHITE), ("black", BLACK), ("grey", GREY)],
     "desk": [("brown", BROWN), ("black", BLACK), ("grey", GREY), ("red", RED)],      # its shaded front: no white
     "refrigerator": [("white", WHITE), ("grey", GREY), ("black", BLACK), ("red", RED)],
-    "oven": [("white", WHITE), ("black", BLACK), ("grey", GREY)],
     "sink": [("white", WHITE), ("grey", GREY), ("black", BLACK)],
     "toilet": [("white", WHITE)],
 }
@@ -313,6 +312,8 @@ def _place(rng, house, room, kind, taken):
                          for side, axis, line in (("N", "x", y1), ("S", "x", y0), ("E", "y", x1), ("W", "y", x0))
                          if door["axis"] == axis and abs((door["pos"][1] if axis == "x" else door["pos"][0]) - line) < 1e-6)
     sides = "".join(side for side in "NSEW" if side not in open_sides)    # nothing to stand against there
+    if big and not sides:
+        return None
     for _ in range(60):
         if big:
             side = rng.choice(sides)
@@ -712,7 +713,8 @@ def furnished(house):
 def random_house(rng, n_rooms=None):
     """A random, furnished house of 2-7 rooms (a hallway, or two at right angles, counts as one), drawn from `rng` (random.Random):
     the same seed always gives the same house, so a failing case can be replayed. Go2 starts in the hallway
-    or the living room, and every room is reachable from there."""
+    or the living room, and every room is reachable from there. With two hallways, house["rooms"] lists
+    n_rooms + 1 entries: house.room_count(house) gives the count that matches n_rooms."""
     n = n_rooms or rng.randint(2, 7)
     for _ in range(100):
         shape = rng.random()
