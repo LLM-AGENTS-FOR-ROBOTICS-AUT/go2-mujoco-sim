@@ -45,6 +45,25 @@ class RangeTests(unittest.TestCase):
         self.assertEqual(det.distance_source, "unknown")
         self.assertIsNone(det.distance_m)
 
+    def test_another_thing_in_front_of_it_doesnt_count_as_what_its_on(self):
+        # A book on the floor 1 m away, in the same line of sight as a teddy bear on a bed 2 m away (seen through a
+        # doorway, say): the LiDAR points on the book are below the teddy bear in the image, but it isn't on it.
+        book = grid([1.], np.arange(-.08, .085, .01), np.arange(-.25, -.195, .01))   # 7 to 12 cm above the floor
+        book_mask = seen((270, 320), (270, 370))[0].mask
+        masks = ON_A_BED + [P.Mask("book", book_mask, 1.)]
+        det = next(d for d in P.fuse(masks, np.zeros((360, 640, 3), np.uint8), np.vstack([FLOOR, BED_SIDE, book]),
+                                     INTRINSICS, CAMERA_POS, CAMERA_ROT, 0., 0., HEIGHT) if d.label == "teddy bear")
+        self.assertEqual(det.distance_source, "support")
+        self.assertAlmostEqual(det.distance_m, 2., delta=.1, msg="ranged by the bed, not the book in front")
+
+    def test_furniture_it_could_be_on_still_counts_when_its_seen_too(self):
+        bed_mask = seen((200, 360), (250, 390))[0].mask                            # the bed's own outline
+        det = next(d for d in P.fuse(ON_A_BED + [P.Mask("bed", bed_mask, 1.)], np.zeros((360, 640, 3), np.uint8),
+                                     np.vstack([FLOOR, BED_SIDE]), INTRINSICS, CAMERA_POS, CAMERA_ROT, 0., 0., HEIGHT)
+                   if d.label == "teddy bear")
+        self.assertEqual(det.distance_source, "support")
+        self.assertAlmostEqual(det.distance_m, 2., delta=.1)
+
     def test_furniture_off_to_one_side_doesnt_count(self):
         det = fuse(ON_A_BED, np.vstack([FLOOR, BED_SIDE + (0., 1.5, 0.)]))
         self.assertEqual(det.distance_source, "unknown")
