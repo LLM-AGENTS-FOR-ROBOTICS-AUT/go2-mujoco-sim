@@ -51,7 +51,7 @@ from go2.adapters.base import AdapterError  # noqa: E402
 from go2.adapters.sim import SimAdapter  # noqa: E402
 from go2.agent import Agent, is_stop, robot_state_line  # noqa: E402
 from go2.executor import Executor  # noqa: E402
-from go2.llm import CATALOG, ModelError, OllamaModel  # noqa: E402
+from go2.llm import CATALOG, ModelError, OllamaModel, model_for  # noqa: E402
 from go2.mock_model import MockModel  # noqa: E402
 from go2.map_view import map_view  # noqa: E402
 from go2.stt import MAX_BYTES as STT_MAX_BYTES  # noqa: E402
@@ -955,7 +955,7 @@ def connect_robot(args):
 
 def fetch_model(args):
     """Download the model now (setup scripts), rather than on the console's first start."""
-    model = OllamaModel(args.model)
+    model = model_for(args.model)
     shown = [-1]
 
     def progress(done, total):
@@ -982,9 +982,9 @@ def check(args):
     finally:
         adapter.close()
     try:
-        print(json.dumps({"model": OllamaModel(args.model).check()}))
+        print(json.dumps({"model": model_for(args.model).check()}))
     except ModelError as error:
-        spec = CATALOG["models"][args.model]
+        spec = CATALOG["models"][args.model.partition("@")[0]]
         print(json.dumps({"model": "not ready", "why": str(error),
                           "fix": "it downloads on the console's first start (or run server.py --fetch-model)"
                                  if spec.get("download_url") else "see command_ui/README.md (model file and Ollama)"}))
@@ -1011,9 +1011,21 @@ def start_uploader(args):
         return None
 
 
+def _model_choice(value):
+    """--model: a catalog model, optionally with @full or @compact (go2.llm.model_for)."""
+    name, _, style = value.partition("@")
+    if name not in CATALOG["models"] or style not in ("", "full", "compact"):
+        raise argparse.ArgumentTypeError(f"{value!r}: use one of {', '.join(CATALOG['models'])}, optionally with "
+                                         "@full or @compact")
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", choices=list(CATALOG["models"]), default=CATALOG["default"])
+    parser.add_argument("--model", type=_model_choice, default=CATALOG["default"],
+                        help=f"one of {', '.join(CATALOG['models'])}; add @full for the long prompt with every tool "
+                             "(go2-ft-04@full: the fine-tune with search, explore, patrol and guard, which its short "
+                             "prompt leaves out)")
     parser.add_argument("--mock", action="store_true", help="scripted replies instead of the language model")
     parser.add_argument("--scene", choices=["room", "empty", "house", "hazards"], default="room",
                         help="house: the multi-room demo house; hazards: a platform with a ledge, stairs down and glass")
@@ -1067,7 +1079,7 @@ def main():
             signal.signal(getattr(signal, name), shut_down)
     stop_stale_model_servers()
 
-    model = MockModel() if args.mock else OllamaModel(args.model)
+    model = MockModel() if args.mock else model_for(args.model)
     try:
         adapter = connect_robot(args)
     except AdapterError as error:
