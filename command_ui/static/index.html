@@ -70,6 +70,13 @@
   .telem .tk{color:var(--mute);}
   .acard .a-cur{font-size:14px;margin-top:4px;}
   .acard .a-q{font-size:13px;color:var(--mute);margin-top:4px;}
+  .mission .mlog{font-size:12.5px;color:var(--mute);margin-top:6px;}
+  .mission .mlog div{margin-top:2px;}
+  .mission .mlog div:last-child{color:var(--white);}
+  .mission button{margin-top:8px;width:100%;}
+  .alert{display:flex;gap:8px;align-items:flex-start;margin-top:8px;font-size:12.5px;}
+  .alert img{flex:none;width:96px;border-radius:6px;border:1px solid var(--amber);}
+  .alert .when{color:var(--mute);font-size:11px;}
   #roomMap{display:block;width:100%;aspect-ratio:1;background:#122535;border-radius:8px;margin-top:8px;}
   .maplegend{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11px;color:var(--mute);margin-top:7px;}
   .mapnote{font-size:12px;color:var(--mute);margin-top:6px;overflow-wrap:anywhere;}
@@ -141,6 +148,7 @@
       <span class="chip" data-send="walk forward 2 metres then turn left">walk forward 2 m then turn left</span>
       <span class="chip" data-send="what do you see?">what do you see?</span>
       <span class="chip" data-send="go to the teddy bear">go to the teddy bear</span>
+      <span class="chip" data-send="find the teddy bear">find the teddy bear</span>
       <span class="chip" data-send="sit down">sit down</span>
       <span class="chip" data-send="do a little dance">do a little dance</span>
     </div>
@@ -153,6 +161,10 @@
     </div>
     <div class="stat"><div class="k">Model</div><div class="v" id="modelLabel">&mdash;</div></div>
     <div class="stat acard"><div class="k">Now running</div><div class="a-cur" id="aCurrent">&mdash;</div><div class="a-q" id="aQueued"></div></div>
+    <div class="stat mission" id="missionCard" hidden><div class="k">Mission</div><div class="v" id="missionGoal"></div>
+      <div class="mlog" id="missionLog" aria-live="polite"></div>
+      <button class="btn-soft" id="missionCancel" type="button">Cancel mission</button></div>
+    <div class="stat" id="alertsCard" hidden><div class="k">Alerts</div><div id="alertsList" aria-live="assertive"></div></div>
     <div class="stat"><div class="k">Live room map</div>
       <canvas id="roomMap" width="512" height="512" role="img" aria-label="Top-down map of observed space, robot, route and remembered locations"></canvas>
       <div class="maplegend"><span>▲ Robot</span><span style="color:#38bdf8">━ Route</span><span style="color:#fbbf24">◆ Place</span><span style="color:#c084fc">● Object</span><span>× Missing</span></div>
@@ -226,6 +238,17 @@ function renderSide(s){
   const fol=a.current&&a.current.following;
   $('aCurrent').textContent=fol?(`Following: ${fol.target} at ${fol.set_m} m`+(fol.gap_m!=null?` (now ${fol.gap_m} m)`:'')+(fol.state!=='following'?` — ${fol.state}`:'')):(a.current?a.current.summary:'—');
   $('aQueued').textContent=(a.queued&&a.queued.length)?('Next: '+a.queued.map(q=>q.summary).join('; ')):'';
+  // a running mission (#18): its goal and latest progress
+  const mission=a.current&&a.current.mission;
+  $('missionCard').hidden=!mission;
+  if(mission){
+    $('missionGoal').textContent=mission.goal;
+    $('missionLog').innerHTML=(mission.log||[]).slice(-5).map(line=>`<div>${esc(line)}</div>`).join('')||'<div>starting…</div>';
+  }
+  // mission alerts, newest first, each with its snapshot
+  const alerts=(s.alerts||[]).slice(-5).reverse();
+  $('alertsCard').hidden=!alerts.length;
+  $('alertsList').innerHTML=alerts.map(al=>`<div class="alert"><img src="${esc(al.url)}" alt="Camera snapshot for this alert"><div>${esc(al.text)}<div class="when">${new Date(al.stamp*1000).toLocaleTimeString()}</div></div></div>`).join('');
   // camera
   if(s.camera&&s.camera.url){renderCamera(s.camera);$('cameraCard').hidden=false;} else $('cameraCard').hidden=true;
   // buttons
@@ -367,6 +390,7 @@ function flashError(msg){
 $('send').onclick=()=>{send(txt.value);txt.value='';};
 txt.addEventListener('keydown',e=>{if(e.key==='Enter'&&!txt.disabled){send(txt.value);txt.value='';}});
 $('stop').onclick=()=>stopRobot();
+$('missionCancel').onclick=()=>stopRobot();   // a mission is an ordinary task: Stop cancels it (and asking again resumes it)
 document.addEventListener('keydown',e=>{if(e.key==='Escape')stopRobot();});
 $('reset').onclick=()=>fetch('/api/reset',{method:'POST'}).catch(()=>{});
 $('clear').onclick=()=>{speaker.cancel();fetch('/api/clear',{method:'POST'}).catch(()=>{});};

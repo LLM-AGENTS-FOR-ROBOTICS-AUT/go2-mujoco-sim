@@ -415,7 +415,8 @@ class Agent:
         group_done = task.detail.get("group_remaining", 0) == 0
         group = [t for t in self.executor.history if t.group == task.group]
         noteworthy = status in ("blocked", "failed") or (
-            status == "completed" and group_done and (len(group) > 1 or tool in ("go_to", "go_to_place", "approach", "follow")))
+            status == "completed" and group_done and (len(group) > 1 or tool in ("go_to", "go_to_place", "approach",
+                                                                                 "follow", *T.MISSIONS)))
         if status in ("stopped", "cancelled") or not noteworthy:
             return
         # What other requests still have queued. Read now, under the executor lock and before the agent lock
@@ -428,6 +429,21 @@ class Agent:
             if self.closed:
                 return
             self.pending_reports.append(summary)
+            if self.busy:
+                return                  # spoken as soon as the current reply ends (see _turn)
+            epoch = self._report_turn()
+        self.on_change()
+        threading.Thread(target=self._turn, args=(epoch, True), daemon=True).start()
+
+    def on_mission_update(self, task, text, alert=None):
+        """A running mission's progress (#18), or an alert: told to the user as a robot update."""
+        if task.generation != self.executor.generation:
+            return                      # stopped since
+        report = f"{'alert from ' if alert else ''}{task.command.summary}: {text}"
+        with self.lock:
+            if self.closed:
+                return
+            self.pending_reports.append(report)
             if self.busy:
                 return                  # spoken as soon as the current reply ends (see _turn)
             epoch = self._report_turn()
@@ -538,6 +554,8 @@ def describe_outcome(task, group, still_to_do=()):
     if still_to_do:
         items = " then ".join([f"{still_to_do[0]} (starting now)", *still_to_do[1:]])
         ahead = f"; {items} {'is' if len(still_to_do) == 1 else 'are'} already queued"
+    if task.status == "completed" and d.get("mission", {}).get("result"):
+        return d["mission"]["result"] + ahead + ". Tell the user briefly."
     if task.status == "completed":
         if len(group) > 1:
             steps = " then ".join(t.command.summary for t in group if t.status == "completed")

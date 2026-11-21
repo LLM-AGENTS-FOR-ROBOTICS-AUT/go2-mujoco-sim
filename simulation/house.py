@@ -10,7 +10,8 @@ file for the simulator process and replayed later:
    "objects": [{"name": "teddy_bear", "label": "teddy bear", "kind": "teddy", "room": "bedroom_2",
                 "pos": [x, y], "yaw": 0.8, "rgba": [r, g, b, 1], "gso": "teddy_bear"},
                {"name": "laptop", ..., "on": "desk_1"}, ...],     # "on": standing on that furniture
-   "start":   [x, y, yaw]}
+   "start":   [x, y, yaw],
+   "people":  true}             # optional: add the walking people (world.WALKERS) for guard and patrol (#18)
 
 Rooms are axis-aligned rectangles that tile the house. A door sits on a wall line: axis "x" means the
 wall runs along x (a horizontal wall at y = pos[1]) and the gap spans x; axis "y" is a vertical wall at

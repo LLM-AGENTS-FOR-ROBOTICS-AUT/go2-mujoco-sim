@@ -1,0 +1,650 @@
+"""Missions (#18): long tasks Go2 carries out on its own in a house.
+
+  search(target, where)  what's remembered first, then room by room, the likeliest rooms first (a teddy bear in a
+                         bedroom before the kitchen), looking all round at each stop and exploring where the map has
+                         no rooms yet; walks up to the target when it's seen and says which room it was in.
+  guard(place)           goes to a room or saved place, sits facing the way in and watches the camera for people,
+                         alerting with a snapshot when someone comes in. It watches and reports only: once there it
+                         never moves, let alone toward anyone.
+  patrol(rooms, every)   walks through the rooms on a schedule, looking round each one, and reports what changed
+                         since the last round: things moved, new or gone, and people seen.
+  explore()              visits every reachable part of the house (#14's exploration), mapping it and naming its
+                         rooms (#35), then says which rooms there are.
+
+A mission runs as one executor task, so Stop (the button, Esc, saying "stop", the stop tool) cancels it as it does any
+motion, and every movement is an ordinary executor step with its limits and LiDAR checks: missions only decide where to
+go next. Each has a time limit and ends with a plain result (mission["outcome"], mission["result"]). Progress and
+alerts go out through executor.on_progress, as robot updates in the chat. A stopped or timed-out search, patrol or
+explore keeps its progress: asking for the same mission again within RESUME_S carries on where it left off.
+"""
+from __future__ import annotations
+
+import math
+import re
+from types import SimpleNamespace
+
+from .adapters.base import AdapterError
+from .executor import _room_key, world_xy
+from .tools import Command, resolve
+
+RESUME_S = 600.            # a stopped mission asked for again this soon carries on where it left off
+STEP_S = 180.              # the most one step (a walk, an approach) may take
+LOOK_TURNS = 4             # quarter turns to look all round (the camera covers about 120 degrees)
+GUARD_LOOK_S = 1.          # guard looks this often, so an alert comes within about 3 s of someone appearing
+NEW_PERSON_S = 10.         # someone seen after nobody was in view for this long is a new arrival
+SAME_PLACE_M = .8          # patrol: an object this close to where it was hasn't moved
+STAND_CLEAR_M = .45        # a room is walked into at a spot at least this clear of anything in the way
+SAME_SPOT_M = .5           # explore: an exploration spot this close to one tried before is the same spot (as #14's
+                           # visited radius)
+THING_ROOM_M = 1.          # a thing's room: the room most of the floor within this of it belongs to (as room naming:
+                           # the thing itself is on cells the map marks occupied)
+ENTER_TRIES = 2            # search: a room it can't get into is tried this many times, then given up
+CLOSE_IN_M = 1.6           # closing in on a target: the nearest spot within this of it that Go2 can stand at
+REACH_M = 1.4              # ...and it has reached the target if it ends this close (by a bed: at its side)
+NEXT_TO_M = 1.             # "I'm next to it" within this; further, "as close as I can get"
+WEDGED = ("to turn safely", "route to turning space")   # a step blocked like this found no room to turn
+SECOND_LOOK_M = 1.5        # search: a likely room gets a second look from its far side, if that's this far away
+LOG_LINES = 30
+
+# Where things usually are: detector label -> room types, likeliest first (as in the houses of #17, and most homes).
+LIKELY = {
+    "teddy bear": ("bedroom", "living_room"), "laptop": ("office", "living_room", "bedroom"),
+    "keyboard": ("office",), "cup": ("kitchen", "living_room", "office"), "bowl": ("kitchen",),
+    "book": ("bedroom", "living_room", "office"), "backpack": ("bedroom", "office"), "clock": ("bedroom", "office"),
+    "sports ball": ("living_room", "bedroom"), "dog": ("living_room",), "elephant": ("living_room",),
+    "bed": ("bedroom",), "couch": ("living_room",), "tv": ("living_room",), "refrigerator": ("kitchen",),
+    "oven": ("kitchen",), "sink": ("kitchen", "bathroom"), "toilet": ("bathroom",), "desk": ("office",),
+    "dining table": ("kitchen", "living_room"), "chair": ("kitchen", "office", "living_room"),
+}
+
+
+class TimeUp(Exception):
+    """The mission's time limit has passed."""
+
+
+def run(ex, task, cancel):
+    """Run the mission in task.command.params on executor `ex` (called from its worker)."""
+    mission = Mission(ex, task, cancel)
+    try:
+        {"search": search, "guard": guard, "patrol": patrol, "explore": explore}[mission.kind](mission)
+    except TimeUp:
+        mission.timed_out()
+    finally:
+        ex._mission_ended(mission.key)   # "carry on" counts from when it stopped, not from when it began
+
+
+class Mission:
+    def __init__(self, ex, task, cancel):
+        self.ex, self.task, self.cancel = ex, task, cancel
+        p = task.command.params
+        self.kind = p["mission"]
+        self.began = ex.now()
+        self.deadline = self.began + p["time_limit"]
+        self.key = (self.kind, p.get("target"), p.get("where"), tuple(p.get("rooms") or ()))
+        self.state, self.resumed = ex._mission_state(self.key, RESUME_S)
+        task.detail["mission"] = {"kind": self.kind, "goal": task.command.summary, "log": [], "outcome": None}
+
+    # ---- bookkeeping ---------------------------------------------------------------------------------------
+    def left(self):
+        return self.deadline - self.ex.now()
+
+    def check(self):
+        """Stop on Stop (Cancelled), or when time is up (TimeUp)."""
+        self.ex._check(self.cancel)
+        if self.left() <= 0:
+            raise TimeUp()
+
+    def say(self, text, image=None):
+        """Report progress: in the mission's log, and to the user as a robot update (an alert with an image)."""
+        log = self.task.detail["mission"]["log"]
+        log.append(text)
+        del log[:-LOG_LINES]
+        self.ex._mission_progress(self.task, text, image)
+
+    def finish(self, outcome, result, done=True, **extra):
+        self.task.detail["mission"].update(outcome=outcome, result=result, seconds=round(self.ex.now() - self.began),
+                                           **extra)
+        self.state["finished"] = done
+
+    def timed_out(self):
+        if self.kind == "patrol":            # its time limit is how long to patrol for: the normal end
+            rounds = self.state.get("rounds", 0)
+            self.finish("done", f"I patrolled {rounds} round{'s' if rounds != 1 else ''}", rounds=rounds)
+            return
+        what = {"search": f"I didn't find the {self.task.command.params.get('target')}",
+                "explore": "I hadn't been everywhere yet", "guard": "I didn't get to my guarding spot"}[self.kind]
+        extra = {"checked": sorted(self.state.get("checked_names", set()))} if self.kind == "search" else {}
+        self.finish("timed_out", f"{what} before the time limit ({self.task.command.params['time_limit']:g} s); "
+                    "ask again to carry on", done=False, **extra)
+
+    # ---- steps: each an ordinary executor step, with its limits and LiDAR checks -----------------------------
+    def budget(self):
+        return self.ex._step_budget(self.cancel, max(1., min(STEP_S, self.left())))
+
+    def step(self, fn, command):
+        """Run one executor step (fn(subtask, budget)); False if it couldn't finish (blocked, no route). Stop and
+        the time limit end the mission; a fall or lost telemetry ends it with that error."""
+        self.check()
+        sub = self.ex._subtask(command, self.task)
+        self.wedged = False
+        try:
+            fn(sub, self.budget())
+            ok = sub.status not in ("failed", "blocked")
+        except AdapterError:
+            self.check()                     # a step cut short by the time limit ends the mission as timed out
+            self.ex._fresh_state()           # a fall or lost telemetry ends it (raises); anything else: carry on
+            ok = False
+        reason = str(sub.detail.get("blocked", {}).get("reason", "")) if not ok else ""
+        self.wedged = any(words in reason for words in WEDGED)
+        return ok
+
+    def unwedged(self, retry):
+        """retry() once more after backing out, if the step that failed found no room to turn."""
+        return self.wedged and self.back_out() and retry()
+
+    def back_out(self):
+        """No room to turn (furniture close all round, as exploration can leave it): back straight out the way it
+        came, which needs no turn, half a metre at a time and at most a metre, each move with the executor's usual
+        checks. True if it moved."""
+        moved = False
+        for _ in range(2):
+            command = resolve("move", {"direction": "backward", "distance_m": .5})[0]
+            if not self.step(lambda sub, budget: self.ex._velocity(sub, sub.command.params, budget), command):
+                break
+            moved = True
+        if moved:
+            self.say("I had no room to turn, so I backed out")
+        return moved
+
+    def walk_to(self, x, y, name):
+        def walk():
+            return self.step(self.ex._goto, Command("goto", "go_to_place", {}, {
+                "target": "place", "name": name, "x": x, "y": y}, summary=f"go to the {name}"))
+        return walk() or self.unwedged(walk)
+
+    def visit(self, viewpoint):
+        x, y, yaw = viewpoint
+
+        def go():
+            return self.step(self.ex._visit_viewpoint, Command("viewpoint", "exploration", {}, {
+                "x": x, "y": y, "yaw": yaw, "timeout_s": max(1., min(90., self.left()))}, summary="explore"))
+        return go() or self.unwedged(go)
+
+    def turn(self, angle):
+        def go():
+            return self.step(lambda sub, budget: self.ex._turn_by(sub, budget, angle),
+                             Command("velocity", "turn", {}, {}, summary="turn"))
+        return go() or self.unwedged(go)
+
+    def look_around(self, wanted=None):
+        """Look all round in quarter turns; stops early and returns wanted() once it gives something."""
+        seen = []
+        for quarter in range(LOOK_TURNS):
+            self.check()
+            self.ex.look()
+            seen += self.ex._sightings()
+            if wanted is not None:
+                found = wanted()
+                if found:
+                    return found
+            if quarter < LOOK_TURNS - 1 and not self.turn(math.pi / 2):
+                break                        # no room to turn here (wedged by furniture): don't keep trying
+        return None if wanted is not None else seen
+
+    def target_spot(self, target):
+        """Where the target is, as well as can be told: from the camera, past the side of the furniture it's on
+        when that's what it was ranged by; else where it was last seen. None if neither."""
+        match = self.ex._match(target)[0]
+        if match and match[0].x_m is not None:
+            detection, pose = match
+            if getattr(detection, "distance_source", None) == "support":
+                return self.ex._past_support(detection, pose)
+            return world_xy(detection, pose)
+        remembered = self.ex._recall(target)
+        return (remembered[1], remembered[2]) if remembered else None
+
+    def close_in(self, target):
+        """Get as close to the target as the map allows and face it: the spot nearest it that Go2 has room to
+        stand at and a route to (by a bed, the middle of the side nearest the teddy bear on it, not the first
+        edge reached). The distance left to the target, or None if it isn't known where the target is."""
+        spot = self.target_spot(target)
+        if spot is None:
+            return None
+        tx, ty = spot
+        x, y, _ = self.here()
+        stand = self.ex._stand_near(tx, ty, CLOSE_IN_M)
+        if stand is not None and math.hypot(stand[0] - tx, stand[1] - ty) < math.hypot(x - tx, y - ty) - .2:
+            self.walk_to(*stand, target)
+        x, y, yaw = self.here()
+        self.turn(_wrap(math.atan2(ty - y, tx - x) - yaw))
+        self.check()
+        self.ex.look()
+        return math.hypot(tx - x, ty - y)
+
+    def approach(self, target):
+        """Walk up to the target; its room, or None if it couldn't be reached. When the usual walk-up can't find
+        a spot next to it, or the target is on furniture, it closes in on the nearest spot it can get to."""
+        if self.step(self.ex._approach, resolve("approach", {"target": target})[0]):
+            match = self.ex._match(target)[0]
+            if match and getattr(match[0], "distance_source", None) == "support":
+                self.close_in(target)        # ranged by the side under it: go round to the side nearest it
+        else:
+            gap = self.close_in(target)
+            if gap is None or gap > REACH_M or not self.ex._match(target)[0]:
+                return None
+        spot = self.target_spot(target)
+        here = self.here()
+        self.gap = math.hypot(spot[0] - here[0], spot[1] - here[1]) if spot else None
+        room = _thing_room(self.ex, *spot) if spot else None
+        if room is None:                     # not on the map yet: the room Go2 is in, next to it
+            s = self.ex._fresh_state()
+            room = self.ex.room_at(s.x, s.y)
+        if room is not None and room.startswith("room_"):
+            # Its room has no name yet (a room is named once what's in it has been seen twice): look round it first.
+            self.look_around()
+            s = self.ex._fresh_state()
+            room = self.ex.room_at(s.x, s.y) or room
+        return (room or "this room").replace("_", " ")
+
+    def toward(self, target):
+        """Walk to about a metre short of where the target was last seen: go_to plans through unmapped space,
+        which approach won't, so a target seen through a doorway into an unmapped room can be reached. False if
+        there's nowhere to go."""
+        spot = self.ex._recall(target)
+        if spot is None:
+            return False
+        _, ox, oy = spot
+        x, y, _ = self.here()
+        distance = math.hypot(ox - x, oy - y)
+        if distance < 1.5:
+            return False
+        k = (distance - 1.2) / distance
+        return self.walk_to(x + (ox - x) * k, y + (oy - y) * k, target)
+
+    def here(self):
+        s = self.ex._fresh_state()
+        return s.x, s.y, s.yaw
+
+    def rooms(self):
+        return self.ex.rooms(fresh=True)
+
+    def walk_into(self, room):
+        """Walk to a roomy spot in the room: near its middle, clear of furniture (the middle itself can be wedged
+        between a bed and a wardrobe)."""
+        spot = self.ex.room_regions.region_point(room["region"], clearance_m=STAND_CLEAR_M)
+        x, y = spot if spot is not None else (room["x"], room["y"])
+        return self.walk_to(x, y, room["name"].replace("_", " "))
+
+    def explore_step(self):
+        """Go to the next unexplored spot: the spot, or None once nowhere is left.
+
+        A spot that can't be reached is put aside; once nowhere new is left, each spot put aside gets one more try
+        (more of the map is known by then, which can open a way). A spot that fails its second try is given up for
+        good, so a spot that can never be reached (boxed in by furniture) can't be tried forever."""
+        st = self.state.setdefault("explored", {"visited": [], "blocked": [], "retrying": [], "given_up": []})
+        goal = self.ex.exploration_viewpoint(st["visited"] + st["blocked"] + st["given_up"])
+        if goal is None and st["blocked"]:
+            st["retrying"] += st["blocked"]
+            st["blocked"].clear()
+            goal = self.ex.exploration_viewpoint(st["visited"] + st["given_up"])
+        if goal is None:
+            return None
+        if self.visit(goal):
+            st["visited"].append(goal)
+        elif any(math.hypot(goal[0] - x, goal[1] - y) < SAME_SPOT_M for x, y, *_ in st["retrying"]):
+            st["given_up"].append(goal)     # its second try
+        else:
+            st["blocked"].append(goal)
+        return goal
+
+
+# ---- search -----------------------------------------------------------------------------------------------------
+def _label(ex, target):
+    words = ex._words(target)
+    return next((label for label in LIKELY if ex._score(SimpleNamespace(label=label, color=None), words)[0]), None)
+
+
+def _kind(name):
+    return re.sub(r"_\d+$", "", name.replace(" ", "_").casefold())
+
+
+def _rooms_called(rooms, name):
+    """The rooms `name` means, as go_to_place reads a room name: "bedroom 2" or "the kitchen" is that room; a room
+    type ("bedroom") is every room of that type."""
+    wanted = _room_key(name)
+    return ([r for r in rooms if _room_key(r["name"]) == wanted] or
+            [r for r in rooms if not r["name"].startswith("room_") and _kind(_room_key(r["name"])) == wanted])
+
+
+def _is_called(room, name):
+    return bool(room) and bool(_rooms_called([{"name": room}], name))
+
+
+def _thing_room(ex, x, y):
+    """The room a thing seen at (x, y) is in, or None."""
+    return ex.room_at(x, y, radius_m=THING_ROOM_M)
+
+
+def _the(room):
+    """'the kitchen', but 'bedroom 2'."""
+    room = room.replace("_", " ")
+    return room if re.search(r"\d$", room) or room.startswith("this ") else f"the {room}"
+
+
+def search(m):
+    ex, p = m.ex, m.task.command.params
+    target, where = p["target"], p["where"]
+    st = m.state
+    st.setdefault("checked", set())                     # room regions looked round in
+    st.setdefault("checked_names", set())
+    likely = LIKELY.get(_label(ex, target), ())
+    if m.resumed:
+        m.say(f"carrying on the search for the {target}" +
+              (f": already checked {', '.join(sorted(st['checked_names']))}" if st["checked_names"] else ""))
+
+    def in_where(x, y, unknown):
+        """Is (x, y) in a room `where` means (any room without `where`)? `unknown` when it isn't in a known room."""
+        if not where:
+            return True
+        room = _thing_room(ex, x, y)
+        return unknown if room is None else _is_called(room, where)
+
+    def seen():
+        """The target in view; with `where`, not one that's in another room."""
+        match = ex._match(target)[0]
+        if match and match[0].x_m is not None and not in_where(*world_xy(*match), unknown=True):
+            return None
+        return match
+
+    def found(room):
+        m.say(f"found the {target} in {_the(room)}")
+        gap = getattr(m, "gap", None)
+        where_now = ("I'm next to it" if gap is None or gap <= NEXT_TO_M else
+                     f"I'm as close as I can get to it, about {gap:.1f} m away")
+        m.finish("found", f"I found the {target} in {_the(room)} and {where_now}", room=room,
+                 checked=sorted(st["checked_names"]), **({} if gap is None else {"gap_m": round(gap, 2)}))
+
+    def reach():
+        """Walk up to the target in view: True once found. If there's no way to it from here, the search goes on
+        (more of the house mapped can open a way); it ends 'blocked' only when nowhere is left to look."""
+        room = m.approach(target)
+        if not room and m.toward(target):       # seen into a room not on the map yet: get closer, then try again
+            room = m.approach(target)
+        if room:
+            found(room)
+            return True
+        st["seen_unreached"] = True
+        return False
+
+    place = None
+    if where:
+        try:
+            saved = ex.places.get(where)
+            place = (saved.x, saved.y, saved.name)
+        except ValueError:
+            pass
+    if place:                                           # a saved place: look round there, and that's all
+        if not m.walk_to(*place):                       # not "it isn't there" without having been there
+            m.finish("blocked", f"I couldn't get to {_the(place[2])} to look for the {target}")
+            return
+        if m.look_around(seen) and reach():
+            return
+        m.finish("not_found", f"I looked round {_the(place[2])} and the {target} isn't there")
+        return
+
+    if not st.get("memory_tried"):                      # remembered, or in view where Go2 stands: go straight there
+        st["memory_tried"] = True                       # (with `where`, only if that's in the room asked for)
+        remembered = ex._recall(target)
+        if remembered is not None and in_where(remembered[1], remembered[2], unknown=False):
+            m.say(f"I remember seeing a {target}; checking there first")
+            if reach():
+                return
+        elif not where or _is_called(ex.room_at(*m.here()[:2]), where):
+            if m.look_around(seen) and reach():
+                return
+
+    st.setdefault("looked_from", [])                    # where it looked round in each checked room
+    st.setdefault("not_in", [])                         # (region, x, y) of each try at a room it couldn't get into
+    st.setdefault("not_entered", set())                 # rooms given up on: never got in
+
+    def tries(room):
+        """How often it couldn't get into `room` (found by its number, or by where it is, as for checked rooms)."""
+        return sum(1 for region, px, py in st["not_in"]
+                   if region == room["region"] or ex.room_regions.region_near(px, py, 0.) == room["region"])
+
+    while True:
+        m.check()
+        x, y, _ = m.here()
+        # A room is checked if it was looked round in: by its region, and by where Go2 stood, since the map's
+        # regions can be renumbered as it grows (the same hallway, a new number) and it mustn't be checked again.
+        rooms = m.rooms()                               # splits the map first: the spots are placed on this split
+        if where:                                       # before leaving out checked rooms: "bedroom 2" checked
+            rooms = _rooms_called(rooms, where)         # mustn't fall back to meaning every bedroom
+        checked = st["checked"] | {ex.room_regions.region_near(px, py, 0.) for px, py in st["looked_from"]}
+        rooms = [r for r in rooms if r["region"] not in checked and tries(r) < ENTER_TRIES]
+        rank = {kind: i for i, kind in enumerate(likely)}
+        first = [r for r in rooms if not tries(r)]      # rooms it hasn't failed to get into
+        likely_rooms = first if where else [r for r in first if _kind(r["name"]) in rank]
+        # Likely rooms first; then explore for more; then whatever rooms are left (unknown kinds, hallways); then
+        # one more try at each room it couldn't get into.
+        pick = likely_rooms or ([] if not st.get("explored_all") else (first or rooms))
+        if pick:
+            room = min(pick, key=lambda r: (rank.get(_kind(r["name"]), len(rank)), math.hypot(r["x"] - x, r["y"] - y)))
+            name = room["name"].replace("_", " ")
+            if not m.walk_into(room):                   # not "checked" from the hallway: try again later
+                st["not_in"].append((room["region"], room["x"], room["y"]))
+                again = tries(room) < ENTER_TRIES
+                if not again:
+                    st["not_entered"].add(name)
+                m.say(f"I couldn't get into {_the(name)}" + ("; I'll try again later" if again else ""))
+                continue
+            if m.look_around(seen) and reach():
+                return
+            if where or _kind(room["name"]) in rank:   # a likely room: look again from its far side, since from
+                hx, hy, _ = m.here()                    # close up a bed's edge hides what's lying on it
+                spot = ex._far_spot(room["region"], hx, hy, STAND_CLEAR_M)
+                if (spot is not None and math.hypot(spot[0] - hx, spot[1] - hy) >= SECOND_LOOK_M
+                        and m.walk_to(*spot, name) and m.look_around(seen) and reach()):
+                    return
+            st["checked"].add(room["region"])        # only once looked round: a stop on the way leaves it to do
+            st["looked_from"].append(m.here()[:2])
+            st["checked_names"].add(name)
+            m.say(f"checked {_the(name)}: no {target}")
+            continue
+        if not st.get("explored_all"):
+            if m.explore_step():
+                if m.look_around(seen) and reach():
+                    return
+                continue
+            st["explored_all"] = True
+            continue
+        break
+    if st.get("seen_unreached"):
+        if m.toward(target) and m.look_around(seen) and reach():   # one last try with the whole map known
+            return
+        m.finish("blocked", f"I can see the {target} but can't find a way to it; it may be boxed in by furniture",
+                 done=False, checked=sorted(st["checked_names"]))
+        return
+    if st["not_entered"]:                               # it may be in a room it never got into
+        rooms = ", ".join(_the(n) for n in sorted(st["not_entered"]))
+        m.finish("blocked", f"I couldn't get into {rooms}, and the {target} isn't in the rooms I could check",
+                 done=False, checked=sorted(st["checked_names"]), not_entered=sorted(st["not_entered"]))
+        return
+    scope = f" in {_the(where)}" if where else " anywhere I could reach"
+    m.finish("not_found", f"I searched{scope} and couldn't find the {target}" +
+             (f" (checked {', '.join(sorted(st['checked_names']))})" if st["checked_names"] else ""),
+             checked=sorted(st["checked_names"]))
+
+
+# ---- guard -------------------------------------------------------------------------------------------------------
+def guard(m):
+    ex, p = m.ex, m.task.command.params
+    where = p["place"]
+    if where:
+        destination = None
+        try:
+            saved = ex.places.get(where)
+            destination = (saved.x, saved.y, saved.name, saved.yaw)
+        except ValueError:
+            s = ex._fresh_state()
+            room = ex._room_destination(where, s.x, s.y)
+            if room is not None:
+                destination = (*room, None)
+        if destination is None:
+            raise AdapterError(f"I don't know a room or saved place called {where!r}; save it or explore first")
+        x, y, name, yaw = destination
+        if not m.walk_to(x, y, name):
+            raise AdapterError(f"I couldn't get to the {name}")
+        way_in = ex._way_in(x, y)            # face the way in; a saved place's own heading only when there isn't one
+        facing = way_in if way_in is not None else yaw   # (it may have been saved facing the wall)
+        if facing is not None:
+            m.turn(_wrap(facing - m.here()[2]))
+    m.step(ex._sport, resolve("posture", {"name": "sit"})[0])
+    what = _the(where) if where else "this spot"
+    m.say(f"guarding {what}; I'll tell you if anyone comes in")
+    alerts, last_seen = 0, None
+    while m.left() > 0:
+        ex._check(m.cancel)
+        ex.look()
+        people = [d for d, _ in ex._detections() if d.label == "person"]
+        now = ex.now()
+        if people and (last_seen is None or now - last_seen > NEW_PERSON_S):
+            alerts += 1
+            person = min(people, key=lambda d: d.distance_m if d.distance_m is not None else 99)
+            who = f"a person in {person.clothing}" if person.clothing else "a person"
+            where_seen = f"{person.distance_m:.1f} m away, " if person.distance_m is not None else ""
+            m.say(f"someone came in: {who}, {where_seen}{_bearing(person.bearing_deg)}", image=ex.last_frame)
+        if people:
+            last_seen = now
+        ex._idle(min(GUARD_LOOK_S, max(0., m.left())), m.cancel)
+    m.finish("done", f"I finished guarding {what}: " +
+             (f"{alerts} alert{'s' if alerts != 1 else ''}" if alerts else "nobody came in"), alerts=alerts)
+
+
+def _bearing(degrees):
+    if abs(degrees) < 15:
+        return "straight ahead"
+    return f"{'left' if degrees > 0 else 'right'} of straight ahead"
+
+
+def _wrap(angle):
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+# ---- patrol ------------------------------------------------------------------------------------------------------
+def patrol(m):
+    ex, p = m.ex, m.task.command.params
+    st = m.state
+    rounds = st.setdefault("rounds", 0)
+    if not m.rooms():
+        m.say("I don't know any rooms yet, so I'm exploring first")
+        while m.explore_step():
+            m.look_around()
+    while True:
+        m.check()
+        started = ex.now()
+        rooms = m.rooms()
+        if p["rooms"]:                       # as go_to_place reads room names: "the kitchen", "bedroom 2", "bedroom"
+            unknown = [w for w in p["rooms"] if not _rooms_called(rooms, w)]
+            if unknown:
+                raise AdapterError(f"I don't know rooms called {', '.join(unknown)}; explore or name them first")
+            rooms = list({r["region"]: r for w in p["rooms"] for r in _rooms_called(rooms, w)}.values())
+        seen = []
+        for room in _route(rooms, m.here()):
+            m.walk_into(room)
+            seen += [{**thing, "room": _thing_room(ex, thing["x"], thing["y"]) or room["name"]}
+                     for thing in m.look_around()]
+        rounds += 1
+        st["rounds"] = rounds
+        now = _merge(seen)
+        changes = _changes(st.get("last"), now, {r["name"] for r in rooms}, lambda x, y: _thing_room(ex, x, y))
+        st["last"] = now
+        m.say(f"patrol round {rounds}: " + ("; ".join(changes) if changes else
+                                            "nothing has changed" if rounds > 1 else "noted where everything is"))
+        wait = p["every"] - (ex.now() - started)
+        if wait >= m.left():
+            break
+        ex._idle(max(0., wait), m.cancel)
+    m.finish("done", f"I patrolled {rounds} round{'s' if rounds != 1 else ''}", rounds=rounds)
+
+
+def _route(rooms, here):
+    """Rooms in a nearest-next order from here."""
+    x, y, _ = here
+    left, route = list(rooms), []
+    while left:
+        room = min(left, key=lambda r: math.hypot(r["x"] - x, r["y"] - y))
+        left.remove(room)
+        route.append(room)
+        x, y = room["x"], room["y"]
+    return route
+
+
+def _merge(seen):
+    """One entry per thing seen in a round: sightings of the same label and colour within SAME_PLACE_M are one."""
+    things = []
+    for s in seen:
+        if any(t["label"] == s["label"] and t["color"] == s["color"] and
+               math.hypot(t["x"] - s["x"], t["y"] - s["y"]) < SAME_PLACE_M for t in things):
+            continue
+        things.append(s)
+    return things
+
+
+def _changes(before, now, rooms, room_at):
+    """Plain sentences for what changed between two rounds' sightings, in the patrolled rooms. Each thing's room
+    is worked out now from where it was seen, with the rooms' names as they are now: a room named since the last
+    round (room_3 became the kitchen) isn't a change."""
+    def name(t):
+        return " ".join(filter(None, (t["color"], t["label"])))
+
+    def room_now(t):
+        return room_at(t["x"], t["y"]) or t["room"]
+
+    def room(t):
+        return _the(room_now(t))
+    out = [f"a person{' in ' + t['clothing'] if t.get('clothing') else ''} in {room(t)}"
+           for t in now if t["label"] == "person"]
+    if before is None:
+        return out
+    before = [t for t in before if t["label"] != "person" and room_now(t) in rooms]
+    now = [t for t in now if t["label"] != "person"]
+    unmatched = list(now)
+    for t in before:
+        same = [n for n in unmatched if n["label"] == t["label"] and n["color"] == t["color"]]
+        here = [n for n in same if math.hypot(n["x"] - t["x"], n["y"] - t["y"]) < SAME_PLACE_M]
+        if here:
+            unmatched.remove(here[0])
+        elif same:
+            moved = min(same, key=lambda n: math.hypot(n["x"] - t["x"], n["y"] - t["y"]))
+            unmatched.remove(moved)
+            out.append(f"the {name(t)} moved" + (f" from {room(t)} to {room(moved)}"
+                                                 if room(moved) != room(t) else f" within {room(t)}"))
+        else:
+            out.append(f"the {name(t)} is gone from {room(t)}")
+    out += [f"there's a new {name(n)} in {room(n)}" for n in unmatched]
+    return out
+
+
+# ---- explore -----------------------------------------------------------------------------------------------------
+def explore(m):
+    ex = m.ex
+    st = m.state
+    announced = st.setdefault("announced", set())
+    m.say("carrying on exploring" if m.resumed else "exploring the house")
+    while True:
+        m.check()
+        if not m.explore_step():
+            break
+        m.look_around()
+        for room in m.rooms():
+            if not room["name"].startswith("room_") and room["name"] not in announced:
+                announced.add(room["name"])
+                m.say(f"found {_the(room['name'])}")
+    rooms = m.rooms()
+    named = [r["name"].replace("_", " ") for r in rooms if not r["name"].startswith("room_")]
+    unnamed = len(rooms) - len(named)
+    listing = ", ".join(named) if named else "none I could name"
+    extra = f" and {unnamed} I couldn't name" if unnamed else ""
+    m.finish("explored", f"I've been everywhere I could reach: {len(rooms)} room{'s' if len(rooms) != 1 else ''}"
+             f" ({listing}{extra})", rooms=[r["name"] for r in rooms])
