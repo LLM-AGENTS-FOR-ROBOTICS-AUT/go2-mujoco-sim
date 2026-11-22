@@ -31,7 +31,7 @@ from .object_memory import ObjectMemory
 from .memory_visibility import clear_saved_location
 from .places import NamedPlaces
 from .path_planner import astar, simplify, turning_astar, keep_turns
-from .room_map import OccupancyGrid
+from .room_map import FREE, OCCUPIED, OccupancyGrid
 from .exploration import ExplorationMap, next_viewpoint, _pose, _safe_cells, recovery_route
 from .room_regions import RoomRegions
 from .room_names import RoomNamer, tells_room
@@ -104,6 +104,13 @@ MIN_ROOM_M2 = 1.5           # smaller regions (a pocket behind furniture) aren't
 ROOM_STAND_M = .45          # go_to_place into a room stops somewhere at least this far from anything in the way
 
 
+def world_xy(detection, pose):
+    """Where a detection is on the map: its (x_m ahead, y_m left) of the robot at pose (x, y, yaw)."""
+    x, y, yaw = pose
+    c, s = math.cos(yaw), math.sin(yaw)
+    return x + c * detection.x_m - s * detection.y_m, y + s * detection.x_m + c * detection.y_m
+
+
 def _room_key(name):
     """A room name to compare: "The living room" -> "living_room"."""
     return re.sub(r"^the_", "", "_".join(re.findall(r"[a-z0-9]+", str(name).casefold())))
@@ -147,9 +154,15 @@ class Task:
 
 
 class Executor:
-    def __init__(self, on_event=None, memory_path=None):
+    def __init__(self, on_event=None, memory_path=None, on_progress=None):
         self.adapter = None
         self.on_event = on_event or (lambda task: None)
+        # f(task, text, alert): a running mission's progress (#18), as robot updates; alert is set for an alert
+        # with a snapshot ({id, text, stamp}; its image from alert_image(id)).
+        self.on_progress = on_progress or (lambda task, text, alert: None)
+        self.alerts = deque(maxlen=20)      # mission alerts with their snapshots, newest last
+        self._alert_count = 0
+        self._missions = {}                 # mission key -> (state, when last run): for carrying on after a stop
         self.lock = threading.RLock()
         self.wake = threading.Condition(self.lock)
         self.queue = deque()
@@ -167,6 +180,8 @@ class Executor:
         self.room_map = OccupancyGrid(resolution=.05, size=400, grow=True)
         self.room_regions = RoomRegions()
         self.room_sightings = deque(maxlen=2000)   # (x, y, label) of things that tell a room's type (#35)
+        self._sightings_noted = 0                  # how many have ever been noted (the deque's length stops at 2000)
+        self._names_cache = None                   # (what they were worked out from, _room_names())
         self._rooms_cache = None                   # (when, rooms()) for the live map's once-a-second polls
         self.last_detections = []
         self.object_memory = ObjectMemory(memory_path)
@@ -210,7 +225,8 @@ class Executor:
                                           detect_low=adapter.kind == "sim")
             self.room_regions = RoomRegions()
             self.room_sightings.clear()
-            self._rooms_cache = None
+            self._names_cache = self._rooms_cache = None
+            self._missions.clear()          # their rooms and spots belong to the old map
             self.history.clear()
             self.activity, self.activity_since = [], time.monotonic()
             self.last_detections = []
@@ -285,22 +301,35 @@ class Executor:
                               heading_aware=True, forbidden_steps=navigation.forbidden,
                               planning_resolution_m=self.room_map.resolution), visited)
 
-    def room_at(self, x, y):
+    def room_at(self, x, y, radius_m=0.):
         """Observed geometric region, or None: the user's name for it, else its name from what's been seen in it
-        ("kitchen", #35), else room_N."""
+        ("kitchen", #35), else room_N. radius_m=0 is the region at (x, y) itself, for where the robot stands; a
+        thing seen is on cells the map marks occupied, so ask with a radius (THING_ROOM_M) to get the room around it."""
         self.room_regions.update(self.room_map)
-        region = self.room_regions.region_near(x, y, radius_m=0.)
+        region = self.room_regions.region_near(x, y, radius_m=radius_m)
         if region is None:
             return None
         return self.room_regions.names.get(region) or self._room_names().get(region) or f"room_{region}"
 
     def _room_names(self):
         """{region: name} from what's been seen where: each sighting votes for the region it's in now, so names
-        follow the regions as the map grows. Run when asked, not on every look (updating the regions is slow)."""
+        follow the regions as the map grows. Run when asked, not on every look (updating the regions is slow).
+        Only regions big enough to be listed as rooms take votes: a pocket behind the fridge named "kitchen" too
+        would make the kitchen "kitchen_1" with no kitchen_2 on the list. Worked out again only once something
+        new has been seen or the map has been split again: missions ask room_at for each thing seen."""
+        key = (id(self.room_regions), self.room_regions.splits, self._sightings_noted)
+        cached = self._names_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        rooms = {region for region, area in self.room_regions.areas().items() if area >= MIN_ROOM_M2}
         namer = RoomNamer()
         for x, y, label in list(self.room_sightings):
-            namer.saw(self.room_regions.region_near(x, y), label)
-        return namer.names()
+            region = self.room_regions.region_near(x, y, among=rooms)
+            if region is not None:
+                namer.saw(region, label)
+        names = namer.names()
+        self._names_cache = (key, names)
+        return names
 
     def rooms(self, fresh=False):
         """The observed rooms as [{name, region, x, y, area_m2}], named as room_at names them, (x, y) a spot near
@@ -335,11 +364,168 @@ class Executor:
 
     def _note_room_sightings(self, detections, pose):
         """Note where each thing in view that tells a room's type (a bed, a fridge) was seen."""
-        c, sn = math.cos(pose[2]), math.sin(pose[2])
         for d in detections:
             if d.x_m is not None and tells_room(d.label):
-                self.room_sightings.append((pose[0] + c * d.x_m - sn * d.y_m, pose[1] + sn * d.x_m + c * d.y_m,
-                                            d.label))
+                self.room_sightings.append((*world_xy(d, pose), d.label))
+                self._sightings_noted += 1
+
+    # ---- missions (#18, go2/missions.py) -----------------------------------------------------------------
+    def now(self):
+        """This executor's clock (offline evaluations run it on simulated time)."""
+        return time.monotonic()
+
+    def _idle(self, seconds, cancel):
+        """Wait without moving, in this executor's time; Stop ends the wait (Cancelled). Unlike _sleep, which
+        waits on the wall clock (cancel.wait), this follows now(): in the offline evaluations time is simulated, and
+        time.sleep is what moves it on, so a mission waiting between patrol rounds doesn't stall the simulation."""
+        end = self.now() + seconds
+        while True:
+            self._check(cancel)
+            left = end - self.now()
+            if left <= 0:
+                return
+            time.sleep(min(.1, left))
+
+    def _subtask(self, command, parent):
+        """A step of a mission, run directly by the mission (in this worker), not through the queue. Its route and
+        destination show on the mission task too, so the live map draws where the mission is going."""
+        class Shown(dict):
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                if key in ("route", "destination"):
+                    parent.detail[key] = value
+        task = Task(command, parent.group, parent.generation, user_turn=parent.user_turn, held=True)
+        task.detail = Shown()
+        return task
+
+    def _step_budget(self, cancel, seconds):
+        return _MotionDeadline(cancel, seconds)
+
+    def _mission_state(self, key, resume_s):
+        """(state, resumed): the state of an unfinished mission asked for again within resume_s, else a new one."""
+        with self.lock:
+            state, when = self._missions.get(key, (None, None))
+            resumed = state is not None and not state.get("finished") and self.now() - when <= resume_s
+            if not resumed:
+                state = {}
+            self._missions[key] = (state, self.now())
+            return state, resumed
+
+    def _mission_ended(self, key):
+        """A mission stopped, timed out or finished: it can be carried on for resume_s from now."""
+        with self.lock:
+            if key in self._missions:
+                self._missions[key] = (self._missions[key][0], self.now())
+
+    def _mission_progress(self, task, text, image=None):
+        """A mission's progress line, or an alert when it comes with a camera image."""
+        alert = None
+        if image is not None:
+            with self.lock:
+                self._alert_count += 1
+                alert = {"id": self._alert_count, "mission": task.command.tool, "text": text, "stamp": time.time()}
+                self.alerts.append({**alert, "image": np.array(image, copy=True)})
+        try:
+            self.on_progress(task, text, alert)
+        except Exception:
+            pass
+
+    def alert_image(self, alert_id):
+        """The camera image of alert `alert_id`, or None once it's been dropped."""
+        with self.lock:
+            return next((a["image"] for a in self.alerts if a["id"] == alert_id), None)
+
+    def _detections(self):
+        with self.lock:
+            return list(self.last_detections)
+
+    def _sightings(self):
+        """What the last look saw, as {label, color, clothing, x, y} in map coordinates."""
+        out = []
+        for d, (x, y, yaw) in self._detections():
+            if d.x_m is not None and d.label != "wall":
+                wx, wy = world_xy(d, (x, y, yaw))
+                out.append({"label": d.label, "color": d.color, "clothing": getattr(d, "clothing", None),
+                            "x": wx, "y": wy})
+        return out
+
+    def _past_support(self, detection, pose, most_m=2.):
+        """Where a thing ranged by what it's on really is (perception's distance_source "support": the distance is
+        to the side of the bed or desk under it, #49): along the line of sight, the middle of the furniture behind
+        that side, as far as the map shows it (to the far side, a wall, or free floor; at most most_m)."""
+        m = self.room_map.snapshot()
+        x0, y0 = world_xy(detection, pose)
+        heading = math.atan2(y0 - pose[1], x0 - pose[0])
+        c, s = math.cos(heading), math.sin(heading)
+        end, inside, d = 0., False, m.resolution
+        while d <= most_m:
+            cell = m.world_to_cell(x0 + c * d, y0 + s * d)
+            if cell is None or m.grid[cell] == FREE:
+                break
+            if m.grid[cell] == OCCUPIED:
+                if inside:                   # past the near side: the far side, or a wall behind it
+                    break
+            else:
+                inside = True                # its top, which the LiDAR (looking down) doesn't see
+            end, d = d, d + m.resolution
+        return x0 + c * end / 2, y0 + s * end / 2
+
+    def _stand_near(self, x, y, within_m=1.6, clearance_m=.42, tries=12):
+        """The spot nearest (x, y), within within_m, where Go2 has room to stand (clearance_m all round, in seen
+        free space) and that it has a route to: (x, y), or None."""
+        s = self._fresh_state()
+        m = self.room_map.snapshot()
+        rows, cols = np.nonzero(_safe_cells(m, clearance_m))
+        if not len(rows):
+            return None
+        xs = (cols + m._min_col + .5) * m.resolution
+        ys = (rows + m._min_row + .5) * m.resolution
+        gaps = np.hypot(xs - x, ys - y)
+        tried = []
+        for i in np.argsort(gaps):
+            if gaps[i] > within_m or len(tried) >= tries:
+                break
+            gx, gy = float(xs[i]), float(ys[i])
+            if any(math.hypot(gx - tx, gy - ty) < .25 for tx, ty in tried):
+                continue                     # next to a spot already tried: most likely the same answer
+            if self._route(s, gx, gy) is not None:
+                return gx, gy
+            tried.append((gx, gy))
+        return None
+
+    def _far_spot(self, region, x, y, clearance_m=.45, tries=6):
+        """A spot in room `region` as far from (x, y) as the room allows, with room to stand (clearance_m) and a
+        route to it: (x, y), or None. Searching, a second look from there sees over a bed whose edge hid things
+        on it from close up (the camera is lower than a bed's top)."""
+        s = self._fresh_state()
+        self.room_regions.update(self.room_map)
+        with self.room_regions._lock:
+            m, labels = self.room_regions.map, self.room_regions.labels
+        if m is None:
+            return None
+        rows, cols = np.nonzero(_safe_cells(m, clearance_m) & (labels == region))
+        if not len(rows):
+            return None
+        xs = (cols + m._min_col + .5) * m.resolution
+        ys = (rows + m._min_row + .5) * m.resolution
+        tried = []
+        for i in np.argsort(-np.hypot(xs - x, ys - y)):
+            if len(tried) >= tries:
+                break
+            gx, gy = float(xs[i]), float(ys[i])
+            if any(math.hypot(gx - tx, gy - ty) < .5 for tx, ty in tried):
+                continue
+            if self._route(s, gx, gy) is not None:
+                return gx, gy
+            tried.append((gx, gy))
+        return None
+
+    def _way_in(self, x, y):
+        """The heading (radians) from (x, y) toward the nearest way into its room (where it meets another room),
+        or None when the room has no known way in."""
+        self.room_regions.update(self.room_map)
+        door = self.room_regions.way_in(x, y)
+        return None if door is None else math.atan2(door[1] - y, door[0] - x)
 
     def name_room(self, name):
         """Name the room the robot is in (the user's name wins over a guess). Lasts as long as this map."""
@@ -863,6 +1049,14 @@ class Executor:
                                    "on the real Go2")
             self._ensure_standing(task, cancel)
             self._follow(task, cancel)
+        elif kind == "mission":
+            if self.adapter.kind == "go2":
+                raise AdapterError("missions only run in the simulator for now: unattended runs on the real Go2 "
+                                   "need its safety work first (#34)")
+            from . import missions          # here, not at the top: missions builds on this module
+            self._ensure_standing(task, cancel)
+            self._hold(task, cancel)
+            missions.run(self, task, cancel)
         else:
             raise AdapterError(f"unsupported command {kind}")
 

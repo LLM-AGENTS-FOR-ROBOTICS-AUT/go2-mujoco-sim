@@ -91,7 +91,8 @@ class Server:
         self.odometry = DriftingOdometry(DriftConfig(**odometry_drift)) if odometry_drift is not None else None
         if self.odometry is not None:
             self._update_odometry()
-        self.walkers = {name: Walker(self.sim, name, i) for i, (name, _) in enumerate(WALKERS)}
+        self.walkers = {name: Walker(self.sim, name, i) for i, (name, _) in enumerate(WALKERS)   # scenes without
+                        if mujoco.mj_name2id(self.sim.model, mujoco.mjtObj.mjOBJ_BODY, name) >= 0}  # them: none
         self.headless = headless
         self.lidar = Lidar(self.sim.model)
         self.cameras = {}   # resolution -> Camera; GL contexts are thread-bound: only the render thread touches them

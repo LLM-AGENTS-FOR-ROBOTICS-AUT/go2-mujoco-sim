@@ -150,7 +150,7 @@ class OtherToolTests(unittest.TestCase):
         self.assertEqual(resolve("stop", None)[0].kind, "stop")
 
     def test_schemas_cover_resolvers_and_serialise(self):
-        self.assertEqual(len(TOOLS), 18)
+        self.assertEqual(len(TOOLS), 22)
         from go2.tools import COMPACT_TOOLS
         self.assertEqual(len(COMPACT_TOOLS), 12, "the compact prompt keeps the 12 tools go2-ft-04 was trained on")
         self.assertNotIn("follow", {t["function"]["name"] for t in COMPACT_TOOLS})

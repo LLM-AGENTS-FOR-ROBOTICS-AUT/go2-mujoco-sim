@@ -250,8 +250,8 @@ def build(scene: str = "room", world=None):
     if scene == "hazards":
         import hazards   # simulation/hazards.py: platform, ledge, stairs down and a glass pane (#22)
         hazards.build_hazards(spec, objects, WorldObject)
-    if scene in ("room", "empty"):
-        _add_walkers(spec, objects)   # not in houses or the procedural training rooms, which stay as they were
+    if scene in ("room", "empty") or (scene == "house" and world.get("people")):
+        _add_walkers(spec, objects)   # a house only when it asks ("people": true, for guard and patrol, #18)
     model = spec.compile()
     if scene == "house":
         house.rest_on_furniture(model, world)     # things on beds, desks and tables (#21)

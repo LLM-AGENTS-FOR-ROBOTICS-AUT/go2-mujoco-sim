@@ -67,7 +67,10 @@ class MockModel:
         room_name = re.search(r"^(?:this (?:room )?is (?:the|my)|(?:call|name) this room(?: the)?)\s+(.+?)\s*[.!]?$", text)
         memory = re.search(r"\b(?:where (?:is|was)|what do you remember about|do you remember)\s+(?:the )?(.+?)\s*[?!]?$", text)
         destination = self._destination(text)
-        if save_place:
+        mission = self._mission(text, messages)
+        if mission:
+            calls = [mission]
+        elif save_place:
             calls = [("remember_place", {"name": save_place[1].strip()})]
         elif room_name:
             calls = [("name_room", {"name": room_name[1].strip()})]
@@ -106,6 +109,35 @@ class MockModel:
             return self._calls(calls)
         return {"content": "Mock reply: I'm a scripted stand-in, no language model is running.", "tool_calls": [],
                 "stats": {"mock": True}}
+
+    @staticmethod
+    def _mission(text, messages):
+        """A mission call (#18) for the request, or None: find/search, guard, patrol, explore; "hold on" stops and
+        "carry on" repeats the last mission (which picks up where it stopped)."""
+        text = text.strip().rstrip(".!?")
+        found = re.search(r"^(?:please )?(?:find|search for|look for) (?:the |my |a |an )?(.+?)"
+                          r"(?: in (?:the )?(.+))?$", text)
+        if found:
+            return ("search", {"target": found[1], **({"where": found[2]} if found[2] else {})})
+        searched = re.search(r"^search (?:the )?(.+?) for (?:the |my |a |an )?(.+)$", text)
+        if searched:
+            return ("search", {"target": searched[2], "where": searched[1]})
+        guard = re.search(r"^(?:guard|watch|keep watch (?:on|at|over)) (?:the )?(.+)$", text)
+        if guard:
+            return ("guard", {} if guard[1] in ("here", "this spot") else {"place": guard[1]})
+        if text.startswith("patrol"):
+            return ("patrol", {})
+        if text.startswith("explore"):
+            return ("explore", {})
+        if text in ("hold on", "pause", "wait a moment"):
+            return ("stop", {})
+        if text in ("carry on", "continue", "keep going", "resume", "keep looking"):
+            for message in reversed(messages):
+                for call in message.get("tool_calls") or []:
+                    fn = call.get("function", call)
+                    if fn.get("name") in ("search", "guard", "patrol", "explore"):
+                        return (fn["name"], fn.get("arguments") or {})
+        return None
 
     @staticmethod
     def _destination(text):
